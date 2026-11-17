@@ -1,0 +1,38 @@
+{
+  "name": "paseo-hopkins",
+  "version": "0.1.0",
+  "description": "A Paseo plugin that remembers what you asked and reminds you at the right moment.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "files": [
+    "paseo-plugin.json",
+    "index.server.ts",
+    "index.client.tsx",
+    "server/",
+    "client/",
+    "shared/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@getpaseo/client": "^0.16.1",
+    "@getpaseo/plugin": "^0.16.1",
+    "@getpaseo/protocol": "^0.16.1",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0",
+    "zod": "^4.6.7"
+  }
+}

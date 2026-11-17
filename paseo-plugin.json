@@ -1,0 +1,8 @@
+{
+  "id": "hopkins",
+  "name": "hopkins",
+  "description": "Remembers what you ask to be reminded of, and brings it back at the right moment, in one conversation you can reply to.",
+  "requirements": {
+    "paseo": "^0.16.1"
+  }
+}
