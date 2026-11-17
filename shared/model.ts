@@ -102,6 +102,40 @@ export const DeliverySchema = z.object({
 export type Delivery = z.infer<typeof DeliverySchema>;
 
 // ---------------------------------------------------------------------------
+// Suggestions: things hopkins noticed (live or in history) that the user may
+// want as reminders. Never scheduled without the user's say-so.
+
+export const SuggestionSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  /** Suggested local time ("2026-11-20T09:00"), or null when the user should pick. */
+  when: z.string().nullable(),
+  /** Where it came from, in a few words ("said on 12 Nov: 'I'll file it by the 7th'"). */
+  why: z.string(),
+  scope: ScopeSchema,
+  origin: z.enum(["noticed", "history"]),
+  sourceTitle: z.string().nullable(),
+  createdAt: z.number(),
+  state: z.enum(["open", "kept", "done", "dismissed"]),
+  /** Normalised text, so a dismissed thing is never suggested again. */
+  key: z.string(),
+});
+export type Suggestion = z.infer<typeof SuggestionSchema>;
+
+export const BackfillStateSchema = z.object({
+  state: z.enum(["idle", "running", "done", "failed", "cancelled"]),
+  startedAt: z.number().nullable(),
+  finishedAt: z.number().nullable(),
+  done: z.number(),
+  total: z.number(),
+  found: z.number(),
+  error: z.string().nullable(),
+});
+export type BackfillState = z.infer<typeof BackfillStateSchema>;
+
+export const idleBackfill = (): BackfillState => ({ state: "idle", startedAt: null, finishedAt: null, done: 0, total: 0, found: 0, error: null });
+
+// ---------------------------------------------------------------------------
 // The Today view, as sent to the app.
 
 export const TodayItemSchema = z.object({
@@ -137,12 +171,34 @@ export const TodayViewSchema = z.object({
     problems: z.array(z.string()),
   }),
   counts: z.object({ waiting: z.number(), today: z.number() }),
+  /** Things noticed in conversations or history, waiting for Keep / Done / Drop. */
+  noticed: z.array(
+    z.object({
+      id: z.string(),
+      text: z.string(),
+      when: z.string().nullable(),
+      whenLabel: z.string().nullable(),
+      why: z.string(),
+      origin: z.enum(["noticed", "history"]),
+      source: z.string().nullable(),
+      scope: ScopeSchema,
+    }),
+  ),
+  noticing: z.object({ available: z.boolean(), backfill: BackfillStateSchema }),
   /** Daily recap times ("08:30"), or null when off. */
   recaps: z.object({ morning: z.string().nullable(), evening: z.string().nullable() }),
   /** Snooze choices that make sense right now, in the user's zone. */
   snoozeOptions: z.array(z.object({ label: z.string(), until: z.string() })),
 });
 export type TodayView = z.infer<typeof TodayViewSchema>;
+
+export const SuggestionActionSchema = z.object({
+  id: z.string(),
+  action: z.enum(["keep", "done", "dismiss"]),
+  /** For keep: a time phrase, defaulting to the suggestion's own time. */
+  when: z.string().optional(),
+});
+export type SuggestionAction = z.infer<typeof SuggestionActionSchema>;
 
 export const ReminderActionSchema = z.object({
   id: z.string(),

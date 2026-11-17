@@ -4,6 +4,7 @@ import fs from "node:fs";
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config";
 import type { FinishResult, ThreadPort, ThreadStatus } from "./delivery";
+import type { TimelineReader } from "./noticing";
 import { errorText, type Logger } from "./log";
 import type { PaseoLink } from "./paseo-link";
 import { THREAD_SYSTEM_PROMPT, THREAD_TITLE } from "./prompts";
@@ -144,4 +145,51 @@ export class PaseoThreadPort implements ThreadPort {
     );
     return { status: result.status, lastMessage: result.lastMessage, ...(result.error ? { error: result.error } : {}) };
   }
+}
+
+const SYSTEM_TEXT = /^\s*<(hopkins:|paseo-system)/;
+
+interface TimelineEntryLike {
+  item?: { type?: string; text?: string };
+  timestamp?: string;
+  seqEnd?: number;
+}
+
+/** Reads what the user typed in a conversation since the last read, for live noticing. */
+export function paseoTimelineReader(link: PaseoLink): TimelineReader | null {
+  const api = link.api;
+  if (!api) return null;
+  return {
+    async read(agentId, cursor) {
+      const handle = api.agents.ref(agentId);
+      const fetchPage = (options: Record<string, unknown>) =>
+        withTimeout(handle.timeline.refetch(options as never) as Promise<unknown>, 20_000, "reading a conversation") as Promise<{
+          agent?: { title?: string | null; cwd?: string } | null;
+          epoch?: string;
+          reset?: boolean;
+          staleCursor?: boolean;
+          endCursor?: { epoch: string; seq: number } | null;
+          entries?: TimelineEntryLike[];
+        }>;
+      let page = cursor ? await fetchPage({ direction: "after", cursor, limit: 200 }) : await fetchPage({ direction: "tail", limit: 40 });
+      if (cursor && (page.reset || page.staleCursor)) page = await fetchPage({ direction: "tail", limit: 40 });
+      const entries = page.entries ?? [];
+      const userMessages: { at: number | null; text: string }[] = [];
+      let lastAssistant: string | null = null;
+      let maxSeq = cursor?.seq ?? -1;
+      for (const e of entries) {
+        if (typeof e.seqEnd === "number") maxSeq = Math.max(maxSeq, e.seqEnd);
+        const text = e.item?.text?.trim();
+        if (!text) continue;
+        if (e.item?.type === "user_message" && !SYSTEM_TEXT.test(text)) {
+          const at = e.timestamp ? Date.parse(e.timestamp) : NaN;
+          userMessages.push({ at: Number.isFinite(at) ? at : null, text });
+        } else if (e.item?.type === "assistant_message") {
+          lastAssistant = text;
+        }
+      }
+      const next = page.endCursor && typeof page.endCursor.seq === "number" ? page.endCursor : page.epoch && maxSeq >= 0 ? { epoch: page.epoch, seq: maxSeq } : null;
+      return { title: page.agent?.title ?? null, cwd: page.agent?.cwd ?? null, userMessages, lastAssistant, cursor: next };
+    },
+  };
 }

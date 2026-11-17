@@ -37,6 +37,11 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     threadMode: "bypassPermissions",
     threadCwd: "/tmp/hopkins-thread",
     paused: false,
+    noticing: true,
+    llmBaseUrl: "http://llm.invalid",
+    llmModel: "test-model",
+    memoryDirs: [],
+    historyDays: 120,
     ...overrides,
   };
 }

@@ -4,19 +4,22 @@
 
 import type { PluginServerContext, PluginSettingsState } from "@getpaseo/plugin/server";
 import type { TodayView } from "../shared/model";
-import { actRpc, recapsRpc, todayRpc, todayWatch } from "../shared/rpc";
+import { actRpc, backfillRpc, recapsRpc, suggestionRpc, todayRpc, todayWatch } from "../shared/rpc";
 import { localDateOf, zonedToInstant } from "../shared/time";
 import { hopkinsSettings, settingsSchema, type HopkinsSettings } from "../shared/settings";
-import { resolveConfig, type Config } from "./config";
+import { Backfill } from "./backfill";
+import { resolveConfig, scopeFor, type Config } from "./config";
 import { defaultDeliveryOptions, DeliveryQueue, type RecapSource } from "./delivery";
 import { consoleLogger, errorText, type Logger } from "./log";
+import { AnthropicLlm, readKey } from "./llm";
 import { HopkinsMcpServer, MCP_SERVER_NAME } from "./mcp-server";
+import { LiveNoticer, Suggestions } from "./noticing";
 import { PaseoLink } from "./paseo-link";
 import { Recaps } from "./recaps";
 import { Reminders, systemClock, type Clock } from "./reminders";
 import { Scheduler } from "./scheduler";
 import { defaultDataDir, Store } from "./store";
-import { PaseoThreadPort } from "./thread-port";
+import { PaseoThreadPort, paseoTimelineReader } from "./thread-port";
 import { buildToday } from "./today";
 import { createTools } from "./tools";
 
@@ -54,6 +57,14 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   const queue = new DeliveryQueue(store, reminders, () => (link.connected ? port : null), clock, getConfig, log, defaultDeliveryOptions, recapSource);
   const scheduler = new Scheduler(reminders, queue, clock, getConfig, log, recaps);
 
+  // --- Noticing and backfill -----------------------------------------------------------
+
+  const llm = new AnthropicLlm(() => ({ baseUrl: config.llmBaseUrl, model: config.llmModel }), () => readKey(dataDir));
+  const suggestions = new Suggestions(store, reminders, clock, getConfig);
+  const noticer = new LiveNoticer(store, suggestions, llm, () => paseoTimelineReader(link), clock, getConfig, log);
+  const backfill = new Backfill(store, suggestions, llm, clock, getConfig, log);
+  backfill.recover();
+
   // --- Today view and live watchers ------------------------------------------------
 
   const watchers = new Set<(view: TodayView) => void>();
@@ -64,12 +75,14 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     ...(config.paused ? ["Paused: reminders are held until you resume them in settings."] : []),
   ];
   const today = (): TodayView =>
-    buildToday(store, reminders, config, clock.now(), {
-      running: scheduler.running,
-      lastTickAt: scheduler.lastTickAt,
-      connected: link.connected,
-      problems: problems(),
-    });
+    buildToday(
+      store,
+      reminders,
+      config,
+      clock.now(),
+      { running: scheduler.running, lastTickAt: scheduler.lastTickAt, connected: link.connected, problems: problems() },
+      { suggestions, available: llm.available && config.noticing, backfill: backfill.status() },
+    );
   let notifyTimer: ReturnType<typeof setTimeout> | null = null;
   const notifyWatchers = () => {
     if (notifyTimer || watchers.size === 0) return;
@@ -159,6 +172,16 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     }
   });
 
+  // A conversation finished a turn: note it, so noticing reads it once it settles.
+  server.addHook("agent.turn.after", async ({ agent, outcome }) => {
+    try {
+      if (outcome.kind === "canceled" || agent.parentAgentId || agent.background || agent.id === store.threadAgentId()) return;
+      noticer.touch(agent.id, scopeFor(agent.cwd, config.workRoots));
+    } catch (err) {
+      log.warn("could not note a finished turn", { error: errorText(err) });
+    }
+  });
+
   // --- App RPCs ------------------------------------------------------------------------
 
   server.handle(todayRpc, async (_input, context) => {
@@ -185,6 +208,25 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     return { ok: true, message: result.confirmation };
   });
 
+  server.handle(suggestionRpc, async (input, context) => {
+    link.adopt(context.paseo);
+    const result = suggestions.act(input.id, input.action, input.when);
+    if (!result.ok) return { ok: false, message: result.error, ...(result.needsTime ? { needsTime: true } : {}) };
+    changed();
+    return { ok: true, message: result.message };
+  });
+
+  server.handle(backfillRpc, async (input, context) => {
+    link.adopt(context.paseo);
+    if (input.action === "cancel") {
+      backfill.cancel();
+      return { ok: true, message: "Stopping." };
+    }
+    const result = backfill.start();
+    notifyWatchers();
+    return result.ok ? { ok: true, message: result.message } : { ok: false, message: result.error };
+  });
+
   server.handle(todayWatch, async (_input, context) => {
     link.adopt(context.paseo);
     const push = (view: TodayView) => {
@@ -199,7 +241,10 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
 
   link.start();
   scheduler.start(options.tickMs ?? 15_000);
-  const refresh = setInterval(notifyWatchers, 30_000);
+  const refresh = setInterval(() => {
+    notifyWatchers();
+    void noticer.maybeRun().then(notifyWatchers);
+  }, 30_000);
   (refresh as { unref?: () => void }).unref?.();
   log.info("started", { reminders: store.reminders().length });
 

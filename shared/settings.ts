@@ -23,6 +23,15 @@ export const settingsSchema = z.object({
   threadCwd: z.string().default(""),
   /** Stop delivering (reminders still queue up and arrive when resumed). */
   paused: z.boolean().default(false),
+  /** Notice open loops in conversations and suggest them (needs a model key). */
+  noticing: z.boolean().default(true),
+  /** Anthropic-Messages endpoint and the small model used for noticing. The key lives in a private file, not here. */
+  llmBaseUrl: z.string().default("https://api.anthropic.com"),
+  llmModel: z.string().default("claude-haiku-5-5"),
+  /** Extra folders of memory notes to read when looking through history (Claude Code's own are found automatically). */
+  memoryDirs: z.array(z.string()).default([]),
+  /** How far back "look through past conversations" reads. */
+  historyDays: z.number().int().min(1).max(3650).default(120),
 });
 
 export type HopkinsSettings = z.infer<typeof settingsSchema>;

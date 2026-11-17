@@ -1,6 +1,7 @@
 // Builds the Today view the app renders.
 
-import type { Reminder, TodayItem, TodayView } from "../shared/model";
+import type { BackfillState, Reminder, TodayItem, TodayView } from "../shared/model";
+import type { Suggestions } from "./noticing";
 import { addDays, formatClock, localDateOf, weekdayOf, zonedToInstant } from "../shared/time";
 import type { Config } from "./config";
 import type { Store } from "./store";
@@ -36,7 +37,13 @@ export function snoozeOptions(cfg: Config, now: number): { label: string; until:
   return options;
 }
 
-export function buildToday(store: Store, reminders: Reminders, cfg: Config, now: number, health: Health): TodayView {
+export interface NoticingView {
+  suggestions: Suggestions;
+  available: boolean;
+  backfill: BackfillState;
+}
+
+export function buildToday(store: Store, reminders: Reminders, cfg: Config, now: number, health: Health, noticing?: NoticingView): TodayView {
   const recaps = store.recaps();
   const endOfToday = zonedToInstant({ ...addDays(localDateOf(now, cfg.tz), 1), hour: 0, minute: 0 }, cfg.tz);
   const item = (r: Reminder): TodayItem => ({
@@ -78,5 +85,16 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     counts: { waiting: waiting.length, today: today.length },
     snoozeOptions: snoozeOptions(cfg, now),
     recaps: { morning: recaps.morning, evening: recaps.evening },
+    noticed: (noticing?.suggestions.open() ?? []).slice(0, 40).map((s) => ({
+      id: s.id,
+      text: s.text,
+      when: s.when,
+      whenLabel: noticing!.suggestions.whenLabel(s),
+      why: s.why,
+      origin: s.origin,
+      source: s.sourceTitle,
+      scope: s.scope,
+    })),
+    noticing: { available: noticing?.available ?? false, backfill: noticing?.backfill ?? store.backfill() },
   };
 }

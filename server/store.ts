@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { DeliverySchema, ReminderSchema, type Delivery, type Reminder } from "../shared/model";
+import { BackfillStateSchema, DeliverySchema, idleBackfill, ReminderSchema, SuggestionSchema, type BackfillState, type Delivery, type Reminder, type Suggestion } from "../shared/model";
 import { errorText, type Logger } from "./log";
 
 const RecapStateSchema = z.object({
@@ -23,10 +23,14 @@ const StateSchema = z.object({
   deliveries: z.array(DeliverySchema),
   thread: z.object({ agentId: z.string().nullable() }),
   recaps: RecapStateSchema.prefault({}),
+  suggestions: z.array(SuggestionSchema).default([]),
+  /** Per-conversation read position for live noticing: the timeline sequence already read. */
+  cursors: z.record(z.string(), z.object({ epoch: z.string(), seq: z.number() })).default({}),
+  backfill: BackfillStateSchema.default(idleBackfill()),
 });
 export type State = z.infer<typeof StateSchema>;
 
-const emptyState = (): State => ({ version: 1, reminders: [], deliveries: [], thread: { agentId: null }, recaps: { morning: null, evening: null, sent: {} } });
+const emptyState = (): State => ({ version: 1, reminders: [], deliveries: [], thread: { agentId: null }, recaps: { morning: null, evening: null, sent: {} }, suggestions: [], cursors: {}, backfill: idleBackfill() });
 
 const STATE_FILE = "state.json";
 const BACKUP_FILE = "state.json.bak";
@@ -191,5 +195,37 @@ export class Store {
 
   setRecaps(recaps: RecapState): void {
     this.state.recaps = recaps;
+  }
+
+  // --- suggestions, cursors, backfill ------------------------------------------------
+
+  suggestions(): readonly Suggestion[] {
+    return this.state.suggestions;
+  }
+
+  putSuggestion(suggestion: Suggestion): void {
+    const i = this.state.suggestions.findIndex((x) => x.id === suggestion.id);
+    if (i === -1) this.state.suggestions.push(suggestion);
+    else this.state.suggestions[i] = suggestion;
+    // Keep every key (so dismissed things stay dismissed) but drop old closed bodies.
+    if (this.state.suggestions.length > 2000) {
+      this.state.suggestions = this.state.suggestions.filter((x) => x.state === "open").concat(this.state.suggestions.filter((x) => x.state !== "open").slice(-1500));
+    }
+  }
+
+  cursor(agentId: string): { epoch: string; seq: number } | undefined {
+    return this.state.cursors[agentId];
+  }
+
+  setCursor(agentId: string, cursor: { epoch: string; seq: number }): void {
+    this.state.cursors[agentId] = cursor;
+  }
+
+  backfill(): BackfillState {
+    return this.state.backfill;
+  }
+
+  setBackfill(state: BackfillState): void {
+    this.state.backfill = state;
   }
 }

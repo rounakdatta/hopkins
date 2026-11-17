@@ -3,7 +3,7 @@ import { Pressable, Text, View } from "react-native";
 import { useRpc, useSubscription, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { Icon, Loading, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import type { TodayItem, TodayView } from "../shared/model";
-import { actRpc, recapsRpc, todayWatch } from "../shared/rpc";
+import { actRpc, backfillRpc, recapsRpc, suggestionRpc, todayWatch } from "../shared/rpc";
 import { space, tabular, type Colors } from "./theme";
 
 type Act = (id: string, action: "done" | "drop" | "snooze", until?: string) => Promise<void>;
@@ -49,7 +49,7 @@ export function TodayScreen(props: PluginScreenProps) {
     );
   }
 
-  const nothing = view.waiting.length + view.today.length + view.upcoming.length + view.someday.length === 0;
+  const nothing = view.waiting.length + view.today.length + view.upcoming.length + view.someday.length + view.noticed.length === 0;
   const openThread =
     view.health.threadAgentId && props.navigation?.openAgent
       ? () => props.navigation!.openAgent({ agentId: view.health.threadAgentId!, serverId: props.host.id })
@@ -82,6 +82,16 @@ export function TodayScreen(props: PluginScreenProps) {
           ))}
         </Section>
       ) : null}
+
+      {view.noticed.length > 0 ? (
+        <Section colors={colors} title="Noticed" count={view.noticed.length}>
+          {view.noticed.map((item) => (
+            <NoticedRow key={item.id} item={item} colors={colors} snoozeOptions={view.snoozeOptions} />
+          ))}
+        </Section>
+      ) : null}
+
+      <HistoryCard colors={colors} noticing={view.noticing} />
 
       {view.today.length > 0 ? (
         <Section colors={colors} title="Later today" count={view.today.length}>
@@ -398,5 +408,116 @@ function DailyNotes(props: { colors: Colors; recaps: TodayView["recaps"] }) {
       {row("morning", "Morning note", "What's due today, first thing.", MORNING)}
       {row("evening", "Evening recap", "What's still open, tomorrow's first thing, then permission to stop.", EVENING)}
     </Fold>
+  );
+}
+
+type NoticedItem = TodayView["noticed"][number];
+
+/** Something hopkins noticed: keep it as a reminder, say it's done, or drop it for good. */
+function NoticedRow(props: { item: NoticedItem; colors: Colors; snoozeOptions: TodayView["snoozeOptions"] }) {
+  const { item, colors } = props;
+  const act = useRpc(suggestionRpc);
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const run = async (action: "keep" | "done" | "dismiss", when?: string) => {
+    setBusy(true);
+    try {
+      const result = await act({ id: item.id, action, ...(when ? { when } : {}) });
+      if (result.ok) toast.show(result.message, { variant: "success" });
+      else if (result.needsTime) setPicking(true);
+      else toast.error(result.message);
+    } catch {
+      toast.error("Couldn't reach hopkins. Try again in a moment.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const meta = [item.whenLabel ? `suggested ${item.whenLabel}` : "no time yet", item.why || null, item.origin === "history" ? "from your history" : item.source ? `from ${item.source}` : null]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <View style={{ padding: space.m, gap: space.s, borderBottomWidth: 1, borderBottomColor: colors.border, opacity: busy ? 0.5 : 1 }}>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.s }}>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={{ color: colors.foreground, fontSize: 15 }}>{item.text}</Text>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{meta}</Text>
+        </View>
+        {item.scope === "work" ? <Chip colors={colors} label="work" /> : null}
+      </View>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.s }}>
+        <Button
+          colors={colors}
+          tone="primary"
+          icon="bell-plus"
+          label={item.whenLabel ? `Remind me ${item.whenLabel}` : "Remind me…"}
+          a11y={`Keep "${item.text}" as a reminder`}
+          disabled={busy}
+          pressed={picking}
+          onPress={() => (item.when ? void run("keep") : setPicking(!picking))}
+        />
+        {item.when ? (
+          <Button colors={colors} tone="secondary" icon="clock" label="Other time" a11y={`Pick another time for "${item.text}"`} disabled={busy} pressed={picking} onPress={() => setPicking(!picking)} />
+        ) : null}
+        <Button colors={colors} tone="secondary" icon="check" label="Already done" a11y={`"${item.text}" is already done`} disabled={busy} onPress={() => void run("done")} />
+        <Button colors={colors} tone="quiet" label="Drop" a11y={`Drop "${item.text}"`} disabled={busy} onPress={() => void run("dismiss")} />
+      </View>
+      {picking ? (
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.s }} accessibilityLabel="Remind me at">
+          {props.snoozeOptions.map((option) => (
+            <Button
+              key={option.until}
+              colors={colors}
+              tone="secondary"
+              label={option.label}
+              a11y={`Remind me ${option.label}`}
+              disabled={busy}
+              onPress={() => {
+                setPicking(false);
+                void run("keep", option.until);
+              }}
+            />
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** One-off: offer to read past conversations; show progress while it runs; then get out of the way. */
+function HistoryCard(props: { colors: Colors; noticing: TodayView["noticing"] }) {
+  const backfill = useRpc(backfillRpc);
+  const toast = useToast();
+  const b = props.noticing.backfill;
+  if (!props.noticing.available) return null;
+  const send = async (action: "start" | "cancel") => {
+    try {
+      const result = await backfill({ action });
+      if (result.ok) toast.show(result.message);
+      else toast.error(result.message);
+    } catch {
+      toast.error("Couldn't reach hopkins. Try again in a moment.");
+    }
+  };
+  if (b.state === "done" || b.state === "cancelled") return null;
+  const running = b.state === "running";
+  const text = running
+    ? b.total > 0
+      ? `Reading your past conversations: ${b.done} of ${b.total}. Anything still open will appear under Noticed.`
+      : "Gathering your past conversations…"
+    : b.state === "failed"
+      ? `Reading your history stopped early (${b.error ?? "unknown error"}).`
+      : "Look through your past conversations for things you meant to do? hopkins suggests them here; nothing is scheduled until you keep it.";
+  return (
+    <View style={{ gap: space.s, padding: space.m, borderRadius: 10, borderWidth: 1, borderColor: props.colors.border }}>
+      <Text style={{ color: props.colors.foreground, fontSize: 14, lineHeight: 20 }}>{text}</Text>
+      <View style={{ flexDirection: "row", gap: space.s }}>
+        {running ? (
+          <Button colors={props.colors} tone="quiet" label="Stop" a11y="Stop reading past conversations" onPress={() => void send("cancel")} />
+        ) : (
+          <Button colors={props.colors} tone="secondary" icon="history" label={b.state === "failed" ? "Try again" : "Look through history"} a11y="Look through past conversations" onPress={() => void send("start")} />
+        )}
+      </View>
+    </View>
   );
 }
