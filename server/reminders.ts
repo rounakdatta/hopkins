@@ -180,6 +180,7 @@ export class Reminders {
           isOpen(r) &&
           r.text.toLowerCase() === text.toLowerCase() &&
           r.state === state &&
+          Boolean(r.repeat) === Boolean(repeat.repeat) &&
           (dueAt === null ? r.dueAt === null : r.dueAt !== null && Math.abs(r.dueAt - dueAt) < 60_000),
       );
     if (dup) return { ok: true, reminder: dup, confirmation: this.confirmation(dup, "Already set"), duplicate: true };
@@ -264,6 +265,11 @@ export class Reminders {
       r.text = text;
     }
     if (patch.important !== undefined) r.important = patch.important;
+    if (patch.ask !== undefined) {
+      if (patch.ask === null) delete r.ask;
+      else if (!r.repeat && (patch.repeat === undefined || patch.repeat === null || patch.repeat === "none")) return { ok: false, error: ASK_NEEDS_REPEAT };
+      else r.ask = { kind: patch.ask.kind, ...(patch.ask.question?.trim() ? { question: patch.ask.question.trim().slice(0, 140) } : {}) };
+    }
 
     let repeat = r.repeat;
     if (patch.repeat !== undefined) {
@@ -284,6 +290,11 @@ export class Reminders {
         return { ok: false, error: `${parsed.reason}. Ask the user when, offering these options.`, needsTime: true, suggestions: parsed.suggestions ?? suggestTimes(undefined, this.whenContext(now)) };
       }
       if (r.state === "fired") r.snoozes += 1;
+      // A check-in moved to another time still answers its own day.
+      if (r.ask) {
+        const moving = r.last && !r.last.ackedAt ? (r.last.of ?? r.last.dueAt) : (r.snoozedOf ?? r.dueAt);
+        if (moving !== null) r.snoozedOf = moving;
+      }
       // Moving the one that just went out handles it for now: it leaves Waiting and comes back at the new time.
       if (r.last && !r.last.ackedAt) r.last.ackedAt = now;
       r.state = "scheduled";
@@ -318,11 +329,8 @@ export class Reminders {
         }
       }
     }
-    if (patch.ask !== undefined) {
-      if (patch.ask === null) delete r.ask;
-      else if (!r.repeat) return { ok: false, error: ASK_NEEDS_REPEAT };
-      else r.ask = { kind: patch.ask.kind, ...(patch.ask.question?.trim() ? { question: patch.ask.question.trim().slice(0, 140) } : {}) };
-    }
+    // A check-in asks every time it comes back: without a repeat it stops asking (answers are kept).
+    if (!r.repeat && r.ask) delete r.ask;
     r.updatedAt = now;
     this.store.put(r);
     this.store.save();
@@ -439,7 +447,8 @@ export class Reminders {
       const dueAt = r.dueAt;
       const late = firedAt - dueAt > 2 * 60_000;
       const missed = r.repeat ? this.occurrencesBetween(r, dueAt, firedAt) : 0;
-      r.last = { dueAt, firedAt, deliveryId: delivery.id, ...(late ? { late } : {}), ...(missed ? { missed } : {}) };
+      r.last = { dueAt, firedAt, deliveryId: delivery.id, ...(late ? { late } : {}), ...(missed ? { missed } : {}), ...(r.snoozedOf !== undefined ? { of: r.snoozedOf } : {}) };
+      delete r.snoozedOf;
       r.firedCount += 1 + missed;
       r.updatedAt = firedAt;
       const anchor = r.anchor ? parseLocalIso(r.anchor) : null;

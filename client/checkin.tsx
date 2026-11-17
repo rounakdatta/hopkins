@@ -88,7 +88,7 @@ function Pill(props: { colors: Colors; text: string; a11y: string; icon?: string
 
 // --- The mood slider ----------------------------------------------------------------------
 
-type Touch = { nativeEvent: { pageX: number; locationX: number } };
+type Touch = { nativeEvent: { pageX: number; pageY: number; locationX: number } };
 
 /**
  * A slider with words instead of a number. The word rides above the thumb and changes as you
@@ -100,6 +100,10 @@ export function MoodSlider(props: { colors: Colors; value: number | null; start?
   const [width, setWidth] = useState(0);
   const [drag, setDrag] = useState<number | null>(null);
   const left = useRef(0);
+  // Where the finger came down, and whether this is a sideways drag (only that, or a tap, answers):
+  // a vertical swipe that starts on the track is the page scrolling, and is let go.
+  const origin = useRef<{ x: number; y: number } | null>(null);
+  const sideways = useRef(false);
   const shown = drag ?? props.value ?? props.start ?? 50;
   const touched = drag !== null || props.value !== null;
   const THUMB = 28;
@@ -152,15 +156,34 @@ export function MoodSlider(props: { colors: Colors; value: number | null; start?
         onLayout={(e: { nativeEvent: { layout: { width: number } } }) => setWidth(e.nativeEvent.layout.width)}
         onStartShouldSetResponder={() => !props.busy}
         onMoveShouldSetResponder={() => !props.busy}
-        // Keep the drag even when the page would like to scroll.
-        onResponderTerminationRequest={() => false}
+        // A scroll may take over until the finger is clearly moving sideways; then the drag is kept.
+        onResponderTerminationRequest={() => !sideways.current}
         onResponderGrant={(e: Touch) => {
           left.current = e.nativeEvent.pageX - e.nativeEvent.locationX;
-          setDrag(at(e.nativeEvent.pageX));
+          origin.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
+          sideways.current = false;
         }}
-        onResponderMove={(e: Touch) => setDrag(at(e.nativeEvent.pageX))}
-        onResponderRelease={(e: Touch) => commit(at(e.nativeEvent.pageX))}
-        onResponderTerminate={() => setDrag(null)}
+        onResponderMove={(e: Touch) => {
+          const o = origin.current;
+          if (!o) return;
+          const dx = Math.abs(e.nativeEvent.pageX - o.x);
+          if (!sideways.current && dx > 6 && dx > Math.abs(e.nativeEvent.pageY - o.y)) sideways.current = true;
+          if (sideways.current) setDrag(at(e.nativeEvent.pageX));
+        }}
+        onResponderRelease={(e: Touch) => {
+          const o = origin.current;
+          const still = o !== null && Math.abs(e.nativeEvent.pageX - o.x) < 6 && Math.abs(e.nativeEvent.pageY - o.y) < 6;
+          // A sideways drag, or a tap on the track, answers; anything else was a scroll.
+          if (sideways.current || still) commit(at(e.nativeEvent.pageX));
+          else setDrag(null);
+          origin.current = null;
+          sideways.current = false;
+        }}
+        onResponderTerminate={() => {
+          origin.current = null;
+          sideways.current = false;
+          setDrag(null);
+        }}
         style={{ height: THUMB + 8, justifyContent: "center", cursor: "pointer" }}
       >
         {/* The track, the word bands, the fill up to the thumb, and the thumb. */}
@@ -184,7 +207,7 @@ export function MoodSlider(props: { colors: Colors; value: number | null; start?
             borderRadius: THUMB / 2,
             backgroundColor: colors.surface0,
             borderWidth: 2,
-            borderColor: touched ? colors.accent : colors.border,
+            borderColor: touched ? colors.accent : colors.foregroundMuted,
             shadowColor: "#000",
             shadowOpacity: 0.15,
             shadowRadius: 4,

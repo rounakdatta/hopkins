@@ -56,6 +56,8 @@ export const LastFiringSchema = z.object({
   nudgedAt: z.number().optional(),
   /** For repeating reminders: the user acknowledged this occurrence ("done"). */
   ackedAt: z.number().optional(),
+  /** The occurrence this firing stands for, when it was moved from its own time (a snoozed check-in). */
+  of: z.number().optional(),
 });
 export type LastFiring = z.infer<typeof LastFiringSchema>;
 
@@ -104,6 +106,8 @@ export const ReminderSchema = z.object({
   ask: AskSchema.optional(),
   /** One per day it was due, newest last. */
   answers: z.array(AnswerSchema).optional(),
+  /** A check-in occurrence moved to another time: the occurrence it still stands for. */
+  snoozedOf: z.number().optional(),
 });
 export type Reminder = z.infer<typeof ReminderSchema>;
 
@@ -127,7 +131,7 @@ export type TaskState = z.infer<typeof TaskStateSchema>;
 
 export const TaskSchema = z.object({
   id: z.string(),
-  /** What to do, short, in the user's words ("web check-in for the Sri Lanka flight"). */
+  /** What to do, short, in the user's words ("web check-in for the Goa flight"). */
   text: z.string(),
   /** The full brief for the agent: self-contained, written by the agent that was asked. Never sent to the app. */
   instructions: z.string(),

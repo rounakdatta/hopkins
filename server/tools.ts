@@ -66,7 +66,7 @@ const CLOSE_DESCRIPTION = `Close a hopkins reminder. as: "done" when it is handl
 const TASK_DESCRIPTION = `Have something DONE at a time, not just remembered: "today at 8pm, do my web check-in", "tomorrow at 9, check last night's backup and tell me". At that time hopkins starts an agent with the user's usual setup (their files, notes, memory, Nextcloud, the browser) to do it, then tells them in the hopkins conversation how it went. When they only want to be reminded, use hopkins_remind instead.
 
 action "create":
-- text: the task, short, in their words ("web check-in for the Sri Lanka flight").
+- text: the task, short, in their words ("web check-in for the Goa flight").
 - instructions: the brief the agent works from. It starts fresh and never sees this conversation, so make it complete: what to do; where things are (file paths, Nextcloud folders, sites, which booking); what to check before acting (e.g. that the passport number and date of birth on the ticket match their passport); what counts as done; anything to avoid. Find out what you can yourself first; ask the user only for what you cannot find, before creating it.
 - when: ${WHEN_HELP} If they gave no time, ask; never guess one for a task.
 - cwd: optional folder to work in; by default their personal (or work) folder.
@@ -150,7 +150,10 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
       const r = deps.reminders.create({ ...input, ask }, source, scopeFor(agent.cwd, cfg.workRoots));
       if (!r.ok) return failure(r, deps, "saved");
       // The same reminder set again as a check-in becomes one; one that already asks keeps its question.
-      if (r.duplicate && ask && !r.reminder.ask) deps.reminders.change(r.reminder.id, { ask });
+      if (r.duplicate && ask && !r.reminder.ask) {
+        const made = deps.reminders.change(r.reminder.id, { ask });
+        if (!made.ok) return failure(made, deps, "made a check-in");
+      }
       // A repeat of an existing reminder gets the stopping rule if it has none yet; one it already has is kept.
       const current = deps.reminders.get(r.reminder.id) ?? r.reminder;
       const untilLine =

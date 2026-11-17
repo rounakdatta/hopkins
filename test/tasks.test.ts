@@ -48,7 +48,7 @@ function world(configOverrides: Partial<Config> = {}) {
   return { env, tasks, port, runner, reported, source, home };
 }
 
-const brief = "Open the Sri Lanka e-ticket in Nextcloud Travel/Sri Lanka, check the passport number and date of birth against the passport scan, then do the airline's web check-in.";
+const brief = "Open the Goa e-ticket in Nextcloud Travel/Goa, check the passport number and date of birth against the passport scan, then do the airline's web check-in.";
 
 /** Lets the runner's background work settle. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -56,10 +56,10 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 describe("setting a task", () => {
   it("keeps the brief and confirms the time in one line", () => {
     const w = world();
-    const r = w.tasks.create({ text: "web check-in for the Sri Lanka flight", instructions: brief, when: "today 8pm" }, w.source, "personal");
+    const r = w.tasks.create({ text: "web check-in for the Goa flight", instructions: brief, when: "today 8pm" }, w.source, "personal");
     if (!r.ok) throw new Error(r.error);
     expect(r.task).toMatchObject({ state: "scheduled", cwd: w.home, instructions: brief, agentId: null });
-    expect(r.confirmation).toMatch(/^Task set for today 8pm: web check-in for the Sri Lanka flight\. hopkins will start an agent/);
+    expect(r.confirmation).toMatch(/^Task set for today 8pm: web check-in for the Goa flight\. hopkins will start an agent/);
   });
 
   it("refuses a task with no brief, no time, or a time that has passed", () => {

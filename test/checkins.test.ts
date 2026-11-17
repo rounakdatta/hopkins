@@ -122,7 +122,7 @@ describe("the record", () => {
     const id = t.habit("mood check-in", "9:30pm", "daily", "mood");
     t.clock.advance(12.5 * HOUR);
     await t.tick();
-    expect(t.checkins.answer(id, 72, { via: "card", note: "good run" })).toMatchObject({ ok: true, confirmation: "Logged: Good (with your note). Last: Good." });
+    expect(t.checkins.answer(id, 72, { via: "card", note: "good run" })).toMatchObject({ ok: true, confirmation: "Logged: Good (with your note). Today: Good." });
     expect(t.view().rhythms[0]!.today).toBe(72);
   });
 });

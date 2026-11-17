@@ -28,7 +28,8 @@ node -e '
   const fs = require("fs");
   const [file, saved, tz, model] = process.argv.slice(1);
   const s = saved ? JSON.parse(saved) : { version: 1, values: {} };
-  s.values = { ...s.values, timezone: tz, threadModel: model };
+  // Sample tasks must never start a real agent: the preview has no task model.
+  s.values = { ...s.values, timezone: tz, threadModel: model, taskModel: "none/none", checkModel: "none/none" };
   fs.writeFileSync(file, JSON.stringify(s, null, 2), { mode: 0o600 });
 ' "$settings" "$saved" "${PREVIEW_TZ:-Asia/Kolkata}" "${THREAD_MODEL:-none/none}"
 run plugin add "$plugin" | tail -1

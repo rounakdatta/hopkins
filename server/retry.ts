@@ -65,7 +65,7 @@ export class Retries {
 
     const fromAgent = readAdvice(advice, this.reminders, now);
     if (fromAgent) {
-      return fromAgent.retry ? this.bound(task, fromAgent.at, "trying again when the agent said it could work", "agent", now) : { retry: false, at: 0, reason: "the agent said trying again would not help", by: "agent" };
+      return fromAgent.retry ? this.bound(task, fromAgent.at, "trying again when the agent said it could work", "agent") : { retry: false, at: 0, reason: "the agent said trying again would not help", by: "agent" };
     }
 
     if (this.llm?.available) {
@@ -89,16 +89,19 @@ export class Retries {
         );
         const reason = typeof reply.reason === "string" && reply.reason.trim() ? reply.reason.trim().slice(0, 160) : "";
         if (reply.retry !== true) return { retry: false, at: 0, reason: reason || "trying again would not help", by: "model" };
+        // Measured from when the answer came, not from when the model was asked.
+        const answered = this.clock.now();
+        const fromModel = typeof reply.at === "string" ? readAdvice(reply.at, this.reminders, answered) : null;
         const at =
-          typeof reply.at === "string" && readAdvice(reply.at, this.reminders, now)?.retry
-            ? (readAdvice(reply.at, this.reminders, now) as { at: number }).at
-            : now + (typeof reply.in_minutes === "number" && Number.isFinite(reply.in_minutes) ? reply.in_minutes : 15) * 60_000;
-        return this.bound(task, at, reason || "trying again in a while", "model", now);
+          fromModel?.retry
+            ? fromModel.at
+            : answered + (typeof reply.in_minutes === "number" && Number.isFinite(reply.in_minutes) ? reply.in_minutes : 15) * 60_000;
+        return this.bound(task, at, reason || "trying again in a while", "model");
       } catch (err) {
         this.log.warn("could not ask the model about a retry; using the rule", { task: task.id, error: errorText(err) });
       }
     }
-    return this.bound(task, now + (tries === 1 ? 15 : 60) * 60_000, "trying again in a while", "rule", now);
+    return this.bound(task, this.clock.now() + (tries === 1 ? 15 : 60) * 60_000, "trying again in a while", "rule");
   }
 
   /** hopkins was offline at the time: run it late now, or wait for the person? */
@@ -132,7 +135,8 @@ export class Retries {
     }
   }
 
-  private bound(task: Task, at: number, reason: string, by: Decision["by"], now: number): Decision {
+  private bound(task: Task, at: number, reason: string, by: Decision["by"]): Decision {
+    const now = this.clock.now();
     const when = Math.min(Math.max(at, now + MIN_GAP), now + MAX_GAP);
     if (task.by !== undefined && when > task.by - 60_000) return { retry: false, at: 0, reason: "there is no time left before its deadline", by };
     return { retry: true, at: when, reason, by };

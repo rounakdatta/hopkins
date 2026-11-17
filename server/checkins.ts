@@ -29,8 +29,17 @@ const ANSWERABLE_DAYS = 7;
 
 const SHORT_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+// The same answers are dated on every Today push and every card: remember each instant's date.
+const dates = new Map<string, string>();
 function dateOf(instant: number, tz: string): string {
-  return formatLocalDate(localDateOf(instant, tz));
+  const key = `${tz}|${instant}`;
+  let date = dates.get(key);
+  if (date === undefined) {
+    if (dates.size > 50_000) dates.clear();
+    date = formatLocalDate(localDateOf(instant, tz));
+    dates.set(key, date);
+  }
+  return date;
 }
 
 function endOfDay(instant: number, tz: string): number {
@@ -51,7 +60,9 @@ export function dueDays(r: Reminder, now: number, count = HISTORY): { at: number
   if (!r.repeat || !r.anchor) return [];
   const anchor = parseLocalIso(r.anchor);
   if (!anchor) return [];
-  const to = endOfDay(now, r.tz);
+  // Up to today, or to where the series ended (dropped, done, or its last one went out).
+  const ended = r.closedAt ?? (r.dueAt === null && r.last ? occurrenceOf(r.last) : undefined);
+  const to = Math.min(endOfDay(now, r.tz), ended ?? Infinity);
   const from = Math.max(r.createdAt - 1, now - spanDays(r.repeat, count) * DAY);
   let t = from;
   const days = new Map<string, number>();
@@ -73,20 +84,40 @@ export function dueDays(r: Reminder, now: number, count = HISTORY): { at: number
     .slice(-count);
 }
 
-function answerOn(r: Reminder, date: string): Answer | undefined {
-  return (r.answers ?? []).find((a) => dateOf(a.occurrence, r.tz) === date);
+/** The occurrence a firing stands for: its own time, or the one it was snoozed from. */
+export function occurrenceOf(last: NonNullable<Reminder["last"]>): number {
+  return last.of ?? last.dueAt;
+}
+
+/** The answers by the day they answer, worked out once (a year of answers is 400 of them). */
+function answersByDay(r: Reminder): Map<string, Answer> {
+  const map = new Map<string, Answer>();
+  for (const a of r.answers ?? []) map.set(dateOf(a.occurrence, r.tz), a);
+  return map;
+}
+
+/** The one that went out and still waits for an answer (nobody answered or moved it). */
+export function deliveredOccurrence(r: Reminder, byDay = answersByDay(r)): number | null {
+  if (!r.ask || !r.last || r.last.ackedAt || r.state === "done" || r.state === "dropped") return null;
+  const of = occurrenceOf(r.last);
+  return byDay.has(dateOf(of, r.tz)) ? null : of;
+}
+
+/** Today's occurrence, sent or not, answered or not; null when it is not due today. */
+function todaysOccurrence(r: Reminder, now: number): number | null {
+  const today = dateOf(now, r.tz);
+  if (r.last && dateOf(occurrenceOf(r.last), r.tz) === today) return occurrenceOf(r.last);
+  if (r.state === "scheduled" && r.dueAt !== null && dateOf(r.snoozedOf ?? r.dueAt, r.tz) === today) return r.snoozedOf ?? r.dueAt;
+  return dueDays(r, now).find((d) => d.date === today)?.at ?? null;
 }
 
 /**
- * The occurrence an answer now is for: the one that went out and is still open, else today's
- * (due later today, or due and not delivered yet). Null when there is nothing to answer today.
+ * What an answer given now, without saying which day, is for: today's (a second answer corrects
+ * it), else the one that went out and is still open. Never an older day already answered.
  */
-export function openOccurrence(r: Reminder, now: number): number | null {
+export function answerTarget(r: Reminder, now: number): number | null {
   if (!r.ask || r.state === "done" || r.state === "dropped") return null;
-  if (r.last && !r.last.ackedAt && !answerOn(r, dateOf(r.last.dueAt, r.tz))) return r.last.dueAt;
-  const today = dateOf(now, r.tz);
-  if (r.state === "scheduled" && r.dueAt !== null && dateOf(r.dueAt, r.tz) === today && !answerOn(r, today)) return r.dueAt;
-  return null;
+  return todaysOccurrence(r, now) ?? deliveredOccurrence(r);
 }
 
 function unitOf(r: Reminder, n: number): string {
@@ -102,7 +133,8 @@ function summaryOf(r: Reminder, days: CheckinDay[]): string {
   if (r.ask?.kind === "mood") {
     const values = past.slice(-7).flatMap((d) => (typeof d.value === "number" ? [d.value] : []));
     if (values.length === 0) return "No answers yet";
-    if (values.length === 1) return `Last: ${moodWord(values[0]!)}`;
+    const latest = past.at(-1);
+    if (values.length === 1) return `${latest?.label === "Today" && typeof latest.value === "number" ? "Today" : "Last"}: ${moodWord(values[0]!)}`;
     return `${moodWord(values.reduce((a, b) => a + b, 0) / values.length)} lately`;
   }
   // Counts exactly the days drawn beside it (up to two weeks), so the dots and the words agree.
@@ -128,17 +160,20 @@ function streakOf(days: CheckinDay[]): number {
 export function brief(r: Reminder, now: number): CheckinBrief {
   const kind = r.ask!.kind;
   const today = dateOf(now, r.tz);
+  const byDay = answersByDay(r);
   const history: CheckinDay[] = dueDays(r, now).map(({ at, date }) => {
-    const a = answerOn(r, date);
+    const a = byDay.get(date);
     return { date, label: date === today ? "Today" : SHORT_DAYS[weekdayOf(localDateOf(at, r.tz))]!, value: a?.value ?? null, upcoming: !a && at > now };
   });
+  const open = r.state === "done" || r.state === "dropped" ? null : (todaysOccurrence(r, now) ?? deliveredOccurrence(r, byDay));
   return {
     id: r.id,
     text: r.text,
     kind,
     question: r.ask!.question ?? defaultQuestion(kind, r.text),
-    open: openOccurrence(r, now),
-    today: answerOn(r, today)?.value ?? null,
+    open,
+    delivered: deliveredOccurrence(r, byDay),
+    today: byDay.get(today)?.value ?? null,
     history,
     summary: summaryOf(r, history),
     streak: kind === "yesno" ? streakOf(history) : 0,
@@ -152,7 +187,7 @@ export function card(r: Reminder | undefined, occurrence: number, now: number): 
   const open = r.state !== "done" && r.state !== "dropped";
   return {
     ...b,
-    answer: answerOn(r, dateOf(occurrence, r.tz))?.value ?? null,
+    answer: answersByDay(r).get(dateOf(occurrence, r.tz))?.value ?? null,
     answerable: open && occurrence <= endOfDay(now, r.tz) && now - occurrence <= ANSWERABLE_DAYS * DAY,
     day: dayLabel(occurrence, r.tz, now),
   };
@@ -195,11 +230,14 @@ export class CheckIns {
     let occurrence: number;
     if (opts.occurrence !== undefined) {
       if (opts.occurrence > endOfDay(now, tz) || now - opts.occurrence > ANSWERABLE_DAYS * DAY) return { ok: false, error: "that day can no longer be answered" };
-      occurrence = opts.occurrence;
+      // A card for a snoozed firing names its time; the answer belongs to the day it stands for.
+      occurrence = r.last && r.last.dueAt === opts.occurrence && r.last.of !== undefined ? r.last.of : opts.occurrence;
     } else {
-      const latest = dueDays(r, now).filter((d) => d.at <= now).at(-1)?.at ?? null;
-      const target = openOccurrence(r, now) ?? latest;
-      if (target === null) return { ok: false, error: "nothing to answer yet: it has not been due" };
+      // Today's, else the one that went out and is still open; never an older day already answered.
+      const target = answerTarget(r, now);
+      if (target === null) {
+        return { ok: false, error: `nothing to answer now: "${r.text}" is not due today and the last one was answered; to change an earlier day, use its card in the hopkins conversation` };
+      }
       occurrence = target;
     }
 
@@ -210,14 +248,17 @@ export class CheckIns {
     answers.sort((a, b) => a.occurrence - b.occurrence);
     r.answers = answers.slice(-ANSWERS_KEPT);
 
-    // Answering acknowledges: the one that went out leaves Waiting; today's, not sent yet, is skipped.
-    if (r.last && !r.last.ackedAt && dateOf(r.last.dueAt, tz) === date) {
+    // Answering acknowledges: the one that went out for that day leaves Waiting, and one still to
+    // come for that day (not sent yet, or snoozed) is skipped: a day is asked about once.
+    if (r.last && !r.last.ackedAt && dateOf(occurrenceOf(r.last), tz) === date) {
       r.last.ackedAt = now;
       if (r.state === "fired") {
         r.state = "done"; // the series has run out
         r.closedAt = now;
       }
-    } else if (r.state === "scheduled" && r.dueAt !== null && dateOf(r.dueAt, tz) === date) {
+    }
+    if (r.state === "scheduled" && r.dueAt !== null && dateOf(r.snoozedOf ?? r.dueAt, tz) === date) {
+      delete r.snoozedOf;
       const anchor = r.anchor ? parseLocalIso(r.anchor) : null;
       const exhausted = r.repeat?.count !== undefined && r.firedCount + 1 >= r.repeat.count;
       const next = r.repeat && anchor && !exhausted ? nextOccurrence(anchor, r.repeat, Math.max(r.dueAt, now), tz) : null;

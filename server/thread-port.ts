@@ -34,6 +34,16 @@ const HELLO = `<hopkins:hello>
 This conversation was just created. Introduce yourself to the user in two short lines: you are hopkins; they can tell any agent "remind me to … at …", and reminders arrive here, where they can answer "done", "snooze 1h" or "move it to 6pm". Only the message.
 </hopkins:hello>`;
 
+const HELLO_UPDATED = `<hopkins:hello upgrade="1">
+hopkins was just updated, and this conversation takes over from the previous one (still in their history). In two or three short lines: a repeating reminder can now be a check-in that asks, answered with one tap (Yes / Not today) or a mood slider, and every answer is kept; a task that fails is tried again only when that could work. Only the message.
+</hopkins:hello>`;
+
+/**
+ * The conversation's instructions and tool permissions are fixed when it is created, so a release
+ * that changes them replaces older conversations (they stay in history). Bump it when they change.
+ */
+export const THREAD_VERSION = 2;
+
 export class PaseoThreadPort implements ThreadPort {
   private creating: Promise<string> | null = null;
 
@@ -60,14 +70,14 @@ export class PaseoThreadPort implements ThreadPort {
    * The conversation lost its history (its provider session is gone), so every turn would fail.
    * Archive it and forget it: the next delivery starts a new one.
    */
-  async abandon(agentId: string): Promise<void> {
+  async abandon(agentId: string, why = "the hopkins conversation lost its history; starting a new one"): Promise<void> {
     this.abandoned = agentId;
     if (this.store.threadAgentId() === agentId) {
       this.store.setThreadAgentId(null);
       this.store.save();
     }
     this.store.event("thread-abandoned", { agent: agentId });
-    this.log.warn("the hopkins conversation lost its history; starting a new one", { agent: agentId.slice(0, 8) });
+    this.log.warn(why, { agent: agentId.slice(0, 8) });
     await withTimeout(this.api().agents.ref(agentId).archive(), 15_000, "archiving the old conversation").catch(() => undefined);
   }
 
@@ -77,7 +87,19 @@ export class PaseoThreadPort implements ThreadPort {
     if (known) {
       // Errors and timeouts propagate (the delivery retries); only a definite "no such agent" means gone.
       const found = await withTimeout(api.agents.ref(known).refresh(), 15_000, "looking up the conversation");
-      if (found?.agent) return known; // archived is fine: sending revives it
+      const agent = found?.agent as (AgentLike & { cwd?: string | null; metadata?: Record<string, unknown> | null }) | undefined;
+      if (agent) {
+        const meta = agent.metadata?.["hopkins.thread"] as { version?: unknown } | undefined;
+        const version = typeof meta?.version === "number" ? meta.version : 1;
+        if (version >= THREAD_VERSION) return known; // archived is fine: sending revives it
+        // Made by an older release: it lacks this one's instructions and tools. A new one takes over,
+        // in the same folder, so it stays where they look for it.
+        await this.abandon(known, "the hopkins conversation is from an older release; starting the updated one");
+        this.creating ??= this.create(api, known, agent.cwd ?? null, true).finally(() => {
+          this.creating = null;
+        });
+        return this.creating;
+      }
     }
     const labelled = await this.findByLabel(api);
     if (labelled && labelled !== this.abandoned) {
@@ -100,19 +122,20 @@ export class PaseoThreadPort implements ThreadPort {
     return null;
   }
 
-  private async create(api: PaseoApi, previous: string | null): Promise<string> {
+  private async create(api: PaseoApi, previous: string | null, folder: string | null = null, updated = false): Promise<string> {
     const cfg = this.config();
-    fs.mkdirSync(cfg.threadCwd, { recursive: true, mode: 0o700 });
+    const cwd = folder ?? cfg.threadCwd;
+    fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
     // The pre-approval must name a server in the same request, so the bridge is part of the conversation's config.
     const mcp = this.threadMcpServer ? await this.threadMcpServer() : null;
     const access = mcp
       ? { mcpServers: { hopkins: mcp }, toolPolicy: { preapproved: this.toolNames.map((tool) => ({ kind: "mcp", server: "hopkins", tool })) } }
       : {};
     const request = {
-      cwd: cfg.threadCwd,
+      cwd,
       title: THREAD_TITLE,
       labels: { [THREAD_LABEL]: "thread" },
-      metadata: { "hopkins.thread": { version: 1 } },
+      metadata: { "hopkins.thread": { version: THREAD_VERSION } },
       config: {
         provider: cfg.threadModel,
         modeId: cfg.threadMode,
@@ -123,7 +146,7 @@ export class PaseoThreadPort implements ThreadPort {
     };
     // Created inside the folder's one workspace: a bare create makes a new workspace each time, so
     // a provider that keeps failing would leave an empty "hopkins" in the sidebar per retry.
-    const workspace = await withTimeout(api.workspaces.open(cfg.threadCwd), 15_000, "opening the conversation's folder");
+    const workspace = await withTimeout(api.workspaces.open(cwd), 15_000, "opening the conversation's folder");
     // An opened workspace has no title of its own ("main" in the sidebar): it is the hopkins conversation.
     await withTimeout(workspace.setTitle(THREAD_TITLE), 10_000, "naming the conversation's workspace").catch(() => undefined);
     // A retry of the same request reuses the key, so a create that timed out after the daemon made
@@ -141,7 +164,7 @@ export class PaseoThreadPort implements ThreadPort {
     this.store.event("thread-created", { agent: handle.id });
     this.log.info("created the hopkins conversation", { agent: handle.id });
     try {
-      await handle.run(HELLO, { timeoutMs: 120_000 });
+      await handle.run(updated ? HELLO_UPDATED : HELLO, { timeoutMs: 120_000 });
     } catch (err) {
       this.log.warn("the hello message failed", { error: errorText(err) });
     }

@@ -152,7 +152,7 @@ describe("a task that fails", () => {
   it("says it worked on the second try", async () => {
     const w = world([
       { status: "idle", lastMessage: report("failed", "Site down.", "in 10m") },
-      { status: "idle", lastMessage: report("done", "Checked in, seat 25C.") },
+      { status: "idle", lastMessage: report("done", "Checked in, seat 14A.") },
     ]);
     const id = w.create();
     await w.run();

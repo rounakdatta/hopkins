@@ -42,6 +42,7 @@ const ITEM = /^\d+\. "((?:[^"\\]|\\.)*)"/gm;
 export function parseCue(text: string): ParsedCue | null {
   const head = HEAD.exec(text);
   if (!head) return null;
+  if (head[1] === "hello") return { kind: "hello", items: [], ...(/\bupgrade=/.test(head[2] ?? "") ? { status: "upgrade" } : {}) };
   if (head[1] === "recap") {
     const kind = /kind="(morning|evening)"/.exec(head[2] ?? "")?.[1] ?? "morning";
     return { kind: kind as CueKind, items: [] };
@@ -57,7 +58,7 @@ export function parseCue(text: string): ParsedCue | null {
 }
 
 export function cueSummary(cue: ParsedCue): string {
-  if (cue.kind === "hello") return "hopkins is set up";
+  if (cue.kind === "hello") return cue.status === "upgrade" ? "hopkins was updated" : "hopkins is set up";
   if (cue.kind === "morning") return "Morning note";
   if (cue.kind === "evening") return "Evening recap";
   if (cue.kind === "note") return "A note from hopkins";

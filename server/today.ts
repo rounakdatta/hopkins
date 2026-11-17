@@ -56,6 +56,9 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
   };
   // Due and not delivered yet (paused, or the model is slow or down): it is waiting on them, not "next".
   const overdue = (r: Reminder) => r.state === "scheduled" && r.dueAt !== null && r.dueAt <= now;
+  // Each check-in's record is worked out once per view, though it shows in two places.
+  const briefs = new Map<string, ReturnType<typeof brief>>();
+  const briefOf = (r: Reminder) => briefs.get(r.id) ?? (briefs.set(r.id, brief(r, now)), briefs.get(r.id)!);
   const item = (r: Reminder, waitingNow = false): TodayItem => ({
     id: r.id,
     text: r.text,
@@ -71,7 +74,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     late: Boolean(r.last?.late),
     day: r.dueAt !== null ? dayLabel(r.dueAt, cfg.tz, now) : null,
     time: r.dueAt !== null ? timeLabel(r.dueAt, cfg.tz, cfg.clock) : null,
-    ask: r.ask ? brief(r, now) : null,
+    ask: r.ask ? briefOf(r) : null,
     // For what is waiting: the time that went out (a repeat's dueAt is already its next one).
     wasDue: waitingNow ? ((at) => (at === null ? null : spoken(at)))(overdue(r) ? r.dueAt : (r.last?.dueAt ?? null)) : null,
     until: r.until && !r.until.metAt
@@ -105,7 +108,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     rhythms: all
       .filter((r) => r.ask && r.state !== "done" && r.state !== "dropped")
       .sort((a, b) => a.createdAt - b.createdAt)
-      .map((r) => brief(r, now)),
+      .map((r) => briefOf(r)),
     health: { ...health, threadAgentId: store.threadAgentId() },
     counts: { waiting: waiting.length, today: today.length },
     snoozeOptions: snoozeOptions(cfg, now),

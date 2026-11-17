@@ -394,7 +394,10 @@ function TimelineRow(props: { item: TodayItem; colors: Colors; busy: boolean; ac
             </Text>
           ) : null}
           <ChoiceRow>
-            <Button colors={colors} tone="secondary" compact icon="Check" label={item.repeat ? "Done for now" : "Done"} disabled={props.busy} onPress={() => void props.act(item.id, "done")} />
+            {/* A check-in is answered above (Yes / Not today, or the slider): no separate "done". */}
+            {item.ask ? null : (
+              <Button colors={colors} tone="secondary" compact icon="Check" label={item.repeat ? "Done for now" : "Done"} disabled={props.busy} onPress={() => void props.act(item.id, "done")} />
+            )}
             {props.snoozeOptions.length ? (
               <Button colors={colors} tone="secondary" compact icon="Clock" label="Move" pressed={moving} disabled={props.busy} onPress={() => setMoving(!moving)} />
             ) : null}
@@ -466,9 +469,11 @@ function AskRow(props: { item: TodayItem; ask: CheckinBrief; colors: Colors; bus
   const [optimistic, setOptimistic] = useState<AnswerValue | null>(null);
   const [snoozing, setSnoozing] = useState(false);
   const meta = [`was due ${item.wasDue ?? item.when}`, item.source ? `from ${item.source}` : null].filter(Boolean).join(" · ");
+  // A Waiting row is the one that went out: it answers that day, which is unanswered by definition.
+  const target = ask.delivered ?? ask.open ?? undefined;
   const answer = async (v: AnswerValue) => {
     setOptimistic(v);
-    if (!(await send(item.id, v, "today", ask.open ?? undefined))) setOptimistic(null);
+    if (!(await send(item.id, v, "today", target))) setOptimistic(null);
   };
   return (
     <View style={{ paddingHorizontal: space.l, paddingVertical: 14, gap: space.m, opacity: props.busy ? 0.5 : 1, backgroundColor: snoozing ? colors.surface2 : "transparent" }}>
@@ -492,7 +497,7 @@ function AskRow(props: { item: TodayItem; ask: CheckinBrief; colors: Colors; bus
         )}
       </View>
       <View style={{ paddingLeft: 36, gap: space.m }}>
-        <Answer colors={colors} kind={ask.kind} value={optimistic ?? ask.today} start={lastMood(ask.history)} busy={busy} label={ask.question} onAnswer={(v) => void answer(v)} />
+        <Answer colors={colors} kind={ask.kind} value={optimistic ?? (ask.delivered !== null ? null : ask.today)} start={lastMood(ask.history)} busy={busy} label={ask.question} onAnswer={(v) => void answer(v)} />
         {ask.history.some((d) => d.value !== null) ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.m, flexWrap: "wrap" }}>
             <Record colors={colors} brief={ask} />

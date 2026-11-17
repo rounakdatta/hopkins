@@ -18,7 +18,7 @@ hopkins already brings things back at the right moment. This release makes the m
 
 **On Today.** Anything waiting on you carries the same controls inline. A new **Rhythms** section shows each habit's last two weeks, plus the mood line.
 
-**A task that fails.** "At 10:46, do my web check-in." At 10:47 the airline's site is down, and the agent says so in its report. hopkins writes *Web check-in: didn't work, the site was down. Trying again at 11:05 (try 2 of 3).* At 11:06 it says *Web check-in: done on the second try, seat 25C.* If it cannot work, for example when a password is needed, it says why and does not retry.
+**A task that fails.** "At 10:46, do my web check-in." At 10:47 the airline's site is down, and the agent says so in its report. hopkins writes *Web check-in: didn't work, the site was down. Trying again at 11:05 (try 2 of 3).* At 11:06 it says *Web check-in: done on the second try, seat 14A.* If it cannot work, for example when a password is needed, it says why and does not retry.
 
 ## Principles
 
@@ -74,7 +74,7 @@ Delivery.task.retryAt?: number                       // a failure that will be r
 - **Yes / Not today.** Two pills side by side. Yes is the accent; Not today is quiet. Once answered, the chosen pill stays filled and "Change" sits beside it. Hit areas are at least 44 pt on touch.
 - **Mood slider.** A rounded track, with the accent filling up to the thumb. A 28 pt thumb, and a word label riding above it that changes as you drag.
   - Before you touch it: "Slide to answer", resting on your last value (or the middle).
-  - On release it saves at once, with Undo for 8 s. "Add a note" opens one line of text.
+  - On release it saves at once; dragging again changes it. A vertical swipe that starts on the track scrolls the page instead. Notes are given in words ("pretty low, long day").
   - Screen readers get an adjustable control (±10 a step, value text = the word). The web gets arrow keys.
 - **History.**
   - Habits: dots. Filled is yes, a ring is "not today", faint is no answer.

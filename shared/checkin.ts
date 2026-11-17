@@ -47,8 +47,10 @@ export const CheckinBriefSchema = z.object({
   text: z.string(),
   kind: AskKindSchema,
   question: z.string(),
-  /** The occurrence an answer now would be for (delivered and open, or today's), or null. */
+  /** The occurrence an answer now would be for (today's, else the open one that went out), or null. */
   open: z.number().nullable(),
+  /** The one that went out and still waits for an answer (what a Waiting row answers), or null. */
+  delivered: z.number().nullable(),
   /** Today's answer, if any. */
   today: AnswerValueSchema.nullable(),
   /** The last days it was due, oldest first (up to 14). */
@@ -86,7 +88,9 @@ export function moodWord(value: number): string {
 const MOOD_VALUES: Record<string, number> = { rough: 10, awful: 5, terrible: 5, bad: 15, low: 30, down: 30, meh: 45, okay: 50, ok: 50, fine: 55, good: 70, well: 70, great: 90, amazing: 95, excellent: 95 };
 
 const YES = /^(y|yes|yeah|yep|yup|done|did|did it|had it|i did|sure|of course|absolutely|true|1)$/i;
-const NO = /^(n|no|nope|nah|not today|skip|skipped|didn't|did not|missed|false|0)$/i;
+const NO = /^(n|no|nope|nah|not today|not yet|skip|skipped|didn't|did not|missed|false|0)$/i;
+/** "not great", "not feeling well", "not bad": the word after the "not" flips. */
+const NEGATED = /\b(?:not|never|hardly|n't)\s+(?:(?:very|so|that|too|really|feeling|feel|doing|so)\s+)*([a-z]+)/;
 
 /** Reads an answer given in words or numbers. Returns null when it cannot tell. */
 export function parseAnswer(kind: AskKind, raw: string | number): AnswerValue | null {
@@ -99,6 +103,8 @@ export function parseAnswer(kind: AskKind, raw: string | number): AnswerValue | 
     if (ten) return clamp(Number(ten[1]) * 10);
     const five = /^(\d+(?:\.\d+)?)\s*\/\s*5$/.exec(text);
     if (five) return clamp(Number(five[1]) * 20 - 10);
+    const negated = NEGATED.exec(text)?.[1];
+    if (negated && negated in MOOD_VALUES) return MOOD_VALUES[negated]! >= 50 ? 35 : 55;
     const word = Object.keys(MOOD_VALUES).find((w) => new RegExp(`\\b${w}\\b`).test(text));
     return word ? MOOD_VALUES[word]! : null;
   }

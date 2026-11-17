@@ -63,7 +63,8 @@ export function cueText(delivery: Delivery, reminders: Reminder[], now: number, 
     return `${i + 1}. ${quote(r.text)}: ${timing}; ${sourceLine(r, now, cfg)}${extras.length ? `; ${extras.join(", ")}` : ""}${ask}.`;
   });
   // The cards in the conversation answer exactly these occurrences: id@due:kind, for each check-in.
-  const asks = delivery.kind === "due" ? reminders.filter((r) => r.ask).map((r) => `${r.id}@${r.dueAt ?? r.last?.dueAt ?? now}:${r.ask!.kind}`) : [];
+  // A snoozed check-in still answers its own day: the card carries the occurrence it stands for.
+  const asks = delivery.kind === "due" ? reminders.filter((r) => r.ask).map((r) => `${r.id}@${r.snoozedOf ?? r.dueAt ?? r.last?.dueAt ?? now}:${r.ask!.kind}`) : [];
   const askAttr = asks.length ? ` ask="${asks.join(" ")}"` : "";
   const askLine =
     asks.length === 0
@@ -171,7 +172,10 @@ export function taskCueText(delivery: Delivery, task: Task, now: number, cfg: Co
     failed: failures > 1
       ? `Tell them, point first, that it did not work after ${failures} tries and why, from the report, in one or two short lines; they can try again or open the run from hopkins's Today screen.`
       : `Tell them, point first, that it did not work and why, from the report, in one or two short lines; they can open the run from hopkins's Today screen.`,
-    missed: `Tell them it did not start at ${when} because hopkins was offline then, and that they can say "run it now" or cancel it from hopkins's Today screen. One or two short lines.`,
+    missed:
+      task.by !== undefined && now >= task.by
+        ? `Tell them it did not run: hopkins was offline at ${when}, and its deadline (${formatWhen(task.by, cfg.tz, now, cfg.clock)}) passed before it could. One or two short lines.`
+        : `Tell them it did not start at ${when} because hopkins was offline then, and that they can say "run it now" or cancel it from hopkins's Today screen. One or two short lines.`,
   };
   return [
     `<hopkins:task id="${delivery.id}" status="${state}">`,
@@ -181,7 +185,7 @@ export function taskCueText(delivery: Delivery, task: Task, now: number, cfg: Co
     ...(retryAt !== undefined && task.retry ? [`hopkins's reason to try again: ${quote(task.retry.reason)}`] : []),
     `</hopkins:task>`,
     // The push shows only the opening words, so they have to say which task this is.
-    `${ask[state] ?? ask.done} Open with the task in two to five words and a colon, so the notification alone says which task it is and how it went ("Sri Lanka web check-in: done, seat 25C."). No other preamble. Only the message.`,
+    `${ask[state] ?? ask.done} Open with the task in two to five words and a colon, so the notification alone says which task it is and how it went ("Goa web check-in: done, seat 14A."). No other preamble. Only the message.`,
   ].join("\n");
 }
 

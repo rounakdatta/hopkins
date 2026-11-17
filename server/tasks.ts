@@ -59,12 +59,20 @@ export function isOpen(task: Task): boolean {
  */
 export function parseReport(text: string | null): { state: "done" | "needs-you" | "failed"; report: string; retry?: string } {
   const raw = (text ?? "").trim();
-  const blocks = [...raw.matchAll(/<hopkins-report\s+status="(done|needs-you|failed)"(?:\s+retry="([^"]{0,60})")?\s*>([\s\S]*?)<\/hopkins-report>/gi)];
+  // Attributes in any order, with either quote, and advice of any reasonable length.
+  const attr = (attrs: string, name: string): string | undefined => {
+    const m = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, "i").exec(attrs);
+    return m ? (m[1] ?? m[2] ?? m[3]) : undefined;
+  };
+  const blocks = [...raw.matchAll(/<hopkins-report\b([^>]*)>([\s\S]*?)<\/hopkins-report>/gi)].filter((b) =>
+    ["done", "needs-you", "failed"].includes((attr(b[1] ?? "", "status") ?? "").toLowerCase()),
+  );
   const last = blocks.at(-1);
   if (last) {
-    const report = last[3]!.trim();
-    const state = last[1]!.toLowerCase() as "done" | "needs-you" | "failed";
-    return { state, report: (report || "(no details)").slice(0, 1_500), ...(state === "failed" && last[2] ? { retry: last[2] } : {}) };
+    const report = last[2]!.trim();
+    const state = attr(last[1] ?? "", "status")!.toLowerCase() as "done" | "needs-you" | "failed";
+    const retry = state === "failed" ? attr(last[1] ?? "", "retry")?.trim().slice(0, 200) : undefined;
+    return { state, report: (report || "(no details)").slice(0, 1_500), ...(retry ? { retry } : {}) };
   }
   if (!raw) return { state: "needs-you", report: "It stopped without a word. Open the run to see where it got to." };
   return { state: "needs-you", report: `It stopped without saying whether it worked. Its last words: ${raw.slice(-600)}` };
@@ -258,6 +266,11 @@ export class TaskRunner {
     const cfg = this.config();
     for (const task of this.tasks.due(now)) {
       if (this.deciding.has(task.id)) continue;
+      // Nothing starts after its deadline, not even within the grace period.
+      if (task.kind !== "check" && task.by !== undefined && now >= task.by) {
+        this.settle(task.id, { state: "missed", error: "its deadline passed before it could run" }, now);
+        continue;
+      }
       // A late check still tells something about today: it simply runs. A late task runs only if
       // that still makes sense (before its deadline, or judged harmless); otherwise it waits to be asked.
       if (task.kind !== "check" && now - task.dueAt > cfg.taskGraceMs) {

@@ -110,7 +110,7 @@ store.putTask(
     id: "t_goa",
     text: "web check-in for the Goa trip",
     state: "scheduled",
-    dueAt: realNow + 25 * MIN,
+    dueAt: realNow + 3 * 60 * MIN,
     tries: [{ at: realNow - 35 * MIN, outcome: "failed", why }],
     retry: { n: 2, of: 3, why, reason: "the airline site was down" },
   }),
@@ -131,7 +131,7 @@ store.putTask(
 const notice = (id: string, text: string, why: string, when: string | null) =>
   store.putSuggestion({ id, text, when, why, scope: "personal", origin: "noticed", sourceTitle: "weekend plans", createdAt: realNow - 3_600_000, state: "open", key: text.toLowerCase() });
 notice("s_1", "book the dentist for a cleaning", "said on Sunday: 'I really need to book the dentist'", null);
-notice("s_2", "send Priya the photos from the trip", "said yesterday: 'I'll send them tomorrow'", null);
+notice("s_2", "send Sam the photos from the trip", "said yesterday: 'I'll send them tomorrow'", null);
 notice("s_3", "return the hiking boots", "said on Monday: 'the boots go back before the 30th'", null);
 
 store.save();
