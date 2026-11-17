@@ -7,7 +7,7 @@ import type { Scope, Suggestion } from "../shared/model";
 import { formatWhen, localDateOf, formatDay, parseLocalIso, zonedToInstant } from "../shared/time";
 import type { Config } from "./config";
 import { errorText, type Logger } from "./log";
-import { parseJsonObject, type Llm } from "./llm";
+import { completeJson, parseJsonObject, type Llm } from "./llm";
 import { newId, type Clock, type Reminders, type Result } from "./reminders";
 import type { Store } from "./store";
 
@@ -105,8 +105,8 @@ export function parseCandidates(reply: string): Candidate[] {
 }
 
 export async function extract(llm: Llm, conv: ConversationInput, ctx: { nowText: string; tz: string; tracked: string[] }): Promise<Candidate[]> {
-  const reply = await llm.complete({ system: EXTRACT_SYSTEM, user: extractPrompt(conv, ctx), maxTokens: 2_000 });
-  return parseCandidates(reply).filter((c) => c.confidence >= MIN_CONFIDENCE);
+  const candidates = await completeJson(llm, { system: EXTRACT_SYSTEM, user: extractPrompt(conv, ctx), maxTokens: 2_000 }, parseCandidates);
+  return candidates.filter((c) => c.confidence >= MIN_CONFIDENCE);
 }
 
 export function suggestionKey(text: string): string {

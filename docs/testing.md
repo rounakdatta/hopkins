@@ -68,5 +68,14 @@ scripts/dev-paseo.sh run --provider claude/claude-haiku-5-5 --mode bypassPermiss
 | "done" in the conversation closes the right reminder | yes, with one follow-up question about the other open one |
 | "snooze it 3 minutes" | yes, rescheduled to the exact time |
 | A reminder that fell due while the daemon was stopped | delivered 9 s after the daemon came back |
+| "send me an evening recap every day at 16:31", said to the conversation | set through `hopkins_recaps`; the recap arrived at 16:31 |
+| Backfill over 3 days of real history (35 conversations, Haiku through an Anthropic-compatible gateway) | 93 s; 7 suggestions, every one a real open item. One malformed JSON reply was skipped, so replies are now retried once. |
+
+`scripts/backfill-preview.ts` runs the history pipeline outside Paseo and writes a report of what would be suggested. It is the quickest way to judge the prompts on your own data:
+
+```sh
+HOPKINS_LLM_BASE_URL=https://api.anthropic.com HOPKINS_LLM_API_KEY=... \
+  npx tsx scripts/backfill-preview.ts --days 3 --tz Asia/Kolkata --out /tmp/preview.md
+```
 
 Not covered here: an actual phone push. That needs a paired app, and the isolated daemon has none. The attention event above is the input Paseo turns into the push.

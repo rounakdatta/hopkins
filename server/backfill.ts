@@ -10,7 +10,7 @@ import { idleBackfill, type BackfillState, type Scope } from "../shared/model";
 import { formatDay, localDateOf } from "../shared/time";
 import { scopeFor, type Config } from "./config";
 import { discoverMemoryDirs, listClaudeTranscripts, readClaudeTranscript, readMemoryNotes, type MemoryNote } from "./history";
-import { parseJsonObject, type Llm } from "./llm";
+import { completeJson, parseJsonObject, type Llm } from "./llm";
 import { errorText, type Logger } from "./log";
 import { extract, MIN_CONFIDENCE, type Candidate, type Suggestions } from "./noticing";
 import type { Clock, Result } from "./reminders";
@@ -23,7 +23,7 @@ Keep a candidate only if it is still open now and worth a reminder. Drop:
 - anything the notes say is done, live, merged, fixed, paid, filed or no longer needed;
 - one-off events whose date has passed, unless the action itself is still pending;
 - vague ideas and things the assistant was meant to do.
-Also add open items that appear only in the notes (things marked open, next, pending, waiting, "check ~date", "expires", "to delete", "rotate", "renew").
+Also add every open item that appears only in the notes: anything marked open, next, pending, waiting, asked, "check ~date", "expires", "to delete", "delete later", "rotate", "renew", or with a future date. Items taken only from the notes are personal unless the note is plainly about their job.
 
 For each item: text (short, imperative, in their words), due (ISO local date or date-time, or null), why (where it came from, a few words with a date if known), scope ("work" or "personal"), confidence (0 to 1).
 Order by how soon it matters. At most 40 items. Reply {"items": [...]}.`;
@@ -168,8 +168,7 @@ export class Backfill {
       `\nTheir notes:\n${notes || "(none)"}`,
       `\nCandidates (JSON):\n${JSON.stringify(candidates.map((c) => ({ text: c.text, due: c.due, why: c.why, scope: c.scope ?? "personal" })))}`,
     ].join("\n");
-    const reply = await this.llm.complete({ system: REVIEW_SYSTEM, user, maxTokens: 6_000 });
-    const parsed = ReviewSchema.parse(parseJsonObject(reply));
+    const parsed = await completeJson(this.llm, { system: REVIEW_SYSTEM, user, maxTokens: 6_000 }, (reply) => ReviewSchema.parse(parseJsonObject(reply)));
     return parsed.items
       .map((i) => ({ text: i.text.trim(), due: i.due ?? null, why: (i.why ?? "").trim(), confidence: i.confidence ?? 0.7, ...(i.scope ? { scope: i.scope } : {}) }))
       .filter((c) => c.confidence >= MIN_CONFIDENCE);

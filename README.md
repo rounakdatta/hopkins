@@ -32,6 +32,28 @@ Today screen           sidebar row with a count · overdue · today · upcoming 
 - **Repeats keep their wall-clock time across daylight-saving changes.** They can be daily, weekly, every N weeks, monthly on a date, the first or last weekday of the month, or yearly, with an optional end date or count.
 - **Paseo has no plugin API for custom push notifications.** So hopkins delivers by finishing a turn in its own conversation, which makes Paseo push "Agent finished" with the message. Before each delivery hopkins clears that conversation's unread flag, so every reminder pushes.
 
+## Noticing, and your history
+
+Some things never get said as "remind me". You tell an agent "I'll send the deck Friday", or a note says the CI key expires on 3 January. hopkins can find these:
+
+- **As you go.** When a conversation goes quiet, hopkins reads what *you* typed since it last looked, plus the agent's last hand-off. A small model looks for open loops. This happens at most every half hour.
+- **Your history, once.** "Look through history" on the Today screen reads Claude Code's past conversations and the memory notes it keeps. It finds open loops in each conversation, then reviews them all against your notes, which are the most current record of what is done. Finished and stale things are dropped.
+
+Either way they land under **Noticed** on Today, each with where it came from and a suggested time. You choose **Remind me**, **Already done** or **Drop**. Nothing becomes a reminder without your tap, and nothing you drop is suggested again.
+
+Noticing needs a model.
+
+- It works with any Anthropic Messages endpoint. Haiku is plenty.
+- Set the endpoint and model in settings.
+- Put the key on the daemon host. It never goes in settings, which every connected app can read. Either put it in a file:
+
+  ```sh
+  printf '%s\n' "$YOUR_KEY" > "$PASEO_HOME/plugin-data/hopkins/llm-key"
+  chmod 600 "$PASEO_HOME/plugin-data/hopkins/llm-key"
+  ```
+
+  or set it in `HOPKINS_LLM_API_KEY` in the daemon's environment.
+
 ## Install
 
 hopkins needs **Paseo 0.16.1 or later**.
@@ -70,7 +92,9 @@ When a reminder arrives, reply in the hopkins conversation with "done", "snooze 
 
 ## Privacy
 
-- **Reminders stay on your machine,** in `$PASEO_HOME/plugin-data/hopkins/`: files `0600`, folder `0700`. The only text that leaves is what the hopkins conversation's model provider sees in order to write each message.
+- **Reminders stay on your machine,** in `$PASEO_HOME/plugin-data/hopkins/`: files `0600`, folder `0700`. Text leaves the machine in two places only:
+  - the hopkins conversation's model sees the reminders it writes about;
+  - with noticing on, the model you configure sees what you typed in the conversations it reads.
 - **Logs never contain reminder text.** Paseo copies plugin output into the daemon log, so hopkins logs only ids, counts and states. The event journal records transitions, not content.
 - **hopkins never acts outside Paseo.** It reminds; your agents do the work.
 

@@ -83,3 +83,20 @@ export function parseJsonObject<T>(text: string): T {
     throw new Error(`unreadable JSON from the model: ${errorText(err)}`);
   }
 }
+
+/**
+ * Asks for JSON and parses it; on unreadable JSON, asks once more with the
+ * parse error, since small models occasionally drop a comma in long lists.
+ */
+export async function completeJson<T>(llm: Llm, request: { system: string; user: string; maxTokens?: number }, parse: (reply: string) => T): Promise<T> {
+  const first = await llm.complete(request);
+  try {
+    return parse(first);
+  } catch (err) {
+    const retry = await llm.complete({
+      ...request,
+      user: `${request.user}\n\nYour previous reply was not valid JSON (${errorText(err)}). Reply again with valid JSON only.`,
+    });
+    return parse(retry);
+  }
+}

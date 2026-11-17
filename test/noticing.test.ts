@@ -216,3 +216,14 @@ describe("history", () => {
     expect(!r.ok && r.error).toMatch(/no model key/);
   });
 });
+
+describe("small-model slips", () => {
+  it("asks once more when a reply is not valid JSON", async () => {
+    const { completeJson } = await import("../server/llm");
+    let n = 0;
+    const llm = new FakeLlm(() => (++n === 1 ? '{"items": [{"text": "a"} {"text": "b"}]}' : items({ text: "a" }, { text: "b" })));
+    const out = await completeJson(llm, { system: "s", user: "u" }, parseCandidates);
+    expect(out.map((c) => c.text)).toEqual(["a", "b"]);
+    expect(llm.calls[1]!.user).toMatch(/was not valid JSON/);
+  });
+});

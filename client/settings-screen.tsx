@@ -109,6 +109,54 @@ export function SettingsScreen(props: PluginSurfaceProps) {
         />
       </SettingsSection>
 
+      <SettingsSection title="Noticing">
+        <SettingsSwitch
+          label="Notice things in conversations"
+          hint="After a conversation goes quiet, hopkins reads what you typed and suggests open loops under Noticed. Nothing is scheduled until you keep it."
+          value={values.noticing}
+          onValueChange={(noticing) => saveNow({ noticing })}
+        />
+        <SettingsInput
+          label="Model endpoint"
+          hint="Any Anthropic Messages endpoint. The key goes in plugin-data/hopkins/llm-key on the daemon host, never here."
+          initialValue={values.llmBaseUrl}
+          placeholder="https://api.anthropic.com"
+          onChangeText={(llmBaseUrl) => saveSoon({ llmBaseUrl: llmBaseUrl.trim() })}
+        />
+        <SettingsInput
+          label="Model"
+          hint="A small, fast model is plenty."
+          initialValue={values.llmModel}
+          placeholder="claude-haiku-5-5"
+          onChangeText={(llmModel) => saveSoon({ llmModel: llmModel.trim() })}
+        />
+        <SettingsSelect
+          label="History to look through"
+          value={String(values.historyDays) as "30" | "60" | "120" | "365"}
+          options={[
+            { label: "30 days", value: "30" },
+            { label: "60 days", value: "60" },
+            { label: "120 days", value: "120" },
+            { label: "A year", value: "365" },
+          ]}
+          onValueChange={(d) => saveNow({ historyDays: Number(d) })}
+        />
+        <SettingsInput
+          label="More memory folders"
+          hint="Folders of notes to read alongside Claude Code's own memory. Separate with commas."
+          initialValue={values.memoryDirs.join(", ")}
+          placeholder="~/notes/memory"
+          onChangeText={(text) =>
+            saveSoon({
+              memoryDirs: text
+                .split(",")
+                .map((x) => x.trim())
+                .filter(Boolean),
+            })
+          }
+        />
+      </SettingsSection>
+
       <SettingsSection title="The hopkins conversation">
         <SettingsInput
           label="Model"
