@@ -150,7 +150,8 @@ export function taskCueText(delivery: Delivery, task: Task, now: number, cfg: Co
     ...(task.report ? [`Its report: ${quote(task.report.slice(0, 1_200))}`] : []),
     ...(task.error && !task.report ? [`What went wrong: ${quote(task.error.slice(0, 300))}`] : []),
     `</hopkins:task>`,
-    `${ask[state] ?? ask.done} No preamble. Only the message.`,
+    // The push shows only the opening words, so they have to say which task this is.
+    `${ask[state] ?? ask.done} Open with the task in two to five words and a colon, so the notification alone says which task it is and how it went ("Sri Lanka web check-in: done, seat 25C."). No other preamble. Only the message.`,
   ].join("\n");
 }
 

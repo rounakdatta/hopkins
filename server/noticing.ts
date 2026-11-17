@@ -187,6 +187,21 @@ export class Suggestions {
     return added;
   }
 
+  /** Undoes a decision: back to Noticed, and a reminder it became (not yet delivered) is removed again. */
+  private reopen(current: Suggestion): Result<{ message: string }> {
+    if (current.state === "open") return { ok: true, message: `Still open: ${current.text}.` };
+    if (current.state === "kept" && current.reminderId) {
+      const reminder = this.reminders.get(current.reminderId);
+      if (reminder && reminder.state !== "scheduled") return { ok: false, error: "it already became a reminder that went out; close that one instead" };
+      if (reminder) this.store.remove(reminder.id);
+    }
+    const { reminderId: _gone, ...rest } = current;
+    this.store.putSuggestion({ ...rest, state: "open" });
+    this.store.save();
+    this.store.event("suggestion-reopened", { id: current.id });
+    return { ok: true, message: `Back under Noticed: ${current.text}.` };
+  }
+
   whenLabel(s: Suggestion): string | null {
     if (!s.when) return null;
     const local = parseLocalIso(s.when);
@@ -196,9 +211,10 @@ export class Suggestions {
   }
 
   /** keep → becomes a reminder (at `when`, else its own time); done/dismiss → closed, never offered again. */
-  act(id: string, action: "keep" | "done" | "dismiss", when?: string): Result<{ message: string }> {
+  act(id: string, action: "keep" | "done" | "dismiss" | "reopen", when?: string): Result<{ message: string }> {
     const current = this.store.suggestions().find((s) => s.id === id);
     if (!current) return { ok: false, error: "that suggestion is gone" };
+    if (action === "reopen") return this.reopen(current);
     if (current.state !== "open") return { ok: false, error: "already handled" };
     if (action === "keep") {
       const time = when?.trim() || current.when;
@@ -209,7 +225,7 @@ export class Suggestions {
         current.scope,
       );
       if (!created.ok) return created;
-      this.store.putSuggestion({ ...current, state: "kept" });
+      this.store.putSuggestion({ ...current, state: "kept", reminderId: created.reminder.id });
       this.store.save();
       return { ok: true, message: created.confirmation };
     }

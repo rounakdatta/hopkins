@@ -134,19 +134,56 @@ describe("6. a slow daemon never creates a second conversation", () => {
     const env = setup();
     env.store.setThreadAgentId("thread-1");
     let created = 0;
+    const make = () => {
+      created++;
+      return Promise.resolve({ id: "thread-2", run: () => Promise.resolve({}) });
+    };
     const api = {
       agents: {
         ref: () => ({ refresh: () => Promise.reject(new Error("daemon busy")) }),
         list: () => Promise.reject(new Error("daemon busy")),
-        create: () => {
-          created++;
-          return Promise.resolve({ id: "thread-2", run: () => Promise.resolve({}) });
-        },
+        create: make,
       },
+      workspaces: { open: () => Promise.resolve({ id: "w_1", agents: { create: make } }) },
     };
     const port = new PaseoThreadPort({ api, daemon: null } as never, env.store, env.config, silentLogger);
     await expect(port.ensureThread()).rejects.toThrow(/daemon busy/);
     expect(created).toBe(0);
+  });
+
+  it("keeps every attempt at the conversation in one workspace, so a failing provider leaves no trail in the sidebar", async () => {
+    const env = setup();
+    const opened: string[] = [];
+    const keys: string[] = [];
+    let attempts = 0;
+    const workspace = {
+      id: "w_1",
+      agents: {
+        create: (request: { idempotencyKey: string; cwd?: string }) => {
+          keys.push(request.idempotencyKey);
+          expect(request.cwd).toBeUndefined(); // the workspace decides where it runs
+          return ++attempts < 3 ? Promise.reject(new Error("Provider none is not configured")) : Promise.resolve({ id: "thread-1", run: () => Promise.resolve({}) });
+        },
+      },
+    };
+    const api = {
+      agents: {
+        list: () => Promise.resolve({ entries: [] }),
+        create: () => Promise.reject(new Error("a bare create makes a new workspace every time")),
+      },
+      workspaces: {
+        open: (cwd: string) => {
+          opened.push(cwd);
+          return Promise.resolve(workspace);
+        },
+      },
+    };
+    const port = new PaseoThreadPort({ api, daemon: null } as never, env.store, env.config, silentLogger);
+    await expect(port.ensureThread()).rejects.toThrow(/not configured/);
+    await expect(port.ensureThread()).rejects.toThrow(/not configured/);
+    await expect(port.ensureThread()).resolves.toBe("thread-1");
+    expect(new Set(opened)).toEqual(new Set([env.config().threadCwd]));
+    expect(new Set(keys).size).toBe(1); // the same request, so the daemon can recognise a retry
   });
 });
 

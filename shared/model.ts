@@ -200,6 +200,8 @@ export const SuggestionSchema = z.object({
   state: z.enum(["open", "kept", "done", "dismissed"]),
   /** Normalised text, so a dismissed thing is never suggested again. */
   key: z.string(),
+  /** The reminder it became when kept, so undoing the keep removes it again. */
+  reminderId: z.string().optional(),
 });
 export type Suggestion = z.infer<typeof SuggestionSchema>;
 
@@ -232,6 +234,10 @@ export const TodayItemSchema = z.object({
   firedAt: z.number().nullable(),
   seen: z.boolean().nullable(),
   late: z.boolean(),
+  /** The day as people say it ("Today", "Tomorrow", "Thursday", "Sun 3 Jan"), for grouping; null without a time. */
+  day: z.string().nullable().optional(),
+  /** The time of day alone ("9am"); null without a time. */
+  time: z.string().nullable().optional(),
   /** For a reminder that stops by itself: what has to hold, and how far along it is. */
   until: z
     .object({ inARow: z.number(), streak: z.number(), last: z.string().nullable(), met: z.boolean().nullable() })
@@ -243,6 +249,8 @@ export type TodayItem = z.infer<typeof TodayItemSchema>;
 export const TodayViewSchema = z.object({
   generatedAt: z.number(),
   tz: z.string(),
+  /** Today as people say it, in the user's zone ("Tuesday 17 November"). */
+  dateLabel: z.string().optional(),
   /** Fired and not yet done: the things waiting on you. */
   waiting: z.array(TodayItemSchema),
   today: z.array(TodayItemSchema),
@@ -284,6 +292,9 @@ export const TodayViewSchema = z.object({
         state: TaskStateSchema,
         dueAt: z.number(),
         when: z.string(),
+        /** As on reminders: the day as people say it, and the time of day alone. */
+        day: z.string().nullable().optional(),
+        time: z.string().nullable().optional(),
         /** The agent's report, shortened for the list. */
         report: z.string().nullable(),
         agentId: z.string().nullable(),
@@ -302,7 +313,7 @@ export type TaskAction = z.infer<typeof TaskActionSchema>;
 
 export const SuggestionActionSchema = z.object({
   id: z.string(),
-  action: z.enum(["keep", "done", "dismiss"]),
+  action: z.enum(["keep", "done", "dismiss", "reopen"]),
   /** For keep: a time phrase, defaulting to the suggestion's own time. */
   when: z.string().optional(),
 });

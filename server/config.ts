@@ -48,7 +48,8 @@ export function resolveConfig(values: HopkinsSettings, dataDir: string): Config 
     repingMs: values.importantRepingMinutes * 60_000,
     threadModel: values.threadModel,
     threadMode: values.threadMode,
-    threadCwd: values.threadCwd ? path.resolve(expandHome(values.threadCwd)) : path.join(dataDir, "thread"),
+    // The folder names the conversation's project in Paseo's sidebar, so it is called "hopkins".
+    threadCwd: values.threadCwd ? path.resolve(expandHome(values.threadCwd)) : path.join(dataDir, "hopkins"),
     paused: values.paused,
     noticing: values.noticing,
     llmModel: values.llmModel,

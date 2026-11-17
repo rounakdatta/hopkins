@@ -13,6 +13,8 @@ export const ScrollView: ComponentType<Props>;
 export const ActivityIndicator: ComponentType<Props>;
 export const StyleSheet: { create<T extends Record<string, unknown>>(styles: T): T; hairlineWidth: number };
 
+export const Platform: { OS: "ios" | "android" | "web" | "windows" | "macos" };
+export type StyleProp<T> = T | readonly (T | null | undefined | false)[] | null | undefined | false;
 export type ViewStyle = Record<string, unknown>;
 export type TextStyle = Record<string, unknown>;
 export type ViewProps = Props;

@@ -121,12 +121,16 @@ export class PaseoThreadPort implements ThreadPort {
         ...access,
       },
     };
+    // Created inside the folder's one workspace: a bare create makes a new workspace each time, so
+    // a provider that keeps failing would leave an empty "hopkins" in the sidebar per retry.
+    const workspace = await withTimeout(api.workspaces.open(cfg.threadCwd), 15_000, "opening the conversation's folder");
     // A retry of the same request reuses the key, so a create that timed out after the daemon made
     // the agent does not make a second one. A different request gets a different key: the daemon
     // refuses a reused key with a new body.
-    const digest = createHash("sha256").update(JSON.stringify(request)).digest("hex").slice(0, 12);
+    const digest = createHash("sha256").update(JSON.stringify({ ...request, workspace: workspace.id })).digest("hex").slice(0, 12);
+    const { cwd: _cwd, ...inWorkspace } = request;
     const handle = await withTimeout(
-      api.agents.create({ ...request, idempotencyKey: `hopkins-thread-after-${previous ?? "none"}-${digest}` } as never),
+      workspace.agents.create({ ...inWorkspace, idempotencyKey: `hopkins-thread-after-${previous ?? "none"}-${digest}` } as never),
       60_000,
       "creating the conversation",
     );

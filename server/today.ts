@@ -2,7 +2,7 @@
 
 import type { BackfillState, Reminder, TodayItem, TodayView } from "../shared/model";
 import type { Suggestions } from "./noticing";
-import { addDays, formatClock, localDateOf, weekdayOf, zonedToInstant } from "../shared/time";
+import { addDays, dayLabel, formatClock, localDateOf, longDate, timeLabel, weekdayOf, zonedToInstant } from "../shared/time";
 import type { Config } from "./config";
 import type { Store } from "./store";
 import type { Reminders } from "./reminders";
@@ -60,6 +60,8 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     firedAt: r.last?.firedAt ?? null,
     seen: r.last ? Boolean(r.last.seenAt) : null,
     late: Boolean(r.last?.late),
+    day: r.dueAt !== null ? dayLabel(r.dueAt, cfg.tz, now) : null,
+    time: r.dueAt !== null ? timeLabel(r.dueAt, cfg.tz, cfg.clock) : null,
     until: r.until && !r.until.metAt
       ? { inARow: r.until.inARow, streak: r.until.streak, last: r.until.log.at(-1)?.note ?? null, met: r.until.log.at(-1)?.met ?? null }
       : null,
@@ -80,6 +82,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
   return {
     generatedAt: now,
     tz: cfg.tz,
+    dateLabel: longDate(now, cfg.tz),
     waiting: waiting.map(item),
     today: today.map(item),
     upcoming: upcoming.map(item),
@@ -107,6 +110,8 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       state: t.state,
       dueAt: t.dueAt,
       when: tasks!.describe(t, now),
+      day: dayLabel(t.dueAt, cfg.tz, now),
+      time: timeLabel(t.dueAt, cfg.tz, cfg.clock),
       report: (t.report ?? t.error ?? null)?.slice(0, 400) ?? null,
       agentId: t.agentId,
       scope: t.scope,

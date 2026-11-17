@@ -224,3 +224,35 @@ export function shortZoneName(instant: number, tz: string): string {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "short" }).formatToParts(new Date(instant));
   return parts.find((p) => p.type === "timeZoneName")?.value ?? tz;
 }
+
+const LONG_DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/**
+ * The day as people say it: "Today", "Tomorrow", "Yesterday", the weekday within the
+ * coming week ("Thursday"), else the date ("Sun 3 Jan"), with the year only when it is
+ * not this year's.
+ */
+export function dayLabel(instant: number, tz: string, now: number): string {
+  const day = localDateOf(instant, tz);
+  const today = localDateOf(now, tz);
+  const diff = daysBetween(today, day);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  if (diff === -1) return "Yesterday";
+  if (diff > 1 && diff < 7) return LONG_DAY_NAMES[weekdayOf(day)]!;
+  return day.year === today.year ? formatDay(day) : `${formatDay(day)} ${day.year}`;
+}
+
+/** The time of day alone ("9am", "6:30pm"). */
+export function timeLabel(instant: number, tz: string, style: ClockStyle = "12h"): string {
+  const local = toLocal(instant, tz);
+  return formatClock(local.hour, local.minute, style);
+}
+
+const LONG_MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/** "Tuesday 17 November", in the given zone. */
+export function longDate(instant: number, tz: string): string {
+  const d = localDateOf(instant, tz);
+  return `${LONG_DAY_NAMES[weekdayOf(d)]} ${d.day} ${LONG_MONTH_NAMES[d.month - 1]}`;
+}
