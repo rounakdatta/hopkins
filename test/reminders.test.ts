@@ -103,13 +103,15 @@ describe("changing and closing", () => {
     expect(c.ok && c.confirmation).toBe("Updated: stretch — today 4:53pm.");
   });
 
-  it("done on a repeat acknowledges the occurrence; dropped stops the series", () => {
+  it("done on a repeat closes one time, never the series; dropped stops the series", () => {
     const { reminders, clock } = setup();
     const r = reminders.create({ text: "vitamins", when: "tomorrow 8am", repeat: "daily" }, agentSource(clock.now()), "personal");
     if (!r.ok) throw new Error("create failed");
+    // Nothing has gone out yet, so "done" means done ahead of time: tomorrow's is skipped.
+    // (It used to only acknowledge, so a Done tapped under "Later today" changed nothing; review finding 10.)
     const done = reminders.close(r.reminder.id, "done");
     expect(done.ok && done.reminder.state).toBe("scheduled");
-    expect(done.ok && done.confirmation).toBe("Done for now: vitamins — next tomorrow 8am.");
+    expect(done.ok && done.confirmation).toBe("Done early: vitamins — next Thu 19 Nov, 8am.");
     const stop = reminders.close(r.reminder.id, "dropped");
     expect(stop.ok && stop.reminder.state).toBe("dropped");
     expect(stop.ok && stop.confirmation).toBe("Stopped: vitamins (no more repeats).");

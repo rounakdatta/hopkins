@@ -28,7 +28,14 @@ export function SettingsScreen(props: PluginSurfaceProps) {
 
   const values = settings.values;
   const revision = settings.revision;
-  const saveNow = (patch: Partial<HopkinsSettings>) => void settings.save({ ...values, ...pending.current, ...patch }, revision);
+  const saveNow = (patch: Partial<HopkinsSettings>) => {
+    // Fold in anything still waiting from a text field, so one save carries both against this revision.
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    const next = { ...values, ...pending.current, ...patch };
+    pending.current = {};
+    void settings.save(next, revision);
+  };
   const saveSoon = (patch: Partial<HopkinsSettings>) => {
     pending.current = { ...pending.current, ...patch };
     if (timer.current) clearTimeout(timer.current);
@@ -117,15 +124,8 @@ export function SettingsScreen(props: PluginSurfaceProps) {
           onValueChange={(noticing) => saveNow({ noticing })}
         />
         <SettingsInput
-          label="Model endpoint"
-          hint="Any Anthropic Messages endpoint. The key goes in plugin-data/hopkins/llm-key on the daemon host, never here."
-          initialValue={values.llmBaseUrl}
-          placeholder="https://api.anthropic.com"
-          onChangeText={(llmBaseUrl) => saveSoon({ llmBaseUrl: llmBaseUrl.trim() })}
-        />
-        <SettingsInput
           label="Model"
-          hint="A small, fast model is plenty."
+          hint="A small, fast model is plenty. Its endpoint and key go in plugin-data/hopkins/llm-key on the daemon host (see README), never in settings."
           initialValue={values.llmModel}
           placeholder="claude-haiku-5-5"
           onChangeText={(llmModel) => saveSoon({ llmModel: llmModel.trim() })}

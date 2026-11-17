@@ -77,6 +77,26 @@ export class DeliveryQueue {
     return this.sending;
   }
 
+  /**
+   * After a crash or restart, anything left mid-send goes back to the queue.
+   * A rare duplicate message is better than a reminder that never arrives.
+   */
+  recover(): void {
+    let recovered = 0;
+    for (const d of this.store.deliveries()) {
+      if (d.state === "sending") {
+        const { nextAttemptAt: _drop, ...rest } = d;
+        this.store.putDelivery({ ...rest, state: "pending" });
+        recovered++;
+      }
+    }
+    if (recovered > 0) {
+      this.store.save();
+      this.store.event("recovered", { count: recovered });
+      this.log.warn("re-queued deliveries interrupted by a restart", { count: recovered });
+    }
+  }
+
   inFlight(reminderId: string): boolean {
     return this.store.deliveries().some((d) => (d.state === "pending" || d.state === "sending") && d.reminderIds.includes(reminderId));
   }
@@ -146,7 +166,8 @@ export class DeliveryQueue {
   private liveReminders(d: Delivery, now: number): Reminder[] {
     const all = d.reminderIds.map((id) => this.store.get(id)).filter((r): r is Reminder => Boolean(r));
     if (d.kind === "due") return all.filter((r) => r.state === "scheduled" && r.dueAt !== null && r.dueAt <= now);
-    return all.filter((r) => r.last && !r.last.seenAt && !r.last.ackedAt && !r.last.nudgedAt && (r.state === "fired" || r.repeat));
+    // A re-ping goes out only while the reminder is still open (a stopped series gets none).
+    return all.filter((r) => r.last && !r.last.seenAt && !r.last.ackedAt && !r.last.nudgedAt && (r.state === "fired" || (r.repeat !== null && r.state === "scheduled")));
   }
 
   /** What to say and what to record once it is said; null when there is nothing left to send. */
@@ -247,13 +268,15 @@ export class DeliveryQueue {
     if (status.requiresAttention || status.busy) return;
     const now = this.clock.now();
     this.store.putDelivery({ ...latest, seenAt: now });
-    this.reminders.markSeen(latest.id, now);
+    this.reminders.markSeen(latest.id, now, latest.reminderIds);
     this.store.save();
     this.store.event("seen", { id: latest.id });
   }
 
   problems(now: number): string[] {
     const out: string[] = [];
+    const sending = this.store.deliveries().filter((d) => d.state === "sending" && now - d.createdAt > 15 * 60_000);
+    if (sending.length > 0 && !this.sending) out.push("A delivery was interrupted and is being retried.");
     const stuck = this.store.deliveries().filter((d) => d.state === "pending" && d.attempts >= 3);
     if (stuck.length > 0) {
       const last = stuck[stuck.length - 1]!;

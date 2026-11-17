@@ -11,15 +11,15 @@ import { Backfill } from "./backfill";
 import { resolveConfig, scopeFor, type Config } from "./config";
 import { defaultDeliveryOptions, DeliveryQueue, type RecapSource } from "./delivery";
 import { consoleLogger, errorText, type Logger } from "./log";
-import { AnthropicLlm, readKey } from "./llm";
-import { HopkinsMcpServer, MCP_SERVER_NAME } from "./mcp-server";
+import { AnthropicLlm, readCredentials } from "./llm";
+import { HopkinsMcpServer, MCP_SERVER_NAME, THREAD_AGENT_MARKER } from "./mcp-server";
 import { LiveNoticer, Suggestions } from "./noticing";
 import { PaseoLink } from "./paseo-link";
 import { Recaps } from "./recaps";
 import { Reminders, systemClock, type Clock } from "./reminders";
 import { Scheduler } from "./scheduler";
 import { defaultDataDir, Store } from "./store";
-import { PaseoThreadPort, paseoTimelineReader } from "./thread-port";
+import { PaseoThreadPort, paseoTimelineReader, THREAD_LABEL } from "./thread-port";
 import { buildToday } from "./today";
 import { createTools } from "./tools";
 
@@ -59,7 +59,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
 
   // --- Noticing and backfill -----------------------------------------------------------
 
-  const llm = new AnthropicLlm(() => ({ baseUrl: config.llmBaseUrl, model: config.llmModel }), () => readKey(dataDir));
+  const llm = new AnthropicLlm(() => ({ model: config.llmModel }), () => readCredentials(dataDir));
   const suggestions = new Suggestions(store, reminders, clock, getConfig);
   const noticer = new LiveNoticer(store, suggestions, llm, () => paseoTimelineReader(link), clock, getConfig, log);
   const backfill = new Backfill(store, suggestions, llm, clock, getConfig, log);
@@ -107,13 +107,14 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     }
   };
   const settings = server.registerSettings(hopkinsSettings);
-  void settings
-    .read()
-    .then((state) => {
-      applySettings(state);
-      changed();
-    })
-    .catch((err) => log.warn("could not read settings", { error: errorText(err) }));
+  // The scheduler starts only once the user's settings are known (zone, paused), or after 5 s at worst.
+  const settingsReady = Promise.race([
+    settings
+      .read()
+      .then((state) => applySettings(state))
+      .catch((err) => log.warn("could not read settings", { error: errorText(err) })),
+    new Promise<void>((resolve) => setTimeout(resolve, 5_000).unref?.()),
+  ]);
   const unsubscribeSettings = settings.subscribe((state) => {
     applySettings(state);
     changed();
@@ -151,17 +152,28 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   // Providers whose sessions take an extra MCP server. Pi refuses MCP servers (the open
   // would fail) and Antigravity takes none, so they are left alone.
   const MCP_PROVIDERS = new Set(["claude", "codex", "opencode"]);
-  const mcp = new HopkinsMcpServer(tools, log, () => link.api);
-  void mcp
+  port.toolNames = tools.map((t) => t.name);
+  const mcp = new HopkinsMcpServer(tools, log, () => link.api, dataDir, () => store.threadAgentId());
+  const mcpReady = mcp
     .start()
-    .then(() => log.info("tools ready", { port: mcp.port }))
-    .catch((err) => log.error("could not start the tools server", { error: errorText(err) }));
+    .then(() => {
+      log.info("tools ready", { port: mcp.port });
+      return true;
+    })
+    .catch((err) => {
+      log.error("could not start the tools server", { error: errorText(err) });
+      return false;
+    });
+  port.threadMcpServer = async () => ((await mcpReady) ? mcp.configFor(THREAD_AGENT_MARKER) : null);
 
   server.addHook("agent.open.before", async ({ request }, context) => {
     // Never throws: a failing session-open hook stops the agent from opening.
     try {
       link.adopt(context.paseo);
       if (request.purpose !== "interactive") return request;
+      // The hopkins conversation carries its own entry from creation; adding ours would collide.
+      // (A hook only sees what plugins add, not the agent's saved servers, so check the label.)
+      if (request.labels?.[THREAD_LABEL] === "thread") return request;
       mcp.remember({ id: request.agentId, workspaceId: request.workspaceId, cwd: request.cwd, title: request.title, provider: request.provider });
       if (!MCP_PROVIDERS.has(request.provider) || !mcp.ready || request.mcpServers[MCP_SERVER_NAME]) return request;
       request.mcpServers[MCP_SERVER_NAME] = mcp.configFor(request.agentId);
@@ -234,13 +246,22 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     };
     watchers.add(push);
     push(today());
-    context.signal.addEventListener("abort", () => watchers.delete(push), { once: true });
+    // The subscription lives as long as this promise is pending: settle it only when the app lets go.
+    await new Promise<void>((resolve) => {
+      if (context.signal.aborted) resolve();
+      else context.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    watchers.delete(push);
   });
 
   // --- Start ----------------------------------------------------------------------------
 
+  queue.recover();
   link.start();
-  scheduler.start(options.tickMs ?? 15_000);
+  let stopped = false;
+  void settingsReady.then(() => {
+    if (!stopped) scheduler.start(options.tickMs ?? 15_000);
+  });
   const refresh = setInterval(() => {
     notifyWatchers();
     void noticer.maybeRun().then(notifyWatchers);
@@ -249,6 +270,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   log.info("started", { reminders: store.reminders().length });
 
   return () => {
+    stopped = true;
     scheduler.stop();
     mcp.stop();
     clearInterval(refresh);

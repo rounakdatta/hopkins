@@ -18,15 +18,18 @@ export const settingsSchema = z.object({
   importantRepingMinutes: z.number().int().min(5).max(720).default(30),
   /** Provider and model for the hopkins conversation. */
   threadModel: z.string().default("claude/claude-sonnet-5-5"),
-  threadMode: z.string().default("bypassPermissions"),
+  /** Permission mode for the hopkins conversation. Its own tools are pre-approved; anything else asks. */
+  threadMode: z.string().default("default"),
   /** Working folder for the hopkins conversation. Empty means hopkins's own data folder. */
   threadCwd: z.string().default(""),
   /** Stop delivering (reminders still queue up and arrive when resumed). */
   paused: z.boolean().default(false),
   /** Notice open loops in conversations and suggest them (needs a model key). */
   noticing: z.boolean().default(true),
-  /** Anthropic-Messages endpoint and the small model used for noticing. The key lives in a private file, not here. */
-  llmBaseUrl: z.string().default("https://api.anthropic.com"),
+  /**
+   * The small model used for noticing. Its endpoint and key live together in a private file on the
+   * daemon host (see README), never here: any connected app can edit settings.
+   */
   llmModel: z.string().default("claude-haiku-5-5"),
   /** Extra folders of memory notes to read when looking through history (Claude Code's own are found automatically). */
   memoryDirs: z.array(z.string()).default([]),

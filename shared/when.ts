@@ -310,6 +310,10 @@ export function parseWhen(input: string, ctx: WhenContext): WhenResult {
     return ok(local, ctx);
   }
 
+  // "tonight at 11" is 11pm, whatever the hour now.
+  if (dayWord === "tonight" && !clock.exact && clock.time.hour >= 1 && clock.time.hour <= 11) {
+    return ok(at(day, { hour: clock.time.hour + 12, minute: clock.time.minute }), ctx);
+  }
   let local = clock.exact ? at(day, clock.time) : resolveBareHour(day, clock.time, ctx);
   if (zonedToInstant(local, ctx.tz) <= ctx.now && /^(sun|mon|tue|wed|thu|fri|sat)/.test(dayWord)) {
     const later = addDays(day, 7);

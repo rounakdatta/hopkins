@@ -68,6 +68,7 @@ scripts/dev-paseo.sh run --provider claude/claude-haiku-5-5 --mode bypassPermiss
 | "done" in the conversation closes the right reminder | yes, with one follow-up question about the other open one |
 | "snooze it 3 minutes" | yes, rescheduled to the exact time |
 | A reminder that fell due while the daemon was stopped | delivered 9 s after the daemon came back |
+| After the review fixes: tools through the stdio bridge, with the conversation in normal permission mode and only its own tools pre-approved | an agent set a reminder through `mcp__hopkins__hopkins_remind` without a tool search; it was delivered; "done" in the conversation closed it with no permission prompt |
 | "send me an evening recap every day at 16:31", said to the conversation | set through `hopkins_recaps`; the recap arrived at 16:31 |
 | Backfill over 3 days of real history (35 conversations, Haiku through an Anthropic-compatible gateway) | 93 s; 7 suggestions, every one a real open item. One malformed JSON reply was skipped, so replies are now retried once. |
 

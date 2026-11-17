@@ -267,6 +267,22 @@ export class Reminders {
       r.dueAt = null;
       r.anchor = null;
       r.repeat = null;
+    } else if (patch.when !== undefined && r.repeat && patch.repeat === undefined) {
+      // A new time for a repeating reminder moves only the next one; the series keeps its rule and time of day.
+      const parsed = parseWhen(patch.when, this.whenContext(now));
+      if (!parsed.ok) {
+        return { ok: false, error: `${parsed.reason}. Ask the user when, offering these options.`, needsTime: true, suggestions: parsed.suggestions ?? suggestTimes(undefined, this.whenContext(now)) };
+      }
+      if (r.state === "fired") r.snoozes += 1;
+      r.state = "scheduled";
+      r.dueAt = parsed.instant;
+      assumed = parsed.assumed;
+      r.updatedAt = now;
+      this.store.put(r);
+      this.store.save();
+      this.store.event("changed", { id: r.id, state: r.state, once: true });
+      const series = this.describeRepeatOf(r);
+      return { ok: true, reminder: r, confirmation: `Updated: ${r.text} — ${this.describeDue(r, now)}, this time only${series ? `; it still repeats ${series}` : ""}.` };
     } else if (patch.when !== undefined) {
       const s = this.schedule(patch.when, repeat);
       if (!s.ok) return s;
@@ -308,8 +324,26 @@ export class Reminders {
     const now = this.clock.now();
     let confirmation: string;
     if (as === "done" && r.repeat && r.state === "scheduled") {
-      if (r.last) r.last.ackedAt = now;
-      confirmation = `Done for now: ${r.text} — next ${this.describeDue(r, now)}.`;
+      if (r.last && !r.last.ackedAt) {
+        // The last one that went out is now handled; the series carries on.
+        r.last.ackedAt = now;
+        confirmation = `Done for now: ${r.text} — next ${this.describeDue(r, now)}.`;
+      } else {
+        // Done ahead of time: skip the upcoming one.
+        const anchor = r.anchor ? parseLocalIso(r.anchor) : null;
+        const next = anchor && r.dueAt !== null ? nextOccurrence(anchor, r.repeat, r.dueAt, r.tz) : null;
+        const exhausted = r.repeat.count !== undefined && r.firedCount + 1 >= r.repeat.count;
+        r.firedCount += 1;
+        if (next && !exhausted) {
+          r.dueAt = next.instant;
+          confirmation = `Done early: ${r.text} — next ${this.describeDue(r, now)}.`;
+        } else {
+          r.state = "done";
+          r.dueAt = null;
+          r.closedAt = now;
+          confirmation = `Done: ${r.text}.`;
+        }
+      }
     } else if (as === "done") {
       r.state = "done";
       r.dueAt = null;
@@ -407,10 +441,11 @@ export class Reminders {
     this.store.save();
   }
 
-  markSeen(deliveryId: string, at: number): void {
+  /** The user opened the conversation after `deliveryId` (a first delivery or a re-ping of `reminderIds`). */
+  markSeen(deliveryId: string, at: number, reminderIds: string[] = []): void {
     let changed = false;
     for (const current of this.store.reminders()) {
-      if (current.last?.deliveryId === deliveryId && !current.last.seenAt) {
+      if (current.last && !current.last.seenAt && (current.last.deliveryId === deliveryId || reminderIds.includes(current.id))) {
         const r = structuredClone(current);
         r.last!.seenAt = at;
         this.store.put(r);

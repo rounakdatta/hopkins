@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { silentLogger } from "../server/log";
 import { HopkinsMcpServer, SERVER_INSTRUCTIONS } from "../server/mcp-server";
 import { createTools } from "../server/tools";
-import { setup } from "./helpers";
+import { setup, tmpDir } from "./helpers";
 
 let server: HopkinsMcpServer | null = null;
 afterEach(() => server?.stop());
@@ -10,10 +10,10 @@ afterEach(() => server?.stop());
 async function rig() {
   const env = setup();
   const tools = createTools({ reminders: env.reminders, config: env.config, clock: env.clock, isThread: () => false, changed: () => {} });
-  server = new HopkinsMcpServer(tools, silentLogger, () => null);
+  server = new HopkinsMcpServer(tools, silentLogger, () => null, tmpDir());
   await server.start();
   server.remember({ id: "agent-1", workspaceId: "ws", cwd: "/home/someone/work/api", title: "deploy helper", provider: "claude" });
-  const cfg = server.configFor("agent-1");
+  const cfg = server.endpointFor("agent-1");
   const post = async (body: unknown, headers: Record<string, string> = cfg.headers) => {
     const res = await fetch(cfg.url, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...headers }, body: JSON.stringify(body) });
     return { status: res.status, json: res.status === 200 ? await res.json() : null };
@@ -82,5 +82,19 @@ describe("bounded daemon calls", () => {
     const never = new Promise<never>(() => {});
     await expect(withTimeout(never, 20, "clearing the unread flag")).rejects.toThrow(/clearing the unread flag timed out/);
     await expect(withTimeout(Promise.resolve(7), 20, "x")).resolves.toBe(7);
+  });
+});
+
+describe("the hopkins conversation's own entry", () => {
+  it("resolves the conversation marker to its current id", async () => {
+    const env = setup();
+    env.store.setThreadAgentId("thread-42");
+    const tools = createTools({ reminders: env.reminders, config: env.config, clock: env.clock, isThread: (id) => id === env.store.threadAgentId(), changed: () => {} });
+    const s = new HopkinsMcpServer(tools, silentLogger, () => null, tmpDir(), () => env.store.threadAgentId());
+    await s.start();
+    const { url, headers } = s.endpointFor("hopkins-thread");
+    await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "hopkins_remind", arguments: { text: "call the bank", when: "in 2h" } } }) });
+    s.stop();
+    expect(env.reminders.get("r_000001")?.source).toMatchObject({ via: "thread", agentId: "thread-42" });
   });
 });

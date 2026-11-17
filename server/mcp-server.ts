@@ -5,9 +5,17 @@
 // switched on for every agent (daemon.mcp.injectIntoAgents, off by default in
 // 0.16.1), which hands every agent Paseo's whole orchestration toolset too.
 // A server of our own works with that switch off and changes nothing else.
+//
+// Agents reach it through a tiny stdio bridge rather than over HTTP directly:
+// an HTTP entry would put the bearer token on the agent's command line (where
+// any local user can read it with ps), and would point at a port that changes
+// on every plugin restart. The bridge reads the port and token from 0600 files
+// on each request, so open sessions keep working across restarts.
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 import type { AddressInfo } from "node:net";
 import type { PaseoApi } from "@getpaseo/client";
 import type { AgentToolDefinition } from "@getpaseo/plugin/server";
@@ -41,15 +49,64 @@ const LATEST_PROTOCOL = "2025-06-18";
 
 export const MCP_SERVER_NAME = "hopkins";
 
+/**
+ * The hopkins conversation is given its bridge when it is created, before it has an id,
+ * so it is addressed by this marker and resolved to its id on each call.
+ */
+export const THREAD_AGENT_MARKER = "hopkins-thread";
+
 export const SERVER_INSTRUCTIONS =
   "hopkins keeps the user's reminders and brings each one back in the Paseo app when it is due. " +
   "When the user asks to be reminded of something (\"remind me to …\", \"don't let me forget …\"), set it with hopkins_remind " +
   "(load it with your tool search if it is not loaded yet). Use hopkins_reminders to look reminders up, and " +
   "hopkins_change_reminder / hopkins_close_reminder to move or close them.";
 
+export const BRIDGE_FILE = "mcp-bridge.mjs";
+const TOKEN_FILE = "mcp-token";
+const PORT_FILE = "mcp-port";
+
+/** The bridge an agent's MCP client runs: stdin/stdout JSON-RPC lines ⇄ hopkins's local server. */
+export const BRIDGE_SOURCE = `// hopkins MCP bridge, written by the hopkins plugin. Relays JSON-RPC lines from
+// stdin to hopkins's local server and its answers to stdout. Reads the port and
+// token from the files beside it on every request, so it survives plugin restarts.
+import fs from "node:fs";
+import path from "node:path";
+import readline from "node:readline";
+import { fileURLToPath } from "node:url";
+const dir = path.dirname(fileURLToPath(import.meta.url));
+const agent = process.argv[2] ?? "";
+const read = (name) => fs.readFileSync(path.join(dir, name), "utf8").trim();
+const write = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+readline.createInterface({ input: process.stdin }).on("line", async (line) => {
+  if (!line.trim()) return;
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+    return;
+  }
+  try {
+    const res = await fetch("http://127.0.0.1:" + read("${PORT_FILE}") + "/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer " + read("${TOKEN_FILE}"), "x-hopkins-agent": agent },
+      body: line,
+    });
+    if (res.status === 202) return;
+    if (!res.ok) throw new Error("hopkins answered " + res.status);
+    const body = await res.json();
+    for (const m of Array.isArray(body) ? body : [body]) write(m);
+  } catch {
+    for (const m of Array.isArray(message) ? message : [message]) {
+      if (m && m.id !== undefined && m.id !== null) write({ jsonrpc: "2.0", id: m.id, error: { code: -32603, message: "hopkins is not running right now" } });
+    }
+  }
+});
+`;
+
 export class HopkinsMcpServer {
   private server: http.Server | null = null;
-  private readonly token = randomBytes(24).toString("base64url");
+  private token = randomBytes(24).toString("base64url");
   private readonly agents = new Map<string, AgentInfo>();
   port = 0;
 
@@ -57,13 +114,39 @@ export class HopkinsMcpServer {
     private readonly tools: AgentToolDefinition[],
     private readonly log: Logger,
     private readonly paseo: () => PaseoApi | null,
+    private readonly dataDir: string,
+    private readonly threadId: () => string | null = () => null,
   ) {}
+
+  private writePrivate(name: string, content: string): void {
+    const file = path.join(this.dataDir, name);
+    const tmp = `${file}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, content, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  }
+
+  /** The token is kept across restarts so a running bridge keeps authenticating. */
+  private loadOrCreateToken(): void {
+    try {
+      const existing = fs.readFileSync(path.join(this.dataDir, TOKEN_FILE), "utf8").trim();
+      if (existing.length >= 32) {
+        this.token = existing;
+        return;
+      }
+    } catch {
+      // first start
+    }
+    this.writePrivate(TOKEN_FILE, this.token);
+  }
 
   get ready(): boolean {
     return this.server !== null && this.port > 0;
   }
 
   async start(): Promise<void> {
+    fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
+    this.loadOrCreateToken();
+    this.writePrivate(BRIDGE_FILE, BRIDGE_SOURCE);
     const server = http.createServer((req, res) => {
       void this.handle(req, res).catch((err) => {
         this.log.error("mcp request failed", { error: errorText(err) });
@@ -77,6 +160,7 @@ export class HopkinsMcpServer {
     server.unref();
     this.server = server;
     this.port = (server.address() as AddressInfo).port;
+    this.writePrivate(PORT_FILE, String(this.port));
   }
 
   stop(): void {
@@ -94,13 +178,14 @@ export class HopkinsMcpServer {
     }
   }
 
-  /** The `mcpServers` entry for one agent session. */
-  configFor(agentId: string): { type: "http"; url: string; headers: Record<string, string> } {
-    return {
-      type: "http",
-      url: `http://127.0.0.1:${this.port}/mcp`,
-      headers: { Authorization: `Bearer ${this.token}`, "X-Hopkins-Agent": agentId },
-    };
+  /** The `mcpServers` entry for one agent session: the bridge, run by the daemon's own Node. */
+  configFor(agentId: string): { type: "stdio"; command: string; args: string[]; alwaysLoad: boolean } {
+    return { type: "stdio", command: process.execPath, args: [path.join(this.dataDir, BRIDGE_FILE), agentId], alwaysLoad: true };
+  }
+
+  /** The HTTP endpoint behind the bridge (for tests). */
+  endpointFor(agentId: string): { url: string; headers: Record<string, string> } {
+    return { url: `http://127.0.0.1:${this.port}/mcp`, headers: { Authorization: `Bearer ${this.token}`, "X-Hopkins-Agent": agentId } };
   }
 
   private authorised(req: http.IncomingMessage): boolean {
@@ -136,7 +221,8 @@ export class HopkinsMcpServer {
       sendJson(res, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
       return;
     }
-    const agentId = String(req.headers["x-hopkins-agent"] ?? "");
+    const header = String(req.headers["x-hopkins-agent"] ?? "");
+    const agentId = header === THREAD_AGENT_MARKER ? (this.threadId() ?? header) : header;
     if (Array.isArray(message)) {
       const responses = (await Promise.all(message.map((m) => this.dispatch(m as JsonRpcMessage, agentId)))).filter(
         (r): r is JsonRpcResponse => r !== null,

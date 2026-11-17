@@ -26,7 +26,7 @@ Today screen           sidebar row with a count · overdue · today · upcoming 
 ```
 
 - **Every agent gets four tools:** `hopkins_remind`, `hopkins_reminders`, `hopkins_change_reminder` and `hopkins_close_reminder`. They work from personal and work agents alike. A folder you mark as work tags its reminders `work`.
-  - They are served by a small MCP server hopkins runs on localhost, added to each Claude, Codex or OpenCode session as it opens.
+  - They are served by a small MCP server hopkins runs on localhost. Each Claude, Codex or OpenCode session reaches it through a tiny stdio bridge added as the session opens. No secret goes on a command line, and open sessions keep working across plugin restarts.
   - Paseo's own tool injection is off by default, and turning it on would hand every agent Paseo's whole toolset. hopkins's server needs neither.
 - **Reminder lifecycles run in code, not in the model.** That covers due times, repeats, snoozes and catch-up. The model only turns your words into a structured call, and a due reminder into a sentence.
 - **Repeats keep their wall-clock time across daylight-saving changes.** They can be daily, weekly, every N weeks, monthly on a date, the first or last weekday of the month, or yearly, with an optional end date or count.
@@ -43,16 +43,15 @@ Either way they land under **Noticed** on Today, each with where it came from an
 
 Noticing needs a model.
 
-- It works with any Anthropic Messages endpoint. Haiku is plenty.
-- Set the endpoint and model in settings.
-- Put the key on the daemon host. It never goes in settings, which every connected app can read. Either put it in a file:
+- It works with any Anthropic Messages endpoint. Haiku is plenty, and you choose the model in settings.
+- The key and its endpoint live together on the daemon host, never in settings: every connected app can edit settings, and the key is only ever sent to the endpoint stored with it. Either put them in a file:
 
   ```sh
-  printf '%s\n' "$YOUR_KEY" > "$PASEO_HOME/plugin-data/hopkins/llm-key"
+  printf '%s\n%s\n' "$YOUR_KEY" "https://api.anthropic.com" > "$PASEO_HOME/plugin-data/hopkins/llm-key"
   chmod 600 "$PASEO_HOME/plugin-data/hopkins/llm-key"
   ```
 
-  or set it in `HOPKINS_LLM_API_KEY` in the daemon's environment.
+  or set `HOPKINS_LLM_API_KEY` (and optionally `HOPKINS_LLM_BASE_URL`) in the daemon's environment.
 
 ## Install
 
@@ -97,6 +96,7 @@ When a reminder arrives, reply in the hopkins conversation with "done", "snooze 
   - with noticing on, the model you configure sees what you typed in the conversations it reads.
 - **Logs never contain reminder text.** Paseo copies plugin output into the daemon log, so hopkins logs only ids, counts and states. The event journal records transitions, not content.
 - **hopkins never acts outside Paseo.** It reminds; your agents do the work.
+- **The hopkins conversation runs in a normal permission mode.** Only its own reminder tools are pre-approved. Reminder text and titles are treated as data, so even a planted instruction would have to ask before touching a shell or a file.
 
 ## Development
 

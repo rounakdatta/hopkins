@@ -1,5 +1,6 @@
 // The hopkins conversation, through Paseo's API.
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config";
@@ -49,11 +50,17 @@ export class PaseoThreadPort implements ThreadPort {
     return this.link.api;
   }
 
+  /** Tools the conversation may use without asking: hopkins's own, nothing else. */
+  toolNames: string[] = [];
+  /** The conversation's own MCP entry for hopkins (resolves once the tools server is up). */
+  threadMcpServer: (() => Promise<Record<string, unknown> | null>) | null = null;
+
   async ensureThread(): Promise<string> {
     const api = this.api();
     const known = this.store.threadAgentId();
     if (known) {
-      const found = await withTimeout(api.agents.ref(known).refresh(), 15_000, "looking up the conversation").catch(() => null);
+      // Errors and timeouts propagate (the delivery retries); only a definite "no such agent" means gone.
+      const found = await withTimeout(api.agents.ref(known).refresh(), 15_000, "looking up the conversation");
       if (found?.agent) return known; // archived is fine: sending revives it
     }
     const labelled = await this.findByLabel(api);
@@ -62,35 +69,51 @@ export class PaseoThreadPort implements ThreadPort {
       this.store.save();
       return labelled;
     }
-    this.creating ??= this.create(api).finally(() => {
+    this.creating ??= this.create(api, known).finally(() => {
       this.creating = null;
     });
     return this.creating;
   }
 
   private async findByLabel(api: PaseoApi): Promise<string | null> {
-    try {
-      const result = await withTimeout(api.agents.list({ filter: { labels: { [THREAD_LABEL]: "thread" } } } as never), 15_000, "searching agents");
-      for (const entry of result.entries as unknown[]) {
-        const agent = ((entry as { agent?: AgentLike }).agent ?? entry) as AgentLike;
-        if (agent.id && agent.labels?.[THREAD_LABEL] === "thread") return agent.id;
-      }
-    } catch (err) {
-      this.log.warn("could not search for an existing hopkins conversation", { error: errorText(err) });
+    const result = await withTimeout(api.agents.list({ filter: { labels: { [THREAD_LABEL]: "thread" } } } as never), 15_000, "searching agents");
+    for (const entry of result.entries as unknown[]) {
+      const agent = ((entry as { agent?: AgentLike }).agent ?? entry) as AgentLike;
+      if (agent.id && agent.labels?.[THREAD_LABEL] === "thread") return agent.id;
     }
     return null;
   }
 
-  private async create(api: PaseoApi): Promise<string> {
+  private async create(api: PaseoApi, previous: string | null): Promise<string> {
     const cfg = this.config();
     fs.mkdirSync(cfg.threadCwd, { recursive: true, mode: 0o700 });
-    const handle = await withTimeout(api.agents.create({
+    // The pre-approval must name a server in the same request, so the bridge is part of the conversation's config.
+    const mcp = this.threadMcpServer ? await this.threadMcpServer() : null;
+    const access = mcp
+      ? { mcpServers: { hopkins: mcp }, toolPolicy: { preapproved: this.toolNames.map((tool) => ({ kind: "mcp", server: "hopkins", tool })) } }
+      : {};
+    const request = {
       cwd: cfg.threadCwd,
       title: THREAD_TITLE,
       labels: { [THREAD_LABEL]: "thread" },
       metadata: { "hopkins.thread": { version: 1 } },
-      config: { provider: cfg.threadModel, modeId: cfg.threadMode, systemPrompt: THREAD_SYSTEM_PROMPT },
-    } as never), 60_000, "creating the conversation");
+      config: {
+        provider: cfg.threadModel,
+        modeId: cfg.threadMode,
+        systemPrompt: THREAD_SYSTEM_PROMPT,
+        // Its own tools need no approval; anything else (a shell, a file edit) would have to ask you first.
+        ...access,
+      },
+    };
+    // A retry of the same request reuses the key, so a create that timed out after the daemon made
+    // the agent does not make a second one. A different request gets a different key: the daemon
+    // refuses a reused key with a new body.
+    const digest = createHash("sha256").update(JSON.stringify(request)).digest("hex").slice(0, 12);
+    const handle = await withTimeout(
+      api.agents.create({ ...request, idempotencyKey: `hopkins-thread-after-${previous ?? "none"}-${digest}` } as never),
+      60_000,
+      "creating the conversation",
+    );
     this.store.setThreadAgentId(handle.id);
     this.store.save();
     this.store.event("thread-created", { agent: handle.id });

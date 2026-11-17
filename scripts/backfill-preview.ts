@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { Backfill } from "../server/backfill";
 import { resolveConfig } from "../server/config";
-import { AnthropicLlm, readKey } from "../server/llm";
+import { AnthropicLlm, readCredentials } from "../server/llm";
 import { consoleLogger } from "../server/log";
 import { Suggestions } from "../server/noticing";
 import { Reminders, systemClock } from "../server/reminders";
@@ -34,7 +34,6 @@ const config = resolveConfig(
   settingsSchema.parse({
     timezone: arg("tz", ""),
     workRoots: args("work-root").length ? args("work-root") : ["~/work"],
-    llmBaseUrl: process.env.HOPKINS_LLM_BASE_URL ?? "https://api.anthropic.com",
     llmModel: arg("model", "claude-haiku-5-5"),
     memoryDirs: args("memory-dir"),
     historyDays: days,
@@ -46,7 +45,7 @@ const store = new Store(dataDir, consoleLogger);
 store.load();
 const reminders = new Reminders(store, systemClock, () => config);
 const suggestions = new Suggestions(store, reminders, systemClock, () => config);
-const llm = new AnthropicLlm(() => ({ baseUrl: config.llmBaseUrl, model: config.llmModel }), () => readKey(keyDir));
+const llm = new AnthropicLlm(() => ({ model: config.llmModel }), () => readCredentials(keyDir));
 if (!llm.available) {
   console.error("No key: set HOPKINS_LLM_API_KEY or pass --key-dir with an llm-key file.");
   process.exit(2);

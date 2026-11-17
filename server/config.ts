@@ -18,7 +18,6 @@ export interface Config {
   threadCwd: string;
   paused: boolean;
   noticing: boolean;
-  llmBaseUrl: string;
   llmModel: string;
   memoryDirs: string[];
   historyDays: number;
@@ -44,7 +43,6 @@ export function resolveConfig(values: HopkinsSettings, dataDir: string): Config 
     threadCwd: values.threadCwd ? path.resolve(expandHome(values.threadCwd)) : path.join(dataDir, "thread"),
     paused: values.paused,
     noticing: values.noticing,
-    llmBaseUrl: values.llmBaseUrl,
     llmModel: values.llmModel,
     memoryDirs: values.memoryDirs.map((d) => path.resolve(expandHome(d.trim()))).filter(Boolean),
     historyDays: values.historyDays,

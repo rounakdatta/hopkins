@@ -8,8 +8,13 @@ import path from "node:path";
 import { errorText } from "./log";
 
 export interface LlmConfig {
-  baseUrl: string;
   model: string;
+}
+
+export interface LlmCredentials {
+  key: string;
+  /** The endpoint the key belongs to; the key is never sent anywhere else. */
+  baseUrl: string;
 }
 
 export interface Llm {
@@ -18,51 +23,56 @@ export interface Llm {
 }
 
 export const KEY_FILE = "llm-key";
+export const DEFAULT_BASE_URL = "https://api.anthropic.com";
 
-/** Reads the key from HOPKINS_LLM_API_KEY or `<dataDir>/llm-key` (first line). */
-export function readKey(dataDir: string, env: NodeJS.ProcessEnv = process.env): string | null {
+/**
+ * The key and its endpoint, from HOPKINS_LLM_API_KEY (+ HOPKINS_LLM_BASE_URL), or from
+ * `<dataDir>/llm-key`: the key on the first line, optionally the endpoint on the second.
+ */
+export function readCredentials(dataDir: string, env: NodeJS.ProcessEnv = process.env): LlmCredentials | null {
   const fromEnv = env.HOPKINS_LLM_API_KEY?.trim();
-  if (fromEnv) return fromEnv;
+  if (fromEnv) return { key: fromEnv, baseUrl: env.HOPKINS_LLM_BASE_URL?.trim() || DEFAULT_BASE_URL };
   try {
-    const file = path.join(dataDir, KEY_FILE);
-    const key = fs.readFileSync(file, "utf8").split("\n")[0]!.trim();
-    return key || null;
+    const [key, baseUrl] = fs.readFileSync(path.join(dataDir, KEY_FILE), "utf8").split("\n").map((l) => l.trim());
+    return key ? { key, baseUrl: baseUrl || env.HOPKINS_LLM_BASE_URL?.trim() || DEFAULT_BASE_URL } : null;
   } catch {
     return null;
   }
 }
 
+/** Kept for callers that only need to know whether a key exists. */
+export function readKey(dataDir: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  return readCredentials(dataDir, env)?.key ?? null;
+}
+
 export class AnthropicLlm implements Llm {
   constructor(
     private readonly config: () => LlmConfig,
-    private readonly key: () => string | null,
+    private readonly credentials: () => LlmCredentials | null,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
   get available(): boolean {
-    return Boolean(this.key()) && Boolean(this.config().model);
+    return Boolean(this.credentials()) && Boolean(this.config().model);
   }
 
   async complete(request: { system: string; user: string; maxTokens?: number }): Promise<string> {
-    const key = this.key();
-    if (!key) throw new Error("no model key configured");
-    const { baseUrl, model } = this.config();
-    const url = `${baseUrl.replace(/\/+$/, "")}/v1/messages`;
+    const creds = this.credentials();
+    if (!creds) throw new Error("no model key configured");
+    const url = `${creds.baseUrl.replace(/\/+$/, "")}/v1/messages`;
     const response = await this.fetchImpl(url, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
+      headers: { "content-type": "application/json", "x-api-key": creds.key, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({
-        model,
+        model: this.config().model,
         max_tokens: request.maxTokens ?? 2_000,
         system: request.system,
         messages: [{ role: "user", content: request.user }],
       }),
       signal: AbortSignal.timeout(120_000),
     });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new Error(`model call failed: ${response.status} ${detail.slice(0, 160)}`);
-    }
+    // Error bodies can echo the request, so only the status is kept: errors end up in a shared log.
+    if (!response.ok) throw new Error(`model call failed: HTTP ${response.status}`);
     const body = (await response.json()) as { content?: { type: string; text?: string }[] };
     const text = (body.content ?? []).filter((c) => c.type === "text").map((c) => c.text ?? "").join("");
     if (!text.trim()) throw new Error("model returned no text");
@@ -76,11 +86,12 @@ export function parseJsonObject<T>(text: string): T {
   const candidate = fenced ? fenced[1]! : text;
   const start = candidate.indexOf("{");
   const end = candidate.lastIndexOf("}");
-  if (start === -1 || end <= start) throw new Error("no JSON object in the model's reply");
+  if (start === -1 || end <= start) throw new Error("the model's reply had no JSON object");
   try {
     return JSON.parse(candidate.slice(start, end + 1)) as T;
-  } catch (err) {
-    throw new Error(`unreadable JSON from the model: ${errorText(err)}`);
+  } catch {
+    // The engine's message quotes part of the reply; keep that out of logs.
+    throw new Error("the model's reply was not valid JSON");
   }
 }
 

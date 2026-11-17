@@ -38,7 +38,6 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     threadCwd: "/tmp/hopkins-thread",
     paused: false,
     noticing: true,
-    llmBaseUrl: "http://llm.invalid",
     llmModel: "test-model",
     memoryDirs: [],
     historyDays: 120,
