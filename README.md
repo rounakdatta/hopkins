@@ -26,6 +26,8 @@ Today screen           sidebar row with a count · overdue · today · upcoming 
 ```
 
 - **Every agent gets four tools:** `hopkins_remind`, `hopkins_reminders`, `hopkins_change_reminder` and `hopkins_close_reminder`. They work from personal and work agents alike. A folder you mark as work tags its reminders `work`.
+  - They are served by a small MCP server hopkins runs on localhost, added to each Claude, Codex or OpenCode session as it opens.
+  - Paseo's own tool injection is off by default, and turning it on would hand every agent Paseo's whole toolset. hopkins's server needs neither.
 - **Reminder lifecycles run in code, not in the model.** That covers due times, repeats, snoozes and catch-up. The model only turns your words into a structured call, and a due reminder into a sentence.
 - **Repeats keep their wall-clock time across daylight-saving changes.** They can be daily, weekly, every N weeks, monthly on a date, the first or last weekday of the month, or yearly, with an optional end date or count.
 - **Paseo has no plugin API for custom push notifications.** So hopkins delivers by finishing a turn in its own conversation, which makes Paseo push "Agent finished" with the message. Before each delivery hopkins clears that conversation's unread flag, so every reminder pushes.
