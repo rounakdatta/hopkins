@@ -30,6 +30,8 @@ export const settingsSchema = z.object({
   taskThinking: z.string().default(""),
   /** Where personal tasks run, with your files, notes and memory. Empty: the folder of the conversation that asked. Work tasks run in the first work root. */
   personalFolder: z.string().default(""),
+  /** Provider/model for the daily checks behind "until" reminders. Empty: the task model. */
+  checkModel: z.string().default(""),
   /** A task due while hopkins was offline still starts if it is back within this many minutes; later, it waits for "run it now". */
   taskGraceMinutes: z.number().int().min(1).max(1440).default(180),
   /** Longest a task may run before hopkins reports it as stuck. */

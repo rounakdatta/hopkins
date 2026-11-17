@@ -22,6 +22,7 @@ import { Reminders, systemClock, type Clock } from "./reminders";
 import { Scheduler } from "./scheduler";
 import { PaseoTaskPort } from "./task-port";
 import { TaskRunner, Tasks } from "./tasks";
+import { Conditions } from "./conditions";
 import { defaultDataDir, Store } from "./store";
 import { PaseoThreadPort, paseoTimelineReader, THREAD_LABEL } from "./thread-port";
 import { buildToday } from "./today";
@@ -76,7 +77,26 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     getConfig,
     log,
   );
-  const scheduler = new Scheduler(reminders, queue, clock, getConfig, log, recaps, runner);
+  // "Until": the daily checks behind reminders that stop by themselves (they run as tasks of kind "check").
+  const conditions = new Conditions(
+    store,
+    reminders,
+    tasks,
+    (text, now) => {
+      queue.enqueueNote(text, now);
+      changed();
+    },
+    clock,
+    getConfig,
+    log,
+  );
+  runner.checks = conditions;
+  const scheduler = new Scheduler(reminders, queue, clock, getConfig, log, recaps, {
+    tick: (now) => {
+      conditions.tick(now);
+      runner.tick(now);
+    },
+  });
 
   // --- Noticing and backfill -----------------------------------------------------------
 
@@ -200,6 +220,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     suggestions,
     backfill,
     tasks,
+    conditions,
     config: getConfig,
     clock,
     isThread: (agentId) => agentId === store.threadAgentId(),

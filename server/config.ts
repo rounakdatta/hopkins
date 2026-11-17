@@ -24,6 +24,7 @@ export interface Config {
   taskModel: string;
   taskMode: string;
   taskThinking: string;
+  checkModel: string;
   /** Resolved folder for personal tasks, or null for "the folder of the conversation that asked". */
   personalFolder: string | null;
   taskGraceMs: number;
@@ -56,6 +57,7 @@ export function resolveConfig(values: HopkinsSettings, dataDir: string): Config 
     taskModel: values.taskModel.trim() || "claude",
     taskMode: values.taskMode.trim(),
     taskThinking: values.taskThinking.trim(),
+    checkModel: values.checkModel.trim(),
     personalFolder: values.personalFolder.trim() ? path.resolve(expandHome(values.personalFolder.trim())) : null,
     taskGraceMs: values.taskGraceMinutes * 60_000,
     taskTimeoutMs: values.taskTimeoutMinutes * 60_000,

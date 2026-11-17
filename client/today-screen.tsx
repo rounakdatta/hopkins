@@ -211,6 +211,12 @@ function Row(props: {
             {item.late ? " · arrived late" : ""}
             {unopened ? " · not opened yet" : ""}
           </Text>
+          {item.until ? (
+            <Text style={{ color: colors.foregroundMuted, fontSize: 12 }} accessibilityLabel={`Stops after ${item.until.inARow} days in a row; ${item.until.streak} so far`}>
+              Stops after {item.until.inARow} days in a row · <Text style={tabular}>{item.until.streak}</Text> so far
+              {item.until.last ? ` · last check: ${item.until.last}` : ""}
+            </Text>
+          ) : null}
         </View>
         {item.scope === "work" ? <Chip colors={colors} label="work" /> : null}
       </View>

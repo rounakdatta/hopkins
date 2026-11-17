@@ -6,7 +6,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Scope, Source, Task, TaskState } from "../shared/model";
+import type { Reminder, Scope, Source, Task, TaskState } from "../shared/model";
 import { formatWhen } from "../shared/time";
 import { parseWhen, suggestTimes } from "../shared/when";
 import { expandHome, type Config } from "./config";
@@ -79,7 +79,8 @@ export class Tasks {
 
   /** Open tasks (soonest first), then the last few days' closed ones (newest first). */
   list(now = this.clock.now()): Task[] {
-    const all = this.store.tasks();
+    // Daily checks belong to their reminder (its "until" line shows them), not to the task list.
+    const all = this.store.tasks().filter((t) => t.kind !== "check");
     const open = all.filter(isOpen).sort((a, b) => a.dueAt - b.dueAt);
     const recent = all.filter((t) => !isOpen(t) && now - t.updatedAt < RECENT_MS).sort((a, b) => b.updatedAt - a.updatedAt);
     return [...open, ...recent];
@@ -137,6 +138,40 @@ export class Tasks {
     };
   }
 
+  /** The daily check behind a reminder's "until": a task of kind "check", run in the user's personal folder. */
+  createCheck(reminder: Reminder, check: string, dueAt: number, model: string | undefined): Task {
+    const cfg = this.config();
+    const now = this.clock.now();
+    const cwd = cfg.personalFolder ?? reminder.source.cwd ?? os.homedir();
+    const task: Task = {
+      id: newId("t"),
+      kind: "check",
+      reminderId: reminder.id,
+      text: `Check: ${reminder.text}`,
+      instructions: check,
+      scope: reminder.scope,
+      state: "scheduled",
+      tz: cfg.tz,
+      dueAt,
+      cwd: fs.existsSync(cwd) ? cwd : os.homedir(),
+      agentId: null,
+      attempts: 0,
+      ...(model ? { model } : {}),
+      createdAt: now,
+      updatedAt: now,
+      source: reminder.source,
+    };
+    this.store.putTask(task);
+    this.store.save();
+    return task;
+  }
+
+  /** A check is recorded on its reminder, so its task is not kept. */
+  removeCheck(id: string): void {
+    this.store.removeTask(id);
+    this.store.save();
+  }
+
   cancel(id: string): Result<{ task: Task; message: string }> {
     const task = this.store.getTask(id);
     if (!task) return { ok: false, error: `no task ${id}` };
@@ -179,9 +214,17 @@ export class Tasks {
   }
 }
 
+/** How a check task gets its prompt and what happens with its answer (the Conditions module). */
+export interface CheckHandler {
+  prompt(task: Task): string | null;
+  record(task: Task, result: FinishResult): void;
+}
+
 export class TaskRunner {
   private readonly following = new Set<string>();
   private readonly lastFollowAt = new Map<string, number>();
+  /** Set once the Conditions module exists (it needs Tasks, so it comes later). */
+  checks: CheckHandler | null = null;
 
   constructor(
     private readonly store: Store,
@@ -197,7 +240,8 @@ export class TaskRunner {
   tick(now: number): void {
     const cfg = this.config();
     for (const task of this.tasks.due(now)) {
-      if (now - task.dueAt > cfg.taskGraceMs) {
+      // A late check still tells something about today: it simply runs. A late task waits to be asked.
+      if (task.kind !== "check" && now - task.dueAt > cfg.taskGraceMs) {
         this.settle(task.id, { state: "missed" }, now);
         continue;
       }
@@ -247,6 +291,12 @@ export class TaskRunner {
     if (!port || !claimed || claimed.state !== "scheduled" || this.following.has(id)) return;
     const cfg = this.config();
     const now = this.clock.now();
+    const prompt = claimed.kind === "check" ? (this.checks?.prompt(claimed) ?? null) : taskPrompt(claimed, cfg, now);
+    if (prompt === null) {
+      // Its reminder is gone or closed: nothing to check any more.
+      this.put({ ...claimed, state: "cancelled", updatedAt: now, finishedAt: now });
+      return;
+    }
     // Claimed before any await, so a second tick never starts it twice.
     const task: Task = { ...claimed, state: "running", attempts: claimed.attempts + 1, startedAt: now, updatedAt: now, agentId: null, report: undefined, error: undefined };
     this.put(task);
@@ -255,7 +305,7 @@ export class TaskRunner {
     try {
       const result = await port.run(
         task,
-        taskPrompt(task, cfg, now),
+        prompt,
         cfg,
         (agentId) => {
           created = true;
@@ -273,6 +323,9 @@ export class TaskRunner {
       if (created) {
         // It started but we lost track (the daemon went away): a later tick follows it again.
         this.log.warn("lost track of a task's run for now", { task: id, error: errorText(err) });
+      } else if (current.kind === "check" && (current.failedStarts ?? 0) + 1 >= START_ATTEMPTS) {
+        // A check that cannot start counts as a day it could not check; tomorrow's comes as usual.
+        this.checks?.record({ ...current, failedStarts: (current.failedStarts ?? 0) + 1 }, { status: "error", lastMessage: null, error: `could not start an agent: ${errorText(err)}` });
       } else if ((current.failedStarts ?? 0) + 1 < START_ATTEMPTS) {
         // Never got going: back to scheduled on the same attempt (the retry reuses the key, so an
         // agent the daemon made after all is reused), and the next tick tries again.
@@ -311,6 +364,10 @@ export class TaskRunner {
   private finish(id: string, result: FinishResult): void {
     const task = this.store.getTask(id);
     if (!task || task.state !== "running") return; // cancelled meanwhile: stay quiet
+    if (task.kind === "check") {
+      this.checks?.record(task, result);
+      return;
+    }
     const now = this.clock.now();
     const minutes = Math.round(this.config().taskTimeoutMs / 60_000);
     if (result.status === "timeout") {

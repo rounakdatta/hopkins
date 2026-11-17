@@ -58,6 +58,28 @@ export const LastFiringSchema = z.object({
 });
 export type LastFiring = z.infer<typeof LastFiringSchema>;
 
+/**
+ * "Until": a repeating reminder that stops by itself once something has held for some days in
+ * a row ("remind me to sleep at 11 until I'm waking up on time"). An agent checks it each day.
+ */
+export const UntilSchema = z.object({
+  /** For the agent that checks: where to look, and what counts as met for one day. */
+  check: z.string(),
+  /** Local time each day it is checked, "HH:MM". */
+  checkAt: z.string(),
+  /** Days in a row it must hold before the reminder stops. */
+  inARow: z.number().int().min(1).max(60),
+  streak: z.number().int().min(0),
+  /** The last 30 checks, oldest first. `met` is null when it could not be checked. */
+  log: z.array(z.object({ date: z.string(), met: z.boolean().nullable(), note: z.string() })),
+  /** The check task while a check runs (it is removed once recorded). */
+  taskId: z.string().nullable(),
+  /** When the next check is due. */
+  nextCheckAt: z.number().optional(),
+  metAt: z.number().optional(),
+});
+export type Until = z.infer<typeof UntilSchema>;
+
 export const ReminderSchema = z.object({
   id: z.string(),
   text: z.string(),
@@ -76,6 +98,7 @@ export const ReminderSchema = z.object({
   closedAt: z.number().optional(),
   source: SourceSchema,
   last: LastFiringSchema.optional(),
+  until: UntilSchema.optional(),
 });
 export type Reminder = z.infer<typeof ReminderSchema>;
 
@@ -110,6 +133,12 @@ export const TaskSchema = z.object({
   /** The folder the agent works in. */
   cwd: z.string(),
   agentId: z.string().nullable(),
+  /** "check": the daily look behind a reminder's "until"; its answer updates the streak instead of being told. */
+  kind: z.enum(["task", "check"]).optional(),
+  reminderId: z.string().optional(),
+  /** Provider/model and thinking level for this task, when not the settings' (checks use a lighter one). */
+  model: z.string().optional(),
+  thinking: z.string().optional(),
   /** Runs started: also part of each run's idempotency key, so it only ever grows. */
   attempts: z.number().int().min(0),
   /** Starts in a row that failed before an agent existed. */
@@ -203,6 +232,11 @@ export const TodayItemSchema = z.object({
   firedAt: z.number().nullable(),
   seen: z.boolean().nullable(),
   late: z.boolean(),
+  /** For a reminder that stops by itself: what has to hold, and how far along it is. */
+  until: z
+    .object({ inARow: z.number(), streak: z.number(), last: z.string().nullable(), met: z.boolean().nullable() })
+    .nullable()
+    .optional(),
 });
 export type TodayItem = z.infer<typeof TodayItemSchema>;
 

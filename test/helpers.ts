@@ -44,6 +44,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     taskModel: "claude/claude-opus-5-5",
     taskMode: "bypassPermissions",
     taskThinking: "max",
+    checkModel: "claude/claude-sonnet-5-5",
     personalFolder: null,
     taskGraceMs: 180 * 60_000,
     taskTimeoutMs: 90 * 60_000,

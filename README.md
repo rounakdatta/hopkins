@@ -4,6 +4,8 @@
 
 Say *"remind me to call Ma on Sunday at 10"* to any agent in [Paseo](https://paseo.sh). On Sunday at 10 a conversation called **hopkins** says *"Call Ma. You'd said Sunday morning."*, and your phone buzzes. Answer right there: *"done"*, *"snooze an hour"*, *"move it to 6"*.
 
+It can also get things **done** at a time: *"today at 8pm, do my web check-in, and make sure the passport number and date of birth match"*. At 8pm hopkins starts an agent with your usual setup to do it, and tells you how it went. And a reminder can **stop by itself**: *"remind me to go to bed at 11 until I'm waking up by 7:30"* checks your sleep data each morning and stops once it has held a week.
+
 hopkins is built around a few rules:
 
 - **It asks once instead of guessing.** *"remind me to renew the passport"* gets *"Saturday at 11, or Monday at 9?"*. A date and a time make a reminder far more likely to work than a vague "later".
@@ -19,6 +21,8 @@ any agent (Claude, Codex, OpenCode …)
 hopkins plugin (inside the Paseo daemon)
   ├─ store       plain JSON in the daemon's data folder, written atomically
   ├─ scheduler   checks every 15 s; catches up after downtime
+  ├─ tasks       starts an agent at the time you gave, follows it, reads its report
+  ├─ conditions  a daily read-only check behind reminders that stop by themselves
   └─ delivery    writes the reminder into the hopkins conversation → Paseo pushes it
 hopkins conversation   one agent that turns due reminders into short messages
                        and handles your replies
@@ -74,8 +78,14 @@ Then open **Settings → Plugins → hopkins** to set your time zone and work fo
 | someday remind me to learn the guitar | keeps it on the list with no time |
 | what reminders do I have this week? | lists them |
 | move the passport one to Monday 6pm | reschedules it |
+| today at 8pm, do my web check-in; check the passport number and date of birth on the ticket | at 8pm starts an agent to do it, then tells you it is done, that it did not work, or the one thing it needs from you |
+| remind me to go to bed at 11 every night until I'm waking up by 7:30 | confirms the rule once ("I'll check your sleep data at 9am; it stops after 7 days in a row"), checks quietly each morning, and tells you when it stops |
 
 When a reminder arrives, reply in the hopkins conversation with "done", "snooze 1h", "tomorrow 9" or "drop it". You can also use the buttons on the Today screen.
+
+**Tasks.** The agent you ask writes a complete brief (it is the only thing the task's agent sees), and asks you first for anything it cannot find. At the time, a background agent works from that brief. It ends with a short report; without one, hopkins says "have a look" rather than "done". When it needs something only you have (a one-time code, a mismatch to decide), its question reaches you through hopkins, and you answer inside the task's run (Today → Tasks → Answer in the run). A task due while hopkins was offline for longer than the grace period waits for "run it now" instead of starting late on its own.
+
+**Reminders that stop by themselves.** The rule is made concrete when you set it: what to look at, when each day, and how many days in a row. Each day's check is read-only and answers yes, no or "could not tell"; a day it could not tell neither breaks nor extends the streak, and a second check on the same day replaces the first. You hear about it when it stops, or if it could not check for three days running; never on an ordinary day.
 
 ## Settings
 
@@ -87,6 +97,10 @@ When a reminder arrives, reply in the hopkins conversation with "done", "snooze 
 | Clock | 12h | how times are written |
 | Re-ping important after | 30 min | at most once |
 | Conversation model | `claude/claude-sonnet-5-5` | the voice of hopkins |
+| Task model, mode, thinking | `claude`, your default mode, the provider's default | the agents that do tasks |
+| Personal folder | the asking conversation's folder | where personal tasks run (your files, notes and memory); work tasks run in the first work folder |
+| Task grace / timeout | 180 min / 90 min | how late a task may still start on its own; how long it may run |
+| Check model | the task model | the daily checks behind "until" reminders (a lighter model is plenty) |
 | Paused | off | hold deliveries; they arrive when resumed |
 
 ## Privacy
@@ -95,7 +109,7 @@ When a reminder arrives, reply in the hopkins conversation with "done", "snooze 
   - the hopkins conversation's model sees the reminders it writes about;
   - with noticing on, the model you configure sees what you typed in the conversations it reads.
 - **Logs never contain reminder text.** Paseo copies plugin output into the daemon log, so hopkins logs only ids, counts and states. The event journal records transitions, not content.
-- **hopkins never acts outside Paseo.** It reminds; your agents do the work.
+- **Tasks act for you, and only when you asked.** A task's agent runs at the time you gave, in your usual setup and permission mode, from the brief written when you asked. It is told to stop and ask before anything that costs money, needs a code, or does not match, and hopkins never reports a task done unless its agent said so. Checks behind "until" reminders are read-only.
 - **The hopkins conversation runs in a normal permission mode.** Only its own reminder tools are pre-approved. Reminder text and titles are treated as data, so even a planted instruction would have to ask before touching a shell or a file.
 
 ## Development

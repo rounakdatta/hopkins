@@ -60,6 +60,9 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     firedAt: r.last?.firedAt ?? null,
     seen: r.last ? Boolean(r.last.seenAt) : null,
     late: Boolean(r.last?.late),
+    until: r.until && !r.until.metAt
+      ? { inARow: r.until.inARow, streak: r.until.streak, last: r.until.log.at(-1)?.note ?? null, met: r.until.log.at(-1)?.met ?? null }
+      : null,
   });
   const all = store.reminders();
   const recentRepeat = (r: Reminder) =>

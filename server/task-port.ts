@@ -28,9 +28,9 @@ export class PaseoTaskPort implements TaskPort {
       labels: { [THREAD_LABEL]: "task", [TASK_LABEL]: task.id },
       background: true,
       config: {
-        provider: cfg.taskModel,
+        provider: task.model || cfg.taskModel,
         ...(cfg.taskMode ? { modeId: cfg.taskMode } : {}),
-        ...(cfg.taskThinking ? { thinkingOptionId: cfg.taskThinking } : {}),
+        ...((task.model ? task.thinking : cfg.taskThinking) ? { thinkingOptionId: task.model ? task.thinking : cfg.taskThinking } : {}),
       },
     };
     // The same attempt reuses its key, so a create that timed out after the daemon made the agent

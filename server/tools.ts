@@ -11,6 +11,7 @@ import type { Suggestions } from "./noticing";
 import type { Recaps } from "./recaps";
 import type { Clock, ListFilter, Reminders, Result } from "./reminders";
 import type { Tasks } from "./tasks";
+import type { Conditions } from "./conditions";
 
 export interface ToolDeps {
   reminders: Reminders;
@@ -18,6 +19,7 @@ export interface ToolDeps {
   suggestions?: Suggestions;
   backfill?: Backfill;
   tasks?: Tasks;
+  conditions?: Conditions;
   config: () => Config;
   clock: Clock;
   /** True when the calling agent is the hopkins conversation itself. */
@@ -37,6 +39,7 @@ Use it whenever the user asks to be reminded of something, or agrees to a remind
 - someday: true for an idea with no time ("someday learn the guitar").
 - repeat: for repeating reminders, e.g. "daily", "weekdays", "every monday", "every 2 weeks", "on the 1st of every month", "on the last friday of every month", "yearly". \`when\` then sets the first time and the time of day.
 - important: true if they say it is important or "don't let me forget". hopkins re-pings once if they have not opened it.
+- until: for a repeating reminder that should stop by itself once something has held for some days ("remind me to sleep at 11 until I'm waking up on time"). check = what to look at and what counts as met for ONE day, concretely, naming where to look (e.g. "In Zepp Life sleep data: did they wake up (sleep end) by 07:30 their time today?"); checkAt = when to check each day (default their morning time); inARow = days in a row before it stops (default 7). Turn their words into a concrete rule and confirm it with them once before setting it. hopkins checks quietly every day and tells them when it stops.
 After it is saved, give the user the one-line confirmation from the result, as is.`;
 
 const LIST_DESCRIPTION = `List or find the user's hopkins reminders. Use it before changing or closing one (to get its id), and to answer questions like "what reminders do I have this week?".
@@ -79,6 +82,7 @@ export function reminderLine(r: Reminder, deps: ToolDeps): string {
   const bits = [r.id, r.text, r.state === "fired" ? `was due ${deps.reminders.describeDue(r)}, delivered, not done yet` : deps.reminders.describeDue(r)];
   const repeat = deps.reminders.describeRepeatOf(r);
   if (repeat) bits.push(repeat);
+  if (r.until && !r.until.metAt) bits.push(`stops after ${r.until.inARow} days in a row (${r.until.streak} so far)`);
   if (r.important) bits.push("important");
   bits.push(r.scope);
   if (r.state === "done" || r.state === "dropped") bits.push(r.state);
@@ -96,9 +100,26 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
       repeat: z.union([z.string(), RepeatSchema]).optional().describe('e.g. "weekdays", "every monday", "on the 1st of every month".'),
       important: z.boolean().optional(),
       someday: z.boolean().optional().describe("True for an idea with no time."),
+      until: z
+        .object({
+          check: z.string().describe("What to look at, and what counts as met for one day."),
+          checkAt: z.string().optional().describe('When to check each day, e.g. "9am".'),
+          inARow: z.number().int().optional().describe("Days in a row before it stops (default 7)."),
+        })
+        .optional()
+        .describe("Stop the repeats by themselves once this has held for some days in a row."),
     }),
     async execute(input, { agent }) {
       const cfg = deps.config();
+      // Checked before anything is saved, so a bad "until" never leaves a half-made reminder.
+      let until: { check: string; checkAt: string; inARow: number } | null = null;
+      if (input.until) {
+        if (!deps.conditions) return textResult("Not saved: this hopkins cannot check conditions.", { saved: false }, true);
+        const repeating = Boolean(input.repeat) && input.repeat !== "none" && !input.someday;
+        const v = deps.conditions.validate(input.until, repeating);
+        if (!v.ok) return failure(v, deps, "saved");
+        until = { check: v.check, checkAt: v.checkAt, inARow: v.inARow };
+      }
       const source: Source = {
         via: deps.isThread(agent.id) ? "thread" : "agent",
         agentId: agent.id,
@@ -109,8 +130,16 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
       };
       const r = deps.reminders.create(input, source, scopeFor(agent.cwd, cfg.workRoots));
       if (!r.ok) return failure(r, deps, "saved");
+      // A repeat of an existing reminder gets the stopping rule if it has none yet; one it already has is kept.
+      const current = deps.reminders.get(r.reminder.id) ?? r.reminder;
+      const untilLine =
+        until && deps.conditions
+          ? current.until && !current.until.metAt
+            ? " It already has a stopping rule, kept as it was."
+            : ` ${deps.conditions.attach(current, until)}`
+          : "";
       deps.changed();
-      return textResult(`${r.confirmation}\n(id ${r.reminder.id})`, { saved: true, id: r.reminder.id, dueAt: r.reminder.dueAt, duplicate: Boolean(r.duplicate) });
+      return textResult(`${r.confirmation}${untilLine}\n(id ${r.reminder.id})`, { saved: true, id: r.reminder.id, dueAt: r.reminder.dueAt, duplicate: Boolean(r.duplicate) });
     },
   });
 

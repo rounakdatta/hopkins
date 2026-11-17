@@ -1,6 +1,6 @@
 // What hopkins says to its own conversation. Server-only: never shipped to clients.
 
-import type { Delivery, Reminder, Task } from "../shared/model";
+import type { Delivery, Reminder, Task, Until } from "../shared/model";
 import type { RecapData } from "./recaps";
 import { formatDay, formatWhen, localDateOf } from "../shared/time";
 import type { Config } from "./config";
@@ -151,5 +151,22 @@ export function taskCueText(delivery: Delivery, task: Task, now: number, cfg: Co
     ...(task.error && !task.report ? [`What went wrong: ${quote(task.error.slice(0, 300))}`] : []),
     `</hopkins:task>`,
     `${ask[state] ?? ask.done} No preamble. Only the message.`,
+  ].join("\n");
+}
+
+/** The daily look behind a reminder's "until": read-only, one structured answer. */
+export function checkPrompt(reminder: Reminder, until: Until, cfg: Config, now: number): string {
+  return [
+    `hopkins asked for this check. The user is not watching; answer only from what you can see.`,
+    ``,
+    `Their reminder ${quote(reminder.text)} repeats until this has held ${until.inARow} days in a row. What to check, for today (${formatDay(localDateOf(now, cfg.tz))}, ${cfg.tz}):`,
+    until.check.trim(),
+    ``,
+    `Look it up with the tools you have (their health data, files, notes). Change nothing, and do not message anyone.`,
+    `End your message with exactly this block, and nothing after it:`,
+    `<hopkins-check met="yes">`,
+    `One short line of evidence, with the number you saw (e.g. "woke 07:12, per Zepp").`,
+    `</hopkins-check>`,
+    `Use met="no" when it did not hold, and met="unknown" when you could not find out (say why in the line).`,
   ].join("\n");
 }

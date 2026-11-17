@@ -244,6 +244,10 @@ export class Store {
     }
   }
 
+  removeTask(id: string): void {
+    this.state.tasks = this.state.tasks.filter((t) => t.id !== id);
+  }
+
   backfill(): BackfillState {
     return this.state.backfill;
   }
