@@ -2,10 +2,11 @@
 // proof: a delivery counts as sent only when the conversation finished a turn
 // with a message. Failures retry with back-off and never drop the reminder.
 
-import type { Delivery, Reminder } from "../shared/model";
+import type { Delivery, RecapKind, Reminder } from "../shared/model";
 import type { Config } from "./config";
 import { errorText, type Logger } from "./log";
-import { cueText } from "./prompts";
+import { cueText, recapCueText } from "./prompts";
+import type { RecapData } from "./recaps";
 import { newId, type Clock, type Reminders } from "./reminders";
 import type { Store } from "./store";
 
@@ -32,6 +33,13 @@ export interface ThreadPort {
    * running turn (steer) instead of interrupting it.
    */
   runTurn(agentId: string, text: string, timeoutMs: number): Promise<FinishResult>;
+}
+
+/** Where recap content comes from (the Recaps module, plus live agent titles). */
+export interface RecapSource {
+  enabled(kind: RecapKind): boolean;
+  compose(kind: RecapKind, now: number): Promise<RecapData>;
+  markSent(kind: RecapKind, date: string): void;
 }
 
 export interface DeliveryOptions {
@@ -62,6 +70,7 @@ export class DeliveryQueue {
     private readonly config: () => Config,
     private readonly log: Logger,
     private readonly options: DeliveryOptions = defaultDeliveryOptions,
+    private readonly recaps: RecapSource | null = null,
   ) {}
 
   get busy(): boolean {
@@ -87,6 +96,19 @@ export class DeliveryQueue {
     this.store.putDelivery(delivery);
     this.store.save();
     this.store.event("queued", { id: delivery.id, kind, count: fresh.length });
+    return delivery;
+  }
+
+  /** Queues a daily recap once per kind and date. */
+  enqueueRecap(kind: RecapKind, date: string, now: number): Delivery | null {
+    const exists = this.store
+      .deliveries()
+      .some((d) => d.kind === "recap" && d.recap?.kind === kind && d.recap.date === date && (d.state === "pending" || d.state === "sending"));
+    if (exists) return null;
+    const delivery: Delivery = { id: newId("d"), reminderIds: [], kind: "recap", recap: { kind, date }, createdAt: now, state: "pending", attempts: 0 };
+    this.store.putDelivery(delivery);
+    this.store.save();
+    this.store.event("queued", { id: delivery.id, kind: "recap", recap: kind });
     return delivery;
   }
 
@@ -127,15 +149,36 @@ export class DeliveryQueue {
     return all.filter((r) => r.last && !r.last.seenAt && !r.last.ackedAt && !r.last.nudgedAt && (r.state === "fired" || r.repeat));
   }
 
+  /** What to say and what to record once it is said; null when there is nothing left to send. */
+  private async prepare(d: Delivery, now: number): Promise<{ reminderIds: string[]; cue: (delivery: Delivery) => string; onSent: (delivery: Delivery, at: number) => void } | null> {
+    if (d.kind === "recap") {
+      const recap = d.recap;
+      if (!recap || !this.recaps || !this.recaps.enabled(recap.kind)) return null;
+      const data = await this.recaps.compose(recap.kind, now);
+      return {
+        reminderIds: [],
+        cue: (delivery) => recapCueText(delivery, data, this.clock.now(), this.config()),
+        onSent: () => this.recaps!.markSent(recap.kind, recap.date),
+      };
+    }
+    const live = this.liveReminders(d, now);
+    if (live.length === 0) return null;
+    return {
+      reminderIds: live.map((r) => r.id),
+      cue: (delivery) => cueText(delivery, live, this.clock.now(), this.config()),
+      onSent: (delivery, at) => this.reminders.markFired(delivery.reminderIds, delivery, at),
+    };
+  }
+
   private async send(d: Delivery, port: ThreadPort): Promise<void> {
-    const live = this.liveReminders(d, this.clock.now());
-    if (live.length === 0) {
+    const plan = await this.prepare(d, this.clock.now());
+    if (!plan) {
       this.store.removeDelivery(d.id);
       this.store.save();
       this.store.event("cancelled", { id: d.id });
       return;
     }
-    let delivery: Delivery = { ...d, reminderIds: live.map((r) => r.id), state: "sending", attempts: d.attempts + 1 };
+    let delivery: Delivery = { ...d, reminderIds: plan.reminderIds, state: "sending", attempts: d.attempts + 1 };
     this.store.putDelivery(delivery);
     this.store.save();
     try {
@@ -152,7 +195,7 @@ export class DeliveryQueue {
       }
       if (status.requiresAttention) this.markPreviousUnseen(delivery.id);
       await port.clearAttention(agentId);
-      const result = await port.runTurn(agentId, cueText(delivery, live, this.clock.now(), this.config()), this.options.finishTimeoutMs);
+      const result = await port.runTurn(agentId, plan.cue(delivery), this.options.finishTimeoutMs);
       const message = result.lastMessage?.trim();
       if (result.status !== "idle" || !message) {
         throw new Error(
@@ -164,7 +207,8 @@ export class DeliveryQueue {
       delete delivery.error;
       delete delivery.nextAttemptAt;
       this.store.putDelivery(delivery);
-      this.reminders.markFired(delivery.reminderIds, delivery, sentAt);
+      plan.onSent(delivery, sentAt);
+      this.store.save();
       this.store.event("sent", { id: delivery.id, kind: delivery.kind, count: delivery.reminderIds.length, attempt: delivery.attempts });
       this.log.info("delivered", { delivery: delivery.id, kind: delivery.kind, count: delivery.reminderIds.length });
     } catch (err) {

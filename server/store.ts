@@ -9,15 +9,24 @@ import { z } from "zod";
 import { DeliverySchema, ReminderSchema, type Delivery, type Reminder } from "../shared/model";
 import { errorText, type Logger } from "./log";
 
+const RecapStateSchema = z.object({
+  morning: z.string().nullable().default(null),
+  evening: z.string().nullable().default(null),
+  /** Local date each recap was last sent for. */
+  sent: z.object({ morning: z.string().optional(), evening: z.string().optional() }).default({}),
+});
+export type RecapState = z.infer<typeof RecapStateSchema>;
+
 const StateSchema = z.object({
   version: z.literal(1),
   reminders: z.array(ReminderSchema),
   deliveries: z.array(DeliverySchema),
   thread: z.object({ agentId: z.string().nullable() }),
+  recaps: RecapStateSchema.prefault({}),
 });
 export type State = z.infer<typeof StateSchema>;
 
-const emptyState = (): State => ({ version: 1, reminders: [], deliveries: [], thread: { agentId: null } });
+const emptyState = (): State => ({ version: 1, reminders: [], deliveries: [], thread: { agentId: null }, recaps: { morning: null, evening: null, sent: {} } });
 
 const STATE_FILE = "state.json";
 const BACKUP_FILE = "state.json.bak";
@@ -172,5 +181,15 @@ export class Store {
 
   setThreadAgentId(id: string | null): void {
     this.state.thread.agentId = id;
+  }
+
+  // --- recaps ----------------------------------------------------------------
+
+  recaps(): RecapState {
+    return this.state.recaps;
+  }
+
+  setRecaps(recaps: RecapState): void {
+    this.state.recaps = recaps;
   }
 }

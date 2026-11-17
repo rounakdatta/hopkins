@@ -22,3 +22,9 @@ export const todayWatch = defineSubscription({
   input: z.object({}),
   event: TodayViewSchema,
 });
+
+export const recapsRpc = defineRpc({
+  name: "hopkins.recaps",
+  input: z.object({ morning: z.string().nullable().optional(), evening: z.string().nullable().optional() }),
+  output: z.object({ ok: z.boolean(), message: z.string() }),
+});

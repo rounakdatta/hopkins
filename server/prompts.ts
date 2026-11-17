@@ -1,6 +1,7 @@
 // What hopkins says to its own conversation. Server-only: never shipped to clients.
 
 import type { Delivery, Reminder } from "../shared/model";
+import type { RecapData } from "./recaps";
 import { formatDay, formatWhen, localDateOf } from "../shared/time";
 import type { Config } from "./config";
 
@@ -74,4 +75,25 @@ export function cueText(delivery: Delivery, reminders: Reminder[], now: number, 
 
 export function isCueText(text: string): boolean {
   return text.trimStart().startsWith(CUE_PREFIX);
+}
+
+/** The cue for a morning note or an evening recap. Built at send time from the current list. */
+export function recapCueText(delivery: Delivery, data: RecapData, now: number, cfg: Config): string {
+  const when = (r: Reminder) => (r.dueAt === null ? "" : ` at ${formatWhen(r.dueAt, cfg.tz, now, cfg.clock)}`);
+  const list = (items: Reminder[], withTime: boolean) =>
+    items.map((r, i) => `${i + 1}. ${quote(r.text)}${withTime ? when(r) : ""}${r.important ? " (important)" : ""}${r.scope === "work" ? " (work)" : ""}`);
+  const lines = [`<hopkins:recap kind="${data.kind}" id="${delivery.id}">`];
+  if (data.waiting.length) lines.push("Delivered, not done yet:", ...list(data.waiting.slice(0, 5), false));
+  if (data.today.length) lines.push(data.kind === "morning" ? "Today:" : "Still today:", ...list(data.today.slice(0, 6), true));
+  if (data.tomorrow.length) lines.push("Tomorrow:", ...list(data.tomorrow.slice(0, 5), true));
+  if (data.doneToday.length) lines.push(`Done today: ${data.doneToday.slice(0, 6).map((r) => quote(r.text)).join(", ")}`);
+  if (data.workedOn.length) lines.push(`Conversations active today: ${data.workedOn.map(quote).join(", ")}`);
+  if (lines.length === 1) lines.push("(The list is empty.)");
+  lines.push(`</hopkins:recap>`);
+  lines.push(
+    data.kind === "morning"
+      ? `Write their morning note: up to three things for today with their times, the most pressing first, in their words; mention anything still waiting from before in a few words. If there is nothing, one short line saying the list is clear. Start with "Morning." and nothing more by way of greeting. Only the message.`
+      : `Write their evening recap, looking forward first: what is still open, then the first thing tomorrow by name and time. Then at most one short line on what moved today. End with a short line that it is fine to stop for today. If nothing is open, two lines at most. Only the message.`,
+  );
+  return lines.join("\n");
 }

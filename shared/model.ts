@@ -79,10 +79,15 @@ export const ReminderSchema = z.object({
 });
 export type Reminder = z.infer<typeof ReminderSchema>;
 
+export const RecapKindSchema = z.enum(["morning", "evening"]);
+export type RecapKind = z.infer<typeof RecapKindSchema>;
+
 export const DeliverySchema = z.object({
   id: z.string(),
   reminderIds: z.array(z.string()),
-  kind: z.enum(["due", "nudge"]),
+  kind: z.enum(["due", "nudge", "recap"]),
+  /** For recaps: which one, and the local date it is for. */
+  recap: z.object({ kind: RecapKindSchema, date: z.string() }).optional(),
   createdAt: z.number(),
   state: z.enum(["pending", "sending", "sent", "failed"]),
   attempts: z.number().int().min(0),
@@ -132,6 +137,8 @@ export const TodayViewSchema = z.object({
     problems: z.array(z.string()),
   }),
   counts: z.object({ waiting: z.number(), today: z.number() }),
+  /** Daily recap times ("08:30"), or null when off. */
+  recaps: z.object({ morning: z.string().nullable(), evening: z.string().nullable() }),
   /** Snooze choices that make sense right now, in the user's zone. */
   snoozeOptions: z.array(z.object({ label: z.string(), until: z.string() })),
 });

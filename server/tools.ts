@@ -6,10 +6,12 @@ import { defineAgentTool, type AgentToolDefinition, type AgentToolResult } from 
 import { z } from "zod";
 import { RepeatSchema, type Reminder, type Source } from "../shared/model";
 import { scopeFor, type Config } from "./config";
+import type { Recaps } from "./recaps";
 import type { Clock, ListFilter, Reminders, Result } from "./reminders";
 
 export interface ToolDeps {
   reminders: Reminders;
+  recaps?: Recaps;
   config: () => Config;
   clock: Clock;
   /** True when the calling agent is the hopkins conversation itself. */
@@ -156,5 +158,27 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
     },
   });
 
-  return [remind, list, change, close];
+  const tools = [remind, list, change, close];
+  const recaps = deps.recaps;
+  if (recaps) {
+    tools.push(
+      defineAgentTool({
+        name: "hopkins_recaps",
+        title: "Daily notes",
+        description: `Turn hopkins's daily morning note and evening recap on or off, or change their times. Both are off until the user asks for them. The morning note lists what is due today; the evening recap looks ahead to tomorrow and closes the day. Pass a time ("08:30", "9pm") or "off". With no arguments it reports the current times.`,
+        input: z.object({
+          morning: z.string().optional().describe('e.g. "08:30", or "off".'),
+          evening: z.string().optional().describe('e.g. "21:30", or "off".'),
+        }),
+        async execute(input) {
+          if (input.morning === undefined && input.evening === undefined) return textResult(recaps.describe());
+          const r = recaps.set(input);
+          if (!r.ok) return textResult(`Not changed: ${r.error}.`, { changed: false }, true);
+          deps.changed();
+          return textResult(r.confirmation, { changed: true, ...recaps.times() });
+        },
+      }),
+    );
+  }
+  return tools;
 }

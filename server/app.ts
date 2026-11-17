@@ -4,13 +4,15 @@
 
 import type { PluginServerContext, PluginSettingsState } from "@getpaseo/plugin/server";
 import type { TodayView } from "../shared/model";
-import { actRpc, todayRpc, todayWatch } from "../shared/rpc";
+import { actRpc, recapsRpc, todayRpc, todayWatch } from "../shared/rpc";
+import { localDateOf, zonedToInstant } from "../shared/time";
 import { hopkinsSettings, settingsSchema, type HopkinsSettings } from "../shared/settings";
 import { resolveConfig, type Config } from "./config";
-import { DeliveryQueue } from "./delivery";
+import { defaultDeliveryOptions, DeliveryQueue, type RecapSource } from "./delivery";
 import { consoleLogger, errorText, type Logger } from "./log";
 import { HopkinsMcpServer, MCP_SERVER_NAME } from "./mcp-server";
 import { PaseoLink } from "./paseo-link";
+import { Recaps } from "./recaps";
 import { Reminders, systemClock, type Clock } from "./reminders";
 import { Scheduler } from "./scheduler";
 import { defaultDataDir, Store } from "./store";
@@ -39,8 +41,18 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   const reminders = new Reminders(store, clock, getConfig);
   const link = new PaseoLink(log, () => onConnected());
   const port = new PaseoThreadPort(link, store, getConfig, log);
-  const queue = new DeliveryQueue(store, reminders, () => (link.connected ? port : null), clock, getConfig, log);
-  const scheduler = new Scheduler(reminders, queue, clock, getConfig, log);
+  const recaps = new Recaps(store, reminders, clock, getConfig);
+  const recapSource: RecapSource = {
+    enabled: (kind) => recaps.enabled(kind),
+    compose: async (kind, now) => {
+      const startOfToday = zonedToInstant({ ...localDateOf(now, config.tz), hour: 0, minute: 0 }, config.tz);
+      const workedOn = kind === "evening" ? await port.recentTitles(startOfToday) : [];
+      return recaps.compose(kind, now, workedOn);
+    },
+    markSent: (kind, date) => recaps.markSent(kind, date),
+  };
+  const queue = new DeliveryQueue(store, reminders, () => (link.connected ? port : null), clock, getConfig, log, defaultDeliveryOptions, recapSource);
+  const scheduler = new Scheduler(reminders, queue, clock, getConfig, log, recaps);
 
   // --- Today view and live watchers ------------------------------------------------
 
@@ -116,6 +128,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
 
   const tools = createTools({
     reminders,
+    recaps,
     config: getConfig,
     clock,
     isThread: (agentId) => agentId === store.threadAgentId(),
@@ -159,6 +172,14 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
       input.action === "snooze"
         ? reminders.change(input.id, { when: input.until?.trim() || "in 1h" })
         : reminders.close(input.id, input.action === "done" ? "done" : "dropped");
+    if (!result.ok) return { ok: false, message: result.error };
+    changed();
+    return { ok: true, message: result.confirmation };
+  });
+
+  server.handle(recapsRpc, async (input, context) => {
+    link.adopt(context.paseo);
+    const result = recaps.set(input);
     if (!result.ok) return { ok: false, message: result.error };
     changed();
     return { ok: true, message: result.confirmation };

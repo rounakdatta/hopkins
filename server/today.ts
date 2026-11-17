@@ -37,6 +37,7 @@ export function snoozeOptions(cfg: Config, now: number): { label: string; until:
 }
 
 export function buildToday(store: Store, reminders: Reminders, cfg: Config, now: number, health: Health): TodayView {
+  const recaps = store.recaps();
   const endOfToday = zonedToInstant({ ...addDays(localDateOf(now, cfg.tz), 1), hour: 0, minute: 0 }, cfg.tz);
   const item = (r: Reminder): TodayItem => ({
     id: r.id,
@@ -76,5 +77,6 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     health: { ...health, threadAgentId: store.threadAgentId() },
     counts: { waiting: waiting.length, today: today.length },
     snoozeOptions: snoozeOptions(cfg, now),
+    recaps: { morning: recaps.morning, evening: recaps.evening },
   };
 }

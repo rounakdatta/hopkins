@@ -318,6 +318,17 @@ export function parseWhen(input: string, ctx: WhenContext): WhenResult {
   return ok(local, ctx);
 }
 
+/** A time of day as people write it: "08:30", "8:30am", "9pm", "21:00", "noon". Null if unreadable. */
+export function parseTimeOfDay(input: string): ClockTime | null {
+  const parsed = parseClock(input.toLowerCase(), {
+    now: 0,
+    tz: "UTC",
+    morning: { hour: 9, minute: 0 },
+    evening: { hour: 19, minute: 0 },
+  });
+  return parsed ? parsed.time : null;
+}
+
 /** "09:30" → {9, 30}; tolerant of "9:30" and "9". */
 export function parseClockSetting(s: string, fallback: ClockTime): ClockTime {
   const m = /^(\d{1,2})(?::(\d{2}))?$/.exec(s.trim());

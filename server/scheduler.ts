@@ -4,6 +4,7 @@
 import type { Config } from "./config";
 import type { DeliveryQueue } from "./delivery";
 import { errorText, type Logger } from "./log";
+import type { Recaps } from "./recaps";
 import type { Clock, Reminders } from "./reminders";
 
 export class Scheduler {
@@ -17,6 +18,7 @@ export class Scheduler {
     private readonly clock: Clock,
     private readonly config: () => Config,
     private readonly log: Logger,
+    private readonly recaps: Recaps | null = null,
   ) {}
 
   start(intervalMs = 15_000): void {
@@ -47,6 +49,7 @@ export class Scheduler {
         if (due.length > 0) this.queue.enqueue("due", due.map((r) => r.id), now);
         const repings = this.reminders.repingsDue(now).filter((r) => !this.queue.inFlight(r.id));
         if (repings.length > 0) this.queue.enqueue("nudge", repings.map((r) => r.id), now);
+        for (const recap of this.recaps?.due(now) ?? []) this.queue.enqueueRecap(recap.kind, recap.date, now);
         void this.queue.pump().catch((err) => this.log.error("send loop failed", { error: errorText(err) }));
       }
       await this.queue.refreshSeen();

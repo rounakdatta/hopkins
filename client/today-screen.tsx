@@ -3,7 +3,7 @@ import { Pressable, Text, View } from "react-native";
 import { useRpc, useSubscription, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { Icon, Loading, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import type { TodayItem, TodayView } from "../shared/model";
-import { actRpc, todayWatch } from "../shared/rpc";
+import { actRpc, recapsRpc, todayWatch } from "../shared/rpc";
 import { space, tabular, type Colors } from "./theme";
 
 type Act = (id: string, action: "done" | "drop" | "snooze", until?: string) => Promise<void>;
@@ -115,6 +115,8 @@ export function TodayScreen(props: PluginScreenProps) {
         </Fold>
       ) : null}
 
+      <DailyNotes colors={colors} recaps={view.recaps} />
+
       {!nothing && openThread ? (
         <Pressable accessibilityRole="button" onPress={openThread} style={{ alignSelf: "flex-start", paddingVertical: space.s }}>
           <Text style={{ color: colors.accent, fontSize: 14 }}>Open the hopkins conversation</Text>
@@ -140,20 +142,21 @@ function Section(props: { colors: Colors; title: string; count: number; children
 }
 
 /** A section that stays folded until asked for: someday ideas and closed items are not today's business. */
-function Fold(props: { colors: Colors; title: string; count: number; children: ReactNode }) {
+function Fold(props: { colors: Colors; title: string; count?: number; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <View style={{ gap: space.s }}>
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        accessibilityLabel={`${open ? "Hide" : "Show"} ${props.title.toLowerCase()}, ${props.count}`}
+        accessibilityLabel={`${open ? "Hide" : "Show"} ${props.title.toLowerCase()}${props.count !== undefined ? `, ${props.count}` : ""}`}
         onPress={() => setOpen(!open)}
         style={{ flexDirection: "row", alignItems: "center", gap: space.xs, paddingVertical: space.xs }}
       >
         <Icon name={open ? "chevron-down" : "chevron-right"} size={16} color={props.colors.foregroundMuted} />
         <Text style={{ color: props.colors.foregroundMuted, fontSize: 13, fontWeight: "600" }}>
-          {props.title} <Text style={{ fontWeight: "400", ...tabular }}>{props.count}</Text>
+          {props.title}
+          {props.count !== undefined ? <Text style={{ fontWeight: "400", ...tabular }}> {props.count}</Text> : null}
         </Text>
       </Pressable>
       {open ? (
@@ -342,5 +345,58 @@ function EmptyState(props: { colors: Colors; onOpenThread: (() => void) | null }
         </Pressable>
       ) : null}
     </View>
+  );
+}
+
+const MORNING = ["07:30", "08:00", "08:30", "09:00"];
+const EVENING = ["20:00", "21:00", "21:30", "22:00"];
+
+function clockLabel(value: string): string {
+  const [h, m] = value.split(":").map(Number) as [number, number];
+  const suffix = h < 12 ? "am" : "pm";
+  const hour = h % 12 === 0 ? 12 : h % 12;
+  return m === 0 ? `${hour}${suffix}` : `${hour}:${String(m).padStart(2, "0")}${suffix}`;
+}
+
+/** The morning note and evening recap: off until chosen, set here or by asking any agent. */
+function DailyNotes(props: { colors: Colors; recaps: TodayView["recaps"] }) {
+  const setRecaps = useRpc(recapsRpc);
+  const toast = useToast();
+  const [saving, setSaving] = useState(false);
+  const summary = [
+    props.recaps.morning ? `morning ${clockLabel(props.recaps.morning)}` : null,
+    props.recaps.evening ? `evening ${clockLabel(props.recaps.evening)}` : null,
+  ].filter(Boolean);
+  const choose = async (kind: "morning" | "evening", value: string | null) => {
+    setSaving(true);
+    try {
+      const result = await setRecaps({ [kind]: value });
+      if (result.ok) toast.show(result.message, { variant: "success" });
+      else toast.error(result.message);
+    } catch {
+      toast.error("Couldn't reach hopkins. Try again in a moment.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const row = (kind: "morning" | "evening", label: string, hint: string, values: string[]) => (
+    <View style={{ padding: space.m, gap: space.s, borderBottomWidth: 1, borderBottomColor: props.colors.border }}>
+      <View style={{ gap: 2 }}>
+        <Text style={{ color: props.colors.foreground, fontSize: 15 }}>{label}</Text>
+        <Text style={{ color: props.colors.foregroundMuted, fontSize: 12 }}>{hint}</Text>
+      </View>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.s }}>
+        <Button colors={props.colors} tone="secondary" label="Off" a11y={`Turn the ${label.toLowerCase()} off`} pressed={props.recaps[kind] === null} disabled={saving} onPress={() => void choose(kind, null)} />
+        {values.map((v) => (
+          <Button key={v} colors={props.colors} tone="secondary" label={clockLabel(v)} a11y={`${label} at ${clockLabel(v)}`} pressed={props.recaps[kind] === v} disabled={saving} onPress={() => void choose(kind, v)} />
+        ))}
+      </View>
+    </View>
+  );
+  return (
+    <Fold colors={props.colors} title={summary.length ? `Daily notes · ${summary.join(", ")}` : "Daily notes"}>
+      {row("morning", "Morning note", "What's due today, first thing.", MORNING)}
+      {row("evening", "Evening recap", "What's still open, tomorrow's first thing, then permission to stop.", EVENING)}
+    </Fold>
   );
 }

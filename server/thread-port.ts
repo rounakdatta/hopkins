@@ -102,6 +102,24 @@ export class PaseoThreadPort implements ThreadPort {
     return handle.id;
   }
 
+  /** Titles of conversations active since `since`, for the evening recap. Never throws. */
+  async recentTitles(since: number, limit = 5): Promise<string[]> {
+    try {
+      const result = await withTimeout(this.api().agents.list(), 15_000, "listing agents");
+      const own = this.store.threadAgentId();
+      const titles: string[] = [];
+      for (const entry of result.entries as unknown[]) {
+        const agent = ((entry as { agent?: unknown }).agent ?? entry) as AgentLike & { title?: string | null; lastActivityAt?: string; updatedAt?: string; background?: boolean; parentAgentId?: string | null };
+        if (!agent.id || agent.id === own || agent.background || agent.parentAgentId) continue;
+        const active = Date.parse(agent.lastActivityAt ?? agent.updatedAt ?? "");
+        if (Number.isFinite(active) && active >= since && agent.title) titles.push(agent.title);
+      }
+      return [...new Set(titles)].slice(0, limit);
+    } catch {
+      return [];
+    }
+  }
+
   async status(agentId: string): Promise<ThreadStatus> {
     const result = await withTimeout(this.api().agents.ref(agentId).refresh(), 15_000, "reading the conversation's state");
     const agent = result?.agent as AgentLike | undefined;
