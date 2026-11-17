@@ -17,7 +17,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
-import type { PaseoApi } from "@getpaseo/client";
+import type { PaseoApi } from "./paseo-link";
 import type { AgentToolDefinition } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import { errorText, type Logger } from "./log";

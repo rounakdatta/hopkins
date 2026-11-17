@@ -7,8 +7,16 @@
 // matches the daemon's version (no bundled copy, no extra dependency).
 
 import { createRequire } from "node:module";
-import type { PaseoApi } from "@getpaseo/client";
+import type { PluginHookContext } from "@getpaseo/plugin/server";
 import { errorText, type Logger } from "./log";
+
+/**
+ * The daemon's client API, named through the plugin SDK. Paseo only builds a plugin
+ * whose imports it supplies itself or can resolve beside the plugin, and nothing is
+ * installed beside an installed copy of hopkins: `import type … from "@getpaseo/client"`
+ * built from the repo, where node_modules has it, and failed everywhere else.
+ */
+export type PaseoApi = PluginHookContext["paseo"];
 
 /** The parts of DaemonClient hopkins uses. */
 export interface DaemonLike {

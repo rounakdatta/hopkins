@@ -2,12 +2,11 @@
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import type { PaseoApi } from "@getpaseo/client";
 import type { Config } from "./config";
 import type { FinishResult, ThreadPort, ThreadStatus } from "./delivery";
 import type { TimelineReader } from "./noticing";
 import { errorText, type Logger } from "./log";
-import type { PaseoLink } from "./paseo-link";
+import type { PaseoApi, PaseoLink } from "./paseo-link";
 import { THREAD_SYSTEM_PROMPT, THREAD_TITLE } from "./prompts";
 import type { Store } from "./store";
 
