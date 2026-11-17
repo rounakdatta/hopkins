@@ -17,7 +17,9 @@ export default function hopkins(client: PluginClientContext) {
       query: { itemType: "user_message" },
       transform: ({ item }) => {
         const cue = parseCue(item.text);
-        return cue ? { items: [{ type: "plugin", kind: CUE_KIND, version: 1, data: { kind: cue.kind, items: cue.items } }] } : undefined;
+        return cue
+          ? { items: [{ type: "plugin", kind: CUE_KIND, version: 1, data: { kind: cue.kind, items: cue.items, ...(cue.status ? { status: cue.status } : {}) } }] }
+          : undefined;
       },
     }),
   ];

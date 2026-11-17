@@ -6,6 +6,7 @@ import { addDays, formatClock, localDateOf, weekdayOf, zonedToInstant } from "..
 import type { Config } from "./config";
 import type { Store } from "./store";
 import type { Reminders } from "./reminders";
+import type { Tasks } from "./tasks";
 
 export interface Health {
   running: boolean;
@@ -43,7 +44,7 @@ export interface NoticingView {
   backfill: BackfillState;
 }
 
-export function buildToday(store: Store, reminders: Reminders, cfg: Config, now: number, health: Health, noticing?: NoticingView): TodayView {
+export function buildToday(store: Store, reminders: Reminders, cfg: Config, now: number, health: Health, noticing?: NoticingView, tasks?: Tasks): TodayView {
   const recaps = store.recaps();
   const endOfToday = zonedToInstant({ ...addDays(localDateOf(now, cfg.tz), 1), hour: 0, minute: 0 }, cfg.tz);
   const item = (r: Reminder): TodayItem => ({
@@ -96,5 +97,16 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       scope: s.scope,
     })),
     noticing: { available: noticing?.available ?? false, backfill: noticing?.backfill ?? store.backfill() },
+    // The brief stays on the host; the app gets what to show.
+    tasks: (tasks?.list(now) ?? []).slice(0, 30).map((t) => ({
+      id: t.id,
+      text: t.text,
+      state: t.state,
+      dueAt: t.dueAt,
+      when: tasks!.describe(t, now),
+      report: (t.report ?? t.error ?? null)?.slice(0, 400) ?? null,
+      agentId: t.agentId,
+      scope: t.scope,
+    })),
   };
 }

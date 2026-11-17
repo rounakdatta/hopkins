@@ -53,6 +53,23 @@ export class PaseoThreadPort implements ThreadPort {
   toolNames: string[] = [];
   /** The conversation's own MCP entry for hopkins (resolves once the tools server is up). */
   threadMcpServer: (() => Promise<Record<string, unknown> | null>) | null = null;
+  /** A conversation given up on, so the next one is a new agent rather than the same broken one. */
+  private abandoned: string | null = null;
+
+  /**
+   * The conversation lost its history (its provider session is gone), so every turn would fail.
+   * Archive it and forget it: the next delivery starts a new one.
+   */
+  async abandon(agentId: string): Promise<void> {
+    this.abandoned = agentId;
+    if (this.store.threadAgentId() === agentId) {
+      this.store.setThreadAgentId(null);
+      this.store.save();
+    }
+    this.store.event("thread-abandoned", { agent: agentId });
+    this.log.warn("the hopkins conversation lost its history; starting a new one", { agent: agentId.slice(0, 8) });
+    await withTimeout(this.api().agents.ref(agentId).archive(), 15_000, "archiving the old conversation").catch(() => undefined);
+  }
 
   async ensureThread(): Promise<string> {
     const api = this.api();
@@ -63,12 +80,12 @@ export class PaseoThreadPort implements ThreadPort {
       if (found?.agent) return known; // archived is fine: sending revives it
     }
     const labelled = await this.findByLabel(api);
-    if (labelled) {
+    if (labelled && labelled !== this.abandoned) {
       this.store.setThreadAgentId(labelled);
       this.store.save();
       return labelled;
     }
-    this.creating ??= this.create(api, known).finally(() => {
+    this.creating ??= this.create(api, known ?? this.abandoned).finally(() => {
       this.creating = null;
     });
     return this.creating;

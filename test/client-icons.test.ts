@@ -19,7 +19,15 @@ function clientFiles(): string[] {
 }
 
 function iconNames(source: string): string[] {
-  return [...source.matchAll(/\bicon\s*[=:]\s*\{?\s*["']([^"']+)["']/g)].map((m) => m[1]!);
+  const props = [...source.matchAll(/\bicon\s*[=:]\s*\{?\s*["']([^"']+)["']/g)].map((m) => m[1]!);
+  // <Icon name="X" /> and <Icon name={cond ? "X" : "Y"} />: every string literal in the expression.
+  // Literals compared with === are values being tested, not icon names.
+  const results = (expr: string) =>
+    [...expr.matchAll(/"([^"]*)"/g)].filter((n) => !/===\s*$/.test(expr.slice(0, n.index))).map((n) => n[1]!);
+  const elements = [...source.matchAll(/<Icon\b[^>]*?\bname=(\{[^}]*\}|"[^"]*")/g)].flatMap((m) => results(m[1]!));
+  // Icon names chosen in a helper (e.g. iconFor): string literals returned from it.
+  const helpers = [...source.matchAll(/function iconFor[\s\S]*?\n\}/g)].flatMap((m) => [...m[0].matchAll(/return [^;]*/g)].flatMap((r) => results(r[0])));
+  return [...props, ...elements, ...helpers];
 }
 
 describe("client icons", () => {
@@ -35,6 +43,8 @@ describe("client icons", () => {
   it("would catch the names that once kept hopkins out of the app", () => {
     expect(iconNames(`client.addSettingsScreen({ id: "settings", icon: "bell" })`)).toEqual(["bell"]);
     expect(iconNames(`<Button icon="bell-plus" />`)).toEqual(["bell-plus"]);
+    expect(iconNames(`<Icon name={open ? "chevron-down" : "ChevronRight"} size={16} />`)).toEqual(["chevron-down", "ChevronRight"]);
+    expect(iconNames(`<Icon name={state === "done" ? "Check" : "x"} />`)).toEqual(["Check", "x"]);
   });
 });
 

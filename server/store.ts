@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { BackfillStateSchema, DeliverySchema, idleBackfill, ReminderSchema, SuggestionSchema, type BackfillState, type Delivery, type Reminder, type Suggestion } from "../shared/model";
+import { BackfillStateSchema, DeliverySchema, idleBackfill, ReminderSchema, SuggestionSchema, TaskSchema, type BackfillState, type Delivery, type Reminder, type Suggestion, type Task } from "../shared/model";
 import { errorText, type Logger } from "./log";
 
 const RecapStateSchema = z.object({
@@ -27,10 +27,11 @@ const StateSchema = z.object({
   /** Per-conversation read position for live noticing: the timeline sequence already read. */
   cursors: z.record(z.string(), z.object({ epoch: z.string(), seq: z.number() })).default({}),
   backfill: BackfillStateSchema.default(idleBackfill()),
+  tasks: z.array(TaskSchema).default([]),
 });
 export type State = z.infer<typeof StateSchema>;
 
-const emptyState = (): State => ({ version: 1, reminders: [], deliveries: [], thread: { agentId: null }, recaps: { morning: null, evening: null, sent: {} }, suggestions: [], cursors: {}, backfill: idleBackfill() });
+const emptyState = (): State => ({ version: 1, reminders: [], deliveries: [], thread: { agentId: null }, recaps: { morning: null, evening: null, sent: {} }, suggestions: [], cursors: {}, backfill: idleBackfill(), tasks: [] });
 
 const STATE_FILE = "state.json";
 const BACKUP_FILE = "state.json.bak";
@@ -219,6 +220,28 @@ export class Store {
 
   setCursor(agentId: string, cursor: { epoch: string; seq: number }): void {
     this.state.cursors[agentId] = cursor;
+  }
+
+  // --- tasks -----------------------------------------------------------------
+
+  tasks(): readonly Task[] {
+    return this.state.tasks;
+  }
+
+  getTask(id: string): Task | undefined {
+    return this.state.tasks.find((t) => t.id === id);
+  }
+
+  putTask(task: Task): void {
+    const i = this.state.tasks.findIndex((t) => t.id === task.id);
+    if (i === -1) this.state.tasks.push(task);
+    else this.state.tasks[i] = task;
+    // Keep every open task and the last 100 closed ones.
+    const closed = this.state.tasks.filter((t) => t.state === "done" || t.state === "failed" || t.state === "cancelled");
+    if (closed.length > 100) {
+      const drop = new Set(closed.sort((a, b) => a.updatedAt - b.updatedAt).slice(0, closed.length - 100).map((t) => t.id));
+      this.state.tasks = this.state.tasks.filter((t) => !drop.has(t.id));
+    }
   }
 
   backfill(): BackfillState {

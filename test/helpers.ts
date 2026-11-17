@@ -41,6 +41,12 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     llmModel: "test-model",
     memoryDirs: [],
     historyDays: 120,
+    taskModel: "claude/claude-opus-5-5",
+    taskMode: "bypassPermissions",
+    taskThinking: "max",
+    personalFolder: null,
+    taskGraceMs: 180 * 60_000,
+    taskTimeoutMs: 90 * 60_000,
     ...overrides,
   };
 }

@@ -2,10 +2,10 @@
 // proof: a delivery counts as sent only when the conversation finished a turn
 // with a message. Failures retry with back-off and never drop the reminder.
 
-import type { Delivery, RecapKind, Reminder } from "../shared/model";
+import type { Delivery, RecapKind, Reminder, Task } from "../shared/model";
 import type { Config } from "./config";
 import { errorText, type Logger } from "./log";
-import { cueText, noteCueText, recapCueText } from "./prompts";
+import { cueText, noteCueText, recapCueText, taskCueText } from "./prompts";
 import type { RecapData } from "./recaps";
 import { newId, type Clock, type Reminders } from "./reminders";
 import type { Store } from "./store";
@@ -33,6 +33,8 @@ export interface ThreadPort {
    * running turn (steer) instead of interrupting it.
    */
   runTurn(agentId: string, text: string, timeoutMs: number): Promise<FinishResult>;
+  /** Gives up on a conversation whose history is gone; the next ensureThread makes a new one. */
+  abandon?(agentId: string): Promise<void>;
 }
 
 /** Where recap content comes from (the Recaps module, plus live agent titles). */
@@ -50,6 +52,11 @@ export interface DeliveryOptions {
 }
 
 const RETRY_MINUTES = [1, 5, 15, 30];
+/** What Claude Code says when the session a conversation resumes from no longer exists. */
+const LOST_SESSION = /no conversation found with session id/i;
+
+/** The conversation was replaced: try again in seconds, not on the back-off schedule. */
+class ThreadReplaced extends Error {}
 
 export const defaultDeliveryOptions: DeliveryOptions = {
   idleWaitMs: 90_000,
@@ -128,6 +135,15 @@ export class DeliveryQueue {
     return delivery;
   }
 
+  /** Queues how a task went (done, needs you, failed, missed): one message per outcome. */
+  enqueueTask(task: Task, now: number): Delivery {
+    const delivery: Delivery = { id: newId("d"), reminderIds: [], kind: "note", task: { id: task.id, state: task.state }, createdAt: now, state: "pending", attempts: 0 };
+    this.store.putDelivery(delivery);
+    this.store.save();
+    this.store.event("queued", { id: delivery.id, kind: "task", task: task.id, state: task.state });
+    return delivery;
+  }
+
   /** Queues a daily recap once per kind and date. */
   enqueueRecap(kind: RecapKind, date: string, now: number): Delivery | null {
     const exists = this.store
@@ -181,6 +197,12 @@ export class DeliveryQueue {
 
   /** What to say and what to record once it is said; null when there is nothing left to send. */
   private async prepare(d: Delivery, now: number): Promise<{ reminderIds: string[]; cue: (delivery: Delivery) => string; onSent: (delivery: Delivery, at: number) => void } | null> {
+    if (d.kind === "note" && d.task) {
+      const task = this.store.getTask(d.task.id);
+      // Moved on since this was queued (answered, retried, cancelled): the newer outcome has its own message.
+      if (!task || task.state !== d.task.state) return null;
+      return { reminderIds: [], cue: (delivery) => taskCueText(delivery, task, this.clock.now(), this.config()), onSent: () => undefined };
+    }
     if (d.kind === "note") {
       if (!d.note) return null;
       return { reminderIds: [], cue: (delivery) => noteCueText(delivery), onSent: () => undefined };
@@ -230,6 +252,11 @@ export class DeliveryQueue {
       if (status.requiresAttention) this.markPreviousUnseen(delivery.id);
       await port.clearAttention(agentId);
       const result = await port.runTurn(agentId, plan.cue(delivery), this.options.finishTimeoutMs);
+      // Its provider session is gone, so this conversation can never answer again: start a new one.
+      if (result.status === "error" && LOST_SESSION.test(result.error ?? "") && port.abandon) {
+        await port.abandon(agentId);
+        throw new ThreadReplaced("the hopkins conversation had lost its history; a new one is being started");
+      }
       const message = result.lastMessage?.trim();
       if (result.status !== "idle" || !message) {
         throw new Error(
@@ -246,8 +273,8 @@ export class DeliveryQueue {
       this.store.event("sent", { id: delivery.id, kind: delivery.kind, count: delivery.reminderIds.length, attempt: delivery.attempts });
       this.log.info("delivered", { delivery: delivery.id, kind: delivery.kind, count: delivery.reminderIds.length });
     } catch (err) {
-      const minutes = RETRY_MINUTES[Math.min(delivery.attempts - 1, RETRY_MINUTES.length - 1)]!;
-      delivery = { ...delivery, state: "pending", error: errorText(err), nextAttemptAt: this.clock.now() + minutes * 60_000 };
+      const minutes = err instanceof ThreadReplaced ? 0 : RETRY_MINUTES[Math.min(delivery.attempts - 1, RETRY_MINUTES.length - 1)]!;
+      delivery = { ...delivery, state: "pending", error: errorText(err), nextAttemptAt: this.clock.now() + (minutes * 60_000 || 5_000) };
       this.store.putDelivery(delivery);
       this.store.save();
       this.store.event("send-failed", { id: delivery.id, attempt: delivery.attempts });

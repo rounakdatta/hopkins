@@ -21,6 +21,13 @@ export interface Config {
   llmModel: string;
   memoryDirs: string[];
   historyDays: number;
+  taskModel: string;
+  taskMode: string;
+  taskThinking: string;
+  /** Resolved folder for personal tasks, or null for "the folder of the conversation that asked". */
+  personalFolder: string | null;
+  taskGraceMs: number;
+  taskTimeoutMs: number;
 }
 
 export function expandHome(p: string): string {
@@ -46,6 +53,12 @@ export function resolveConfig(values: HopkinsSettings, dataDir: string): Config 
     llmModel: values.llmModel,
     memoryDirs: values.memoryDirs.map((d) => path.resolve(expandHome(d.trim()))).filter(Boolean),
     historyDays: values.historyDays,
+    taskModel: values.taskModel.trim() || "claude",
+    taskMode: values.taskMode.trim(),
+    taskThinking: values.taskThinking.trim(),
+    personalFolder: values.personalFolder.trim() ? path.resolve(expandHome(values.personalFolder.trim())) : null,
+    taskGraceMs: values.taskGraceMinutes * 60_000,
+    taskTimeoutMs: values.taskTimeoutMinutes * 60_000,
   };
 }
 

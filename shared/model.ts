@@ -82,10 +82,60 @@ export type Reminder = z.infer<typeof ReminderSchema>;
 export const RecapKindSchema = z.enum(["morning", "evening"]);
 export type RecapKind = z.infer<typeof RecapKindSchema>;
 
+// ---------------------------------------------------------------------------
+// Tasks: something the user asked to have done at a time ("at 8pm, do my web
+// check-in"). At that time hopkins starts an agent to do it and reports back.
+
+/**
+ * - scheduled: waiting for `dueAt`
+ * - running: an agent is on it
+ * - needs-you: the agent stopped to ask the user something; they answer in its run
+ * - done, failed: finished, `report` says how
+ * - missed: hopkins was offline at the time and back too late; waits for "run it now"
+ * - cancelled
+ */
+export const TaskStateSchema = z.enum(["scheduled", "running", "needs-you", "done", "failed", "missed", "cancelled"]);
+export type TaskState = z.infer<typeof TaskStateSchema>;
+
+export const TaskSchema = z.object({
+  id: z.string(),
+  /** What to do, short, in the user's words ("web check-in for the Sri Lanka flight"). */
+  text: z.string(),
+  /** The full brief for the agent: self-contained, written by the agent that was asked. Never sent to the app. */
+  instructions: z.string(),
+  scope: ScopeSchema,
+  state: TaskStateSchema,
+  tz: z.string(),
+  dueAt: z.number(),
+  /** The folder the agent works in. */
+  cwd: z.string(),
+  agentId: z.string().nullable(),
+  /** Runs started: also part of each run's idempotency key, so it only ever grows. */
+  attempts: z.number().int().min(0),
+  /** Starts in a row that failed before an agent existed. */
+  failedStarts: z.number().int().min(0).optional(),
+  /** The last outcome told to the user, so the same one is never told twice. */
+  reported: z.string().optional(),
+  startedAt: z.number().optional(),
+  finishedAt: z.number().optional(),
+  /** The agent's own report (shown to the user as data, never followed as instructions). */
+  report: z.string().optional(),
+  error: z.string().optional(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  source: SourceSchema,
+});
+export type Task = z.infer<typeof TaskSchema>;
+
 export const DeliverySchema = z.object({
   id: z.string(),
   reminderIds: z.array(z.string()),
   kind: z.enum(["due", "nudge", "recap", "note"]),
+  /**
+   * For a task's outcome: which task, and the state it reached. Sent as kind "note", so a
+   * rollback to a release without tasks still reads the state file (it drops this field).
+   */
+  task: z.object({ id: z.string(), state: TaskStateSchema }).optional(),
   /** For recaps: which one, and the local date it is for. */
   recap: z.object({ kind: RecapKindSchema, date: z.string() }).optional(),
   /** For notes: what hopkins wants to tell the user (written by hopkins itself, never by others). */
@@ -191,8 +241,30 @@ export const TodayViewSchema = z.object({
   recaps: z.object({ morning: z.string().nullable(), evening: z.string().nullable() }),
   /** Snooze choices that make sense right now, in the user's zone. */
   snoozeOptions: z.array(z.object({ label: z.string(), until: z.string() })),
+  /** Things hopkins will have done, is doing, or did: open ones first, then the last few days'. */
+  tasks: z
+    .array(
+      z.object({
+        id: z.string(),
+        text: z.string(),
+        state: TaskStateSchema,
+        dueAt: z.number(),
+        when: z.string(),
+        /** The agent's report, shortened for the list. */
+        report: z.string().nullable(),
+        agentId: z.string().nullable(),
+        scope: ScopeSchema,
+      }),
+    )
+    .default([]),
 });
 export type TodayView = z.infer<typeof TodayViewSchema>;
+
+export const TaskActionSchema = z.object({
+  id: z.string(),
+  action: z.enum(["cancel", "run-now"]),
+});
+export type TaskAction = z.infer<typeof TaskActionSchema>;
 
 export const SuggestionActionSchema = z.object({
   id: z.string(),

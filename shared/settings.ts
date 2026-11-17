@@ -22,6 +22,18 @@ export const settingsSchema = z.object({
   threadMode: z.string().default("default"),
   /** Working folder for the hopkins conversation. Empty means hopkins's own data folder. */
   threadCwd: z.string().default(""),
+  /** Provider (and model, as "provider/model") for the agents that do tasks ("at 8pm, do the web check-in"). */
+  taskModel: z.string().default("claude"),
+  /** Their permission mode. Empty: the mode your new agents start in. Nobody watches a task, so it stops and reports when it needs you. */
+  taskMode: z.string().default(""),
+  /** Their thinking level ("max", "high"…). Empty: the provider's default. */
+  taskThinking: z.string().default(""),
+  /** Where personal tasks run, with your files, notes and memory. Empty: the folder of the conversation that asked. Work tasks run in the first work root. */
+  personalFolder: z.string().default(""),
+  /** A task due while hopkins was offline still starts if it is back within this many minutes; later, it waits for "run it now". */
+  taskGraceMinutes: z.number().int().min(1).max(1440).default(180),
+  /** Longest a task may run before hopkins reports it as stuck. */
+  taskTimeoutMinutes: z.number().int().min(5).max(720).default(90),
   /** Stop delivering (reminders still queue up and arrive when resumed). */
   paused: z.boolean().default(false),
   /** Notice open loops in conversations and suggest them (needs a model key). */

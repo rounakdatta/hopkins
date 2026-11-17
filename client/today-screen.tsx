@@ -3,7 +3,7 @@ import { Pressable, Text, View } from "react-native";
 import { useRpc, useSubscription, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { Icon, Loading, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import type { TodayItem, TodayView } from "../shared/model";
-import { actRpc, backfillRpc, recapsRpc, suggestionRpc, todayWatch } from "../shared/rpc";
+import { actRpc, backfillRpc, recapsRpc, suggestionRpc, taskRpc, todayWatch } from "../shared/rpc";
 import { space, tabular, type Colors } from "./theme";
 
 type Act = (id: string, action: "done" | "drop" | "snooze", until?: string) => Promise<void>;
@@ -49,7 +49,8 @@ export function TodayScreen(props: PluginScreenProps) {
     );
   }
 
-  const nothing = view.waiting.length + view.today.length + view.upcoming.length + view.someday.length + view.noticed.length === 0;
+  const nothing = view.waiting.length + view.today.length + view.upcoming.length + view.someday.length + view.noticed.length + view.tasks.length === 0;
+  const openAgent = props.navigation?.openAgent ? (agentId: string) => props.navigation!.openAgent({ agentId, serverId: props.host.id }) : null;
   const openThread =
     view.health.threadAgentId && props.navigation?.openAgent
       ? () => props.navigation!.openAgent({ agentId: view.health.threadAgentId!, serverId: props.host.id })
@@ -82,6 +83,8 @@ export function TodayScreen(props: PluginScreenProps) {
           ))}
         </Section>
       ) : null}
+
+      {view.tasks.length > 0 ? <TasksSection tasks={view.tasks} colors={colors} openAgent={openAgent} /> : null}
 
       {view.noticed.length > 0 ? (
         <Section colors={colors} title="Noticed" count={view.noticed.length}>
@@ -164,7 +167,7 @@ function Fold(props: { colors: Colors; title: string; count?: number; children: 
         onPress={() => setOpen(!open)}
         style={{ flexDirection: "row", alignItems: "center", gap: space.xs, paddingVertical: space.xs }}
       >
-        <Icon name={open ? "chevron-down" : "chevron-right"} size={16} color={props.colors.foregroundMuted} />
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} size={16} color={props.colors.foregroundMuted} />
         <Text style={{ color: props.colors.foregroundMuted, fontSize: 13, fontWeight: "600" }}>
           {props.title}
           {props.count !== undefined ? <Text style={{ fontWeight: "400", ...tabular }}> {props.count}</Text> : null}
@@ -200,7 +203,7 @@ function Row(props: {
   return (
     <View style={{ padding: space.m, gap: space.s, borderBottomWidth: 1, borderBottomColor: props.colors.border, opacity: props.busy ? 0.5 : 1 }}>
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.s }}>
-        {item.important ? <Icon name="flag" size={14} color={colors.statusWarning} /> : null}
+        {item.important ? <Icon name="Flag" size={14} color={colors.statusWarning} /> : null}
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={{ color: colors.foreground, fontSize: 15 }}>{item.text}</Text>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>
@@ -269,7 +272,7 @@ function Row(props: {
 function ClosedRow(props: { item: TodayItem; colors: Colors }) {
   return (
     <View style={{ padding: space.m, flexDirection: "row", gap: space.s, alignItems: "center", borderBottomWidth: 1, borderBottomColor: props.colors.border }}>
-      <Icon name={props.item.state === "done" ? "check" : "x"} size={14} color={props.colors.foregroundMuted} />
+      <Icon name={props.item.state === "done" ? "Check" : "X"} size={14} color={props.colors.foregroundMuted} />
       <Text style={{ color: props.colors.foregroundMuted, fontSize: 14, flex: 1 }}>{props.item.text}</Text>
     </View>
   );
@@ -336,7 +339,7 @@ function Notice(props: { colors: Colors; tone: "warning" | "muted"; text: string
         borderColor: warning ? props.colors.statusWarning : props.colors.border,
       }}
     >
-      <Icon name={warning ? "triangle-alert" : "refresh-cw"} size={16} color={warning ? props.colors.statusWarning : props.colors.foregroundMuted} />
+      <Icon name={warning ? "TriangleAlert" : "RefreshCw"} size={16} color={warning ? props.colors.statusWarning : props.colors.foregroundMuted} />
       <Text style={{ color: props.colors.foreground, fontSize: 13, flex: 1 }}>{props.text}</Text>
     </View>
   );
@@ -541,5 +544,103 @@ function NoticedMore(props: { items: NoticedItem[]; colors: Colors; snoozeOption
     <Pressable accessibilityRole="button" accessibilityLabel={`Show ${props.items.length} more noticed items`} onPress={() => setOpen(true)} style={{ padding: space.m }}>
       <Text style={{ color: props.colors.accent, fontSize: 14 }}>Show all ({props.items.length} more)</Text>
     </Pressable>
+  );
+}
+
+type TaskItem = TodayView["tasks"][number];
+
+const TASK_STATE: Record<TaskItem["state"], string> = {
+  scheduled: "",
+  running: "Working on it now",
+  "needs-you": "Needs you",
+  done: "Done",
+  failed: "Didn't work",
+  missed: "Didn't start: hopkins was offline then",
+  cancelled: "Cancelled",
+};
+
+/** Things hopkins will have done, is doing, or did. Open ones first; the last few days' after. */
+function TasksSection(props: { tasks: TaskItem[]; colors: Colors; openAgent: ((agentId: string) => void) | null }) {
+  const open = props.tasks.filter((t) => t.state === "scheduled" || t.state === "running" || t.state === "needs-you" || t.state === "missed");
+  const recent = props.tasks.filter((t) => !open.includes(t));
+  return (
+    <>
+      {open.length > 0 ? (
+        <Section colors={props.colors} title="Tasks" count={open.length}>
+          {open.map((task) => (
+            <TaskRow key={task.id} task={task} colors={props.colors} openAgent={props.openAgent} />
+          ))}
+        </Section>
+      ) : null}
+      {recent.length > 0 ? (
+        <Fold colors={props.colors} title="Finished tasks" count={recent.length}>
+          {recent.map((task) => (
+            <TaskRow key={task.id} task={task} colors={props.colors} openAgent={props.openAgent} />
+          ))}
+        </Fold>
+      ) : null}
+    </>
+  );
+}
+
+function TaskRow(props: { task: TaskItem; colors: Colors; openAgent: ((agentId: string) => void) | null }) {
+  const { task, colors } = props;
+  const remote = useRpc(taskRpc);
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const act = async (action: "cancel" | "run-now") => {
+    setBusy(true);
+    try {
+      const result = await remote({ id: task.id, action });
+      if (result.ok) toast.show(result.message, { variant: "success" });
+      else toast.error(result.message);
+    } catch {
+      toast.error("Couldn't reach hopkins. Try again in a moment.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const openRun = task.agentId && props.openAgent ? () => props.openAgent!(task.agentId!) : null;
+  // Only what needs the user is marked: everything else reads as a quiet status line.
+  const needsYou = task.state === "needs-you" || task.state === "missed";
+  const status = task.state === "scheduled" ? task.when : `${TASK_STATE[task.state]}${task.state === "running" || task.state === "missed" ? "" : ` · ${task.when}`}`;
+  return (
+    <View style={{ padding: space.m, gap: space.s, borderBottomWidth: 1, borderBottomColor: colors.border, opacity: busy ? 0.5 : 1 }}>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.s }}>
+        {task.state === "running" ? <Loading /> : null}
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={{ color: colors.foreground, fontSize: 15 }}>{task.text}</Text>
+          <Text style={{ color: needsYou ? colors.statusWarning : colors.foregroundMuted, fontSize: 12, fontWeight: needsYou ? "600" : "400" }}>{status}</Text>
+          {task.report && task.state !== "scheduled" ? (
+            <Text style={{ color: colors.foregroundMuted, fontSize: 13, marginTop: 2 }} numberOfLines={4}>
+              {task.report}
+            </Text>
+          ) : null}
+        </View>
+        {task.scope === "work" ? <Chip colors={colors} label="work" /> : null}
+      </View>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.s }}>
+        {task.state === "needs-you" && openRun ? (
+          <Button colors={colors} tone="primary" icon="MessageCircle" label="Answer in the run" a11y={`Open the run of "${task.text}" to answer it`} disabled={busy} onPress={openRun} />
+        ) : null}
+        {task.state === "missed" || task.state === "failed" || task.state === "scheduled" ? (
+          <Button
+            colors={colors}
+            tone={task.state === "missed" ? "primary" : "secondary"}
+            icon="Play"
+            label={task.state === "failed" ? "Try again" : "Run now"}
+            a11y={`${task.state === "failed" ? "Try" : "Run"} "${task.text}" now`}
+            disabled={busy}
+            onPress={() => void act("run-now")}
+          />
+        ) : null}
+        {openRun && task.state !== "needs-you" && task.state !== "scheduled" ? (
+          <Button colors={colors} tone="secondary" icon="ExternalLink" label="Open run" a11y={`Open the run of "${task.text}"`} disabled={busy} onPress={openRun} />
+        ) : null}
+        {task.state === "scheduled" || task.state === "missed" || task.state === "needs-you" ? (
+          <Button colors={colors} tone="quiet" label="Cancel" a11y={`Cancel "${task.text}"`} disabled={busy} onPress={() => void act("cancel")} />
+        ) : null}
+      </View>
+    </View>
   );
 }

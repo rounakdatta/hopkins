@@ -2,7 +2,7 @@
 
 import { defineRpc, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
-import { ReminderActionSchema, SuggestionActionSchema, TodayViewSchema } from "./model";
+import { ReminderActionSchema, SuggestionActionSchema, TaskActionSchema, TodayViewSchema } from "./model";
 
 export const todayRpc = defineRpc({
   name: "hopkins.today",
@@ -33,6 +33,12 @@ export const suggestionRpc = defineRpc({
   name: "hopkins.suggestion",
   input: SuggestionActionSchema,
   output: z.object({ ok: z.boolean(), message: z.string(), needsTime: z.boolean().optional() }),
+});
+
+export const taskRpc = defineRpc({
+  name: "hopkins.task",
+  input: TaskActionSchema,
+  output: z.object({ ok: z.boolean(), message: z.string() }),
 });
 
 export const backfillRpc = defineRpc({

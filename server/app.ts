@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PluginServerContext, PluginSettingsState } from "@getpaseo/plugin/server";
 import type { TodayView } from "../shared/model";
-import { actRpc, backfillRpc, recapsRpc, suggestionRpc, todayRpc, todayWatch } from "../shared/rpc";
+import { actRpc, backfillRpc, recapsRpc, suggestionRpc, taskRpc, todayRpc, todayWatch } from "../shared/rpc";
 import { localDateOf, zonedToInstant } from "../shared/time";
 import { hopkinsSettings, settingsSchema, type HopkinsSettings } from "../shared/settings";
 import { Backfill } from "./backfill";
@@ -20,6 +20,8 @@ import { PaseoLink } from "./paseo-link";
 import { Recaps } from "./recaps";
 import { Reminders, systemClock, type Clock } from "./reminders";
 import { Scheduler } from "./scheduler";
+import { PaseoTaskPort } from "./task-port";
+import { TaskRunner, Tasks } from "./tasks";
 import { defaultDataDir, Store } from "./store";
 import { PaseoThreadPort, paseoTimelineReader, THREAD_LABEL } from "./thread-port";
 import { buildToday } from "./today";
@@ -57,7 +59,24 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     markSent: (kind, date) => recaps.markSent(kind, date),
   };
   const queue = new DeliveryQueue(store, reminders, () => (link.connected ? port : null), clock, getConfig, log, defaultDeliveryOptions, recapSource);
-  const scheduler = new Scheduler(reminders, queue, clock, getConfig, log, recaps);
+  // Tasks: "at 8pm, do X". They start from the scheduler's tick and report through the queue.
+  const tasks = new Tasks(store, reminders, clock, getConfig);
+  const taskPort = new PaseoTaskPort(link);
+  const runner = new TaskRunner(
+    store,
+    tasks,
+    () => (link.connected ? taskPort : null),
+    {
+      report: (task, now) => {
+        queue.enqueueTask(task, now);
+        changed();
+      },
+    },
+    clock,
+    getConfig,
+    log,
+  );
+  const scheduler = new Scheduler(reminders, queue, clock, getConfig, log, recaps, runner);
 
   // --- Noticing and backfill -----------------------------------------------------------
 
@@ -114,6 +133,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
       clock.now(),
       { running: scheduler.running, lastTickAt: scheduler.lastTickAt, connected: link.connected, problems: problems() },
       { suggestions, available: llm.available && config.noticing, backfill: backfill.status() },
+      tasks,
     );
   let notifyTimer: ReturnType<typeof setTimeout> | null = null;
   const notifyWatchers = () => {
@@ -167,6 +187,8 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
           log.warn("could not set up the hopkins conversation yet", { error: errorText(err) });
         });
     }
+    // Pick up any task run that was under way when hopkins (or its connection) went away.
+    runner.recover();
     changed();
   }
 
@@ -177,6 +199,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     recaps,
     suggestions,
     backfill,
+    tasks,
     config: getConfig,
     clock,
     isThread: (agentId) => agentId === store.threadAgentId(),
@@ -221,6 +244,11 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   // A conversation finished a turn: note it, so noticing reads it once it settles.
   server.addHook("agent.turn.after", async ({ agent, outcome }) => {
     try {
+      // A task's run finished a turn (the user answered it there): its outcome may have changed.
+      if (runner.isTaskAgent(agent.id)) {
+        if (outcome.kind !== "canceled") runner.onTurnFinished(agent.id);
+        return;
+      }
       if (outcome.kind === "canceled" || agent.parentAgentId || agent.background || agent.id === store.threadAgentId()) return;
       noticer.touch(agent.id, scopeFor(agent.cwd, config.workRoots));
     } catch (err) {
@@ -244,6 +272,14 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     if (!result.ok) return { ok: false, message: result.error };
     changed();
     return { ok: true, message: result.confirmation };
+  });
+
+  server.handle(taskRpc, async (input, context) => {
+    link.adopt(context.paseo);
+    const result = input.action === "cancel" ? tasks.cancel(input.id) : tasks.runNow(input.id);
+    if (!result.ok) return { ok: false, message: result.error };
+    changed();
+    return { ok: true, message: result.message };
   });
 
   server.handle(recapsRpc, async (input, context) => {

@@ -10,12 +10,14 @@ import type { Backfill } from "./backfill";
 import type { Suggestions } from "./noticing";
 import type { Recaps } from "./recaps";
 import type { Clock, ListFilter, Reminders, Result } from "./reminders";
+import type { Tasks } from "./tasks";
 
 export interface ToolDeps {
   reminders: Reminders;
   recaps?: Recaps;
   suggestions?: Suggestions;
   backfill?: Backfill;
+  tasks?: Tasks;
   config: () => Config;
   clock: Clock;
   /** True when the calling agent is the hopkins conversation itself. */
@@ -47,6 +49,16 @@ const CHANGE_DESCRIPTION = `Change a hopkins reminder: move it (snooze), reword 
 - someday: true to keep it with no time.`;
 
 const CLOSE_DESCRIPTION = `Close a hopkins reminder. as: "done" when it is handled (for a repeating reminder this closes only the current time; the series continues), or "dropped" when it is no longer needed (for a repeating reminder this stops the series). Get the id from hopkins_reminders first.`;
+
+const TASK_DESCRIPTION = `Have something DONE at a time, not just remembered: "today at 8pm, do my web check-in", "tomorrow at 9, check last night's backup and tell me". At that time hopkins starts an agent with the user's usual setup (their files, notes, memory, Nextcloud, the browser) to do it, then tells them in the hopkins conversation how it went. When they only want to be reminded, use hopkins_remind instead.
+
+action "create":
+- text: the task, short, in their words ("web check-in for the Sri Lanka flight").
+- instructions: the brief the agent works from. It starts fresh and never sees this conversation, so make it complete: what to do; where things are (file paths, Nextcloud folders, sites, which booking); what to check before acting (e.g. that the passport number and date of birth on the ticket match their passport); what counts as done; anything to avoid. Find out what you can yourself first; ask the user only for what you cannot find, before creating it.
+- when: ${WHEN_HELP} If they gave no time, ask; never guess one for a task.
+- cwd: optional folder to work in; by default their personal (or work) folder.
+After it is saved, give them the one-line confirmation from the result, as is.
+action "list": scheduled, running and recent tasks with ids and outcomes. action "cancel" or "run_now": with id.`;
 
 function textResult(text: string, structuredContent?: unknown, isError = false): AgentToolResult {
   return isError ? { text, structuredContent, isError } : { text, structuredContent };
@@ -180,6 +192,55 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
           if (!r.ok) return textResult(`Not changed: ${r.error}.`, { changed: false }, true);
           deps.changed();
           return textResult(r.confirmation, { changed: true, ...recaps.times() });
+        },
+      }),
+    );
+  }
+  const { tasks } = deps;
+  if (tasks) {
+    tools.push(
+      defineAgentTool({
+        name: "hopkins_task",
+        title: "Have something done at a time",
+        description: TASK_DESCRIPTION,
+        input: z.object({
+          action: z.enum(["create", "list", "cancel", "run_now"]),
+          text: z.string().optional().describe("The task, short, in their words."),
+          instructions: z.string().optional().describe("The complete brief for the agent that will do it."),
+          when: z.string().optional().describe(`When to do it. ${WHEN_HELP}`),
+          cwd: z.string().optional().describe("Folder to work in (optional)."),
+          id: z.string().optional().describe("For cancel and run_now: the task id, e.g. t_k3x9qa."),
+        }),
+        async execute(input, { agent }) {
+          if (input.action === "create") {
+            const cfg = deps.config();
+            const source: Source = {
+              via: deps.isThread(agent.id) ? "thread" : "agent",
+              agentId: agent.id,
+              ...(agent.title ? { agentTitle: agent.title } : {}),
+              ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
+              ...(agent.cwd ? { cwd: agent.cwd } : {}),
+              at: deps.clock.now(),
+            };
+            const r = tasks.create(input, source, scopeFor(agent.cwd, cfg.workRoots));
+            if (!r.ok) return failure(r, deps, "saved");
+            deps.changed();
+            return textResult(`${r.confirmation}\n(id ${r.task.id})`, { saved: true, id: r.task.id, dueAt: r.task.dueAt });
+          }
+          if (input.action === "list") {
+            const all = tasks.list();
+            if (all.length === 0) return textResult(`No tasks. Now: ${deps.reminders.nowText()}.`, { items: [] });
+            const lines = all.slice(0, 30).map((t) => {
+              const outcome = t.report ?? t.error;
+              return `- ${t.id} · ${t.text} · ${t.state} · ${tasks.describe(t)}${outcome ? ` · ${outcome.split("\n")[0]!.slice(0, 160)}` : ""}`;
+            });
+            return textResult(`${lines.join("\n")}\nNow: ${deps.reminders.nowText()}.`, { items: all.slice(0, 30).map((t) => ({ id: t.id, text: t.text, state: t.state, dueAt: t.dueAt })) });
+          }
+          if (!input.id) return textResult("Not changed: pass the task id from action list.", undefined, true);
+          const r = input.action === "cancel" ? tasks.cancel(input.id) : tasks.runNow(input.id);
+          if (!r.ok) return textResult(`Not changed: ${r.error}.`, { changed: false }, true);
+          deps.changed();
+          return textResult(r.message, { changed: true, id: r.task.id, state: r.task.state });
         },
       }),
     );

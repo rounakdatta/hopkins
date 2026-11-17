@@ -19,6 +19,8 @@ export class Scheduler {
     private readonly config: () => Config,
     private readonly log: Logger,
     private readonly recaps: Recaps | null = null,
+    /** Starts tasks that are due (they report back through the queue). */
+    private readonly tasks: { tick(now: number): void } | null = null,
   ) {}
 
   start(intervalMs = 15_000): void {
@@ -44,6 +46,8 @@ export class Scheduler {
     try {
       const now = this.clock.now();
       this.lastTickAt = now;
+      // Tasks are things the user asked to have done: pausing delivery does not hold them (their reports wait).
+      this.tasks?.tick(now);
       if (!this.config().paused) {
         const due = this.reminders.dueNow(now).filter((r) => !this.queue.inFlight(r.id));
         if (due.length > 0) this.queue.enqueue("due", due.map((r) => r.id), now);
