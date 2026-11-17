@@ -201,7 +201,7 @@ describe("history", () => {
     env.setConfig({ historyDays: 36500 });
     const added = await backfill.run();
     expect(added).toBe(1);
-    expect(llm.calls).toHaveLength(3); // two conversations + one review
+    expect(llm.calls).toHaveLength(4); // two conversations, one pass over the notes index, one review
     expect(suggestions.open().map((s) => [s.text, s.when, s.scope, s.origin])).toEqual([["rotate the CI key", "2027-01-03T09:00", "work", "history"]]);
     expect(env.store.backfill()).toMatchObject({ state: "done", done: 2, total: 2, found: 1 });
   });
@@ -225,5 +225,33 @@ describe("small-model slips", () => {
     const out = await completeJson(llm, { system: "s", user: "u" }, parseCandidates);
     expect(out.map((c) => c.text)).toEqual(["a", "b"]);
     expect(llm.calls[1]!.user).toMatch(/was not valid JSON/);
+  });
+});
+
+describe("notes for the review", () => {
+  it("labels each folder's notes work or personal, and never lets one folder crowd out the next", async () => {
+    const { projectPathOf } = await import("../server/backfill");
+    expect(projectPathOf("/x/projects/-home-someone-work-api/memory/MEMORY.md")).toBe("/home/someone/work/api");
+    const big = "- line\n".repeat(10_000);
+    const text = condenseNotes(
+      [
+        { file: "/x/projects/-home-someone-work/memory/MEMORY.md", text: big, modifiedAt: 1 },
+        { file: "/x/projects/-home-someone-personal/memory/MEMORY.md", text: "- [Taxes](taxes.md) — NEXT: file by 7 Jan", modifiedAt: 1 },
+      ],
+      (file) => (file.includes("-work") ? "work" : "personal"),
+    );
+    expect(text).toMatch(/# Notes index \(work\)/);
+    expect(text).toMatch(/# Notes index \(personal\)\n- \[Taxes\]\(taxes\.md\) — NEXT: file by 7 Jan/);
+  });
+});
+
+describe("notes chunks", () => {
+  it("splits on whole lines and keeps every line", async () => {
+    const { noteChunks } = await import("../server/backfill");
+    const text = Array.from({ length: 50 }, (_, i) => `- item ${i} ${"y".repeat(400)}`).join("\n");
+    const chunks = noteChunks(text, 5_000);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.flat()).toHaveLength(50);
+    expect(chunks.every((c) => c.join("").length <= 5_000 + 1_100)).toBe(true);
   });
 });

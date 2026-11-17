@@ -4,6 +4,7 @@
 // current record of what is done), so stale and finished things are dropped.
 // What survives lands in the Noticed inbox; nothing is scheduled by itself.
 
+import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { idleBackfill, type BackfillState, type Scope } from "../shared/model";
@@ -23,7 +24,7 @@ Keep a candidate only if it is still open now and worth a reminder. Drop:
 - anything the notes say is done, live, merged, fixed, paid, filed or no longer needed;
 - one-off events whose date has passed, unless the action itself is still pending;
 - vague ideas and things the assistant was meant to do.
-Also add every open item that appears only in the notes: anything marked open, next, pending, waiting, asked, "check ~date", "expires", "to delete", "delete later", "rotate", "renew", or with a future date. Items taken only from the notes are personal unless the note is plainly about their job.
+Also add every open item that appears only in the notes: anything marked open, next, pending, waiting, asked, "check ~date", "expires", "to delete", "delete later", "rotate", "renew", or with a future date. Each notes section is labelled (work) or (personal): use that label as the scope of items taken from it.
 
 For each item: text (short, imperative, in their words), due (ISO local date or date-time, or null), why (where it came from, a few words with a date if known), scope ("work" or "personal"), confidence (0 to 1).
 Order by how soon it matters. At most 40 items. Reply {"items": [...]}.`;
@@ -42,12 +43,24 @@ const ReviewSchema = z.object({
     .max(60),
 });
 
-const NOTE_LINE = /\b(open|next|pending|waiting|todo|to do|due|deadline|expires?|expiry|rotate|renew|delete later|to delete|check ~|follow up|chase|remind)\b/i;
-const MAX_NOTES = 40_000;
+const NOTE_LINE = /\b(open|next|pending|waiting|asked|todo|to do|due|deadline|expires?|expiry|rotate|renew|delete later|to delete|check ~|follow up|chase|remind)\b/i;
+const MAX_NOTES = 100_000;
+const MAX_INDEX = 30_000;
 const MAX_CANDIDATES = 400;
 
-/** The notes, condensed: indexes whole, other notes only their open-looking lines. */
-export function condenseNotes(notes: MemoryNote[]): string {
+/** Claude Code names a project's folder after its path: "-home-me-work-api" is /home/me/work/api. */
+export function projectPathOf(memoryFile: string): string | null {
+  const project = path.basename(path.dirname(path.dirname(memoryFile)));
+  return project.startsWith("-") ? project.replace(/-/g, "/") : null;
+}
+
+/**
+ * The notes, condensed for the review: each folder's index whole (capped), then
+ * only the open-looking lines of the other notes. Folders come in the order
+ * given, so the ones you configured are never crowded out, and each is labelled
+ * work or personal from where it lives.
+ */
+export function condenseNotes(notes: MemoryNote[], scopeOf: (file: string) => Scope = () => "personal"): string {
   const out: string[] = [];
   let budget = MAX_NOTES;
   const push = (s: string) => {
@@ -56,12 +69,37 @@ export function condenseNotes(notes: MemoryNote[]): string {
     out.push(piece);
     budget -= piece.length;
   };
-  for (const n of notes.filter((x) => path.basename(x.file) === "MEMORY.md")) push(`# ${path.basename(path.dirname(n.file))} index\n${n.text}\n`);
+  const indexes = notes.filter((x) => path.basename(x.file) === "MEMORY.md");
+  const seen = new Set<string>();
+  for (const n of indexes) {
+    if (seen.has(n.text)) continue;
+    seen.add(n.text);
+    push(`# Notes index (${scopeOf(n.file)})\n${n.text.slice(0, MAX_INDEX)}\n`);
+  }
   for (const n of notes.filter((x) => path.basename(x.file) !== "MEMORY.md").sort((a, b) => b.modifiedAt - a.modifiedAt)) {
     const lines = n.text.split("\n").filter((l) => NOTE_LINE.test(l) && l.trim().length > 12).slice(0, 12);
-    if (lines.length) push(`## ${path.basename(n.file, ".md")}\n${lines.join("\n")}\n`);
+    if (lines.length) push(`## ${path.basename(n.file, ".md")} (${scopeOf(n.file)})\n${lines.join("\n")}\n`);
   }
   return out.join("\n");
+}
+
+/** Splits a notes index into chunks of whole lines, each small enough for one extraction call. */
+export function noteChunks(text: string, size = 10_000): string[][] {
+  const chunks: string[][] = [];
+  let current: string[] = [];
+  let length = 0;
+  for (const line of text.split("\n").map((l) => l.trim()).filter((l) => l.length > 3)) {
+    const clipped = line.slice(0, 1_100);
+    if (length + clipped.length > size && current.length) {
+      chunks.push(current);
+      current = [];
+      length = 0;
+    }
+    current.push(clipped);
+    length += clipped.length;
+  }
+  if (current.length) chunks.push(current);
+  return chunks;
 }
 
 export interface BackfillOptions {
@@ -149,8 +187,45 @@ export class Backfill {
       return 0;
     }
 
-    const memoryDirs = [...new Set([...discoverMemoryDirs(this.options.transcriptsRoot), ...cfg.memoryDirs])];
-    const notes = condenseNotes(readMemoryNotes(memoryDirs));
+    // Configured folders first, then Claude Code's own; the same folder twice (a symlink) only once.
+    const memoryDirs: string[] = [];
+    const real = new Set<string>();
+    for (const dir of [...cfg.memoryDirs, ...discoverMemoryDirs(this.options.transcriptsRoot)]) {
+      let resolved = dir;
+      try {
+        resolved = fs.realpathSync(dir);
+      } catch {
+        continue;
+      }
+      if (!real.has(resolved)) {
+        real.add(resolved);
+        memoryDirs.push(dir);
+      }
+    }
+    const memory = readMemoryNotes(memoryDirs);
+    const scopeOfNote = (file: string): Scope => {
+      const project = projectPathOf(file);
+      return project ? scopeFor(project, cfg.workRoots) : "personal";
+    };
+    // The notes indexes get their own pass: their open items are found the same way as in conversations.
+    const seenIndexes = new Set<string>();
+    for (const index of memory.filter((n) => path.basename(n.file) === "MEMORY.md")) {
+      if (this.cancelled || seenIndexes.has(index.text)) continue;
+      seenIndexes.add(index.text);
+      for (const chunk of noteChunks(index.text)) {
+        try {
+          const found = await extract(
+            this.llm,
+            { title: "their own notes (the most current record)", cwd: null, messages: chunk.map((text) => ({ at: index.modifiedAt, text })), lastAssistant: null },
+            { nowText, tz: cfg.tz, tracked },
+          );
+          for (const c of found) candidates.push({ ...c, scope: scopeOfNote(index.file), why: c.why || "from your notes" });
+        } catch (err) {
+          this.log.warn("backfill skipped part of the notes", { error: errorText(err) });
+        }
+      }
+    }
+    const notes = condenseNotes(memory, scopeOfNote);
     const reviewed = await this.review(candidates.slice(0, MAX_CANDIDATES), notes, nowText);
     const personal = reviewed.filter((c) => c.scope !== "work");
     const work = reviewed.filter((c) => c.scope === "work");
