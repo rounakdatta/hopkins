@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { Backfill, condenseNotes, REVIEW_SYSTEM } from "../server/backfill";
+import { Backfill, condenseNotes, NOTES_SYSTEM, REVIEW_SYSTEM } from "../server/backfill";
 import { readClaudeTranscript } from "../server/history";
 import type { Llm } from "../server/llm";
 import { parseJsonObject } from "../server/llm";
@@ -187,6 +187,8 @@ describe("history", () => {
     fs.mkdirSync(memoryDir, { recursive: true });
     fs.writeFileSync(path.join(memoryDir, "MEMORY.md"), "- [Garden](garden.md) — compost ordered 15 Nov, DONE");
     const llm = new FakeLlm((req) => {
+      // The notes say the compost is DONE, so the notes pass finds nothing open.
+      if (req.system === NOTES_SYSTEM) return items();
       if (req.system === REVIEW_SYSTEM) {
         expect(req.user).toMatch(/compost ordered 15 Nov, DONE/);
         return items({ text: "rotate the CI key", due: "2027-01-03", why: "said on 12 Nov", scope: "work", confidence: 0.9 });
@@ -253,5 +255,37 @@ describe("notes chunks", () => {
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.flat()).toHaveLength(50);
     expect(chunks.every((c) => c.join("").length <= 5_000 + 1_100)).toBe(true);
+  });
+});
+
+describe("chat access to Noticed and history", () => {
+  it("lists, keeps and drops suggestions by id; reports history status", async () => {
+    const { createTools } = await import("../server/tools");
+    const env = setup();
+    const suggestions = new Suggestions(env.store, env.reminders, env.clock, env.config, idFactory());
+    const llm = new FakeLlm(() => items());
+    const backfill = new Backfill(env.store, suggestions, llm, env.clock, env.config, silentLogger);
+    suggestions.add([{ text: "renew the CI key", due: "2027-01-03", why: "from your notes", confidence: 0.9 }, { text: "sell the old bike", due: null, why: "", confidence: 0.9 }], "history", null, "personal");
+    const tools = createTools({ reminders: env.reminders, suggestions, backfill, config: env.config, clock: env.clock, isThread: () => false, changed: () => {} });
+    const t = (name: string) => tools.find((x) => x.name === name)!;
+    const ctx = { agent: { id: "a", workspaceId: null, parentAgentId: null, provider: "claude", cwd: "/x", title: null, background: false, metadata: {} }, paseo: {} as never, signal: new AbortController().signal };
+    const list = await t("hopkins_noticed").execute(t("hopkins_noticed").input.parse({ action: "list" }), ctx);
+    expect(list.text).toMatch(/s_000001 · renew the CI key · Sun 3 Jan 2027, 9am · personal · from your notes/);
+    const keep = await t("hopkins_noticed").execute(t("hopkins_noticed").input.parse({ action: "keep", id: "s_000001" }), ctx);
+    expect(keep.text).toBe("Reminder set: renew the CI key — Sun 3 Jan 2027, 9am.");
+    const noTime = await t("hopkins_noticed").execute(t("hopkins_noticed").input.parse({ action: "keep", id: "s_000002" }), ctx);
+    expect(noTime.text).toMatch(/pick a time first/);
+    expect(noTime.isError).toBeUndefined();
+    const status = await t("hopkins_history").execute(t("hopkins_history").input.parse({ action: "status" }), ctx);
+    expect(status.text).toBe("Not run yet.");
+  });
+
+  it("notes from hopkins render as a quiet row", async () => {
+    const { parseCue, cueSummary } = await import("../shared/cue");
+    const { noteCueText } = await import("../server/prompts");
+    const text = noteCueText({ id: "d_1", reminderIds: [], kind: "note", note: "I found 12 open things <b>", createdAt: 0, state: "sending", attempts: 1 });
+    expect(parseCue(text)?.kind).toBe("note");
+    expect(cueSummary(parseCue(text)!)).toBe("A note from hopkins");
+    expect(text).not.toMatch(/<b>/);
   });
 });

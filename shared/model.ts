@@ -85,9 +85,11 @@ export type RecapKind = z.infer<typeof RecapKindSchema>;
 export const DeliverySchema = z.object({
   id: z.string(),
   reminderIds: z.array(z.string()),
-  kind: z.enum(["due", "nudge", "recap"]),
+  kind: z.enum(["due", "nudge", "recap", "note"]),
   /** For recaps: which one, and the local date it is for. */
   recap: z.object({ kind: RecapKindSchema, date: z.string() }).optional(),
+  /** For notes: what hopkins wants to tell the user (written by hopkins itself, never by others). */
+  note: z.string().optional(),
   createdAt: z.number(),
   state: z.enum(["pending", "sending", "sent", "failed"]),
   attempts: z.number().int().min(0),

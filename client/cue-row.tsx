@@ -5,7 +5,7 @@ import { z } from "zod";
 import { cueSummary, type ParsedCue } from "../shared/cue";
 
 export const cueRowSchema = z.object({
-  kind: z.enum(["due", "nudge", "hello", "morning", "evening"]),
+  kind: z.enum(["due", "nudge", "hello", "morning", "evening", "note"]),
   items: z.array(z.string()),
 });
 

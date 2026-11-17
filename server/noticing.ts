@@ -104,9 +104,14 @@ export function parseCandidates(reply: string): Candidate[] {
   }));
 }
 
-export async function extract(llm: Llm, conv: ConversationInput, ctx: { nowText: string; tz: string; tracked: string[] }): Promise<Candidate[]> {
-  const candidates = await completeJson(llm, { system: EXTRACT_SYSTEM, user: extractPrompt(conv, ctx), maxTokens: 2_000 }, parseCandidates);
-  return candidates.filter((c) => c.confidence >= MIN_CONFIDENCE);
+export async function extract(
+  llm: Llm,
+  conv: ConversationInput,
+  ctx: { nowText: string; tz: string; tracked: string[] },
+  options: { system?: string; minConfidence?: number; maxTokens?: number } = {},
+): Promise<Candidate[]> {
+  const candidates = await completeJson(llm, { system: options.system ?? EXTRACT_SYSTEM, user: extractPrompt(conv, ctx), maxTokens: options.maxTokens ?? 3_000 }, parseCandidates);
+  return candidates.filter((c) => c.confidence >= (options.minConfidence ?? MIN_CONFIDENCE));
 }
 
 export function suggestionKey(text: string): string {
@@ -134,11 +139,13 @@ export class Suggestions {
     private readonly makeId: (prefix: string) => string = newId,
   ) {}
 
+  /** Dated first (soonest first), then undated personal, then undated work. */
   open(): Suggestion[] {
+    const rank = (s: Suggestion) => (s.when ? 0 : s.scope === "personal" ? 1 : 2);
     return this.store
       .suggestions()
       .filter((s) => s.state === "open")
-      .sort((a, b) => (a.when ?? "9999").localeCompare(b.when ?? "9999") || b.createdAt - a.createdAt);
+      .sort((a, b) => rank(a) - rank(b) || (a.when ?? "").localeCompare(b.when ?? "") || b.createdAt - a.createdAt);
   }
 
   /** Texts already on the list, so the model does not suggest them again. */

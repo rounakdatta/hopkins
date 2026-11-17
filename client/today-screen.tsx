@@ -85,9 +85,10 @@ export function TodayScreen(props: PluginScreenProps) {
 
       {view.noticed.length > 0 ? (
         <Section colors={colors} title="Noticed" count={view.noticed.length}>
-          {view.noticed.map((item) => (
+          {view.noticed.slice(0, NOTICED_SHOWN).map((item) => (
             <NoticedRow key={item.id} item={item} colors={colors} snoozeOptions={view.snoozeOptions} />
           ))}
+          {view.noticed.length > NOTICED_SHOWN ? <NoticedMore items={view.noticed.slice(NOTICED_SHOWN)} colors={colors} snoozeOptions={view.snoozeOptions} /> : null}
         </Section>
       ) : null}
 
@@ -519,5 +520,26 @@ function HistoryCard(props: { colors: Colors; noticing: TodayView["noticing"] })
         )}
       </View>
     </View>
+  );
+}
+
+/** A big import can bring dozens of items; the first few are shown, the rest one tap away. */
+const NOTICED_SHOWN = 8;
+
+function NoticedMore(props: { items: NoticedItem[]; colors: Colors; snoozeOptions: TodayView["snoozeOptions"] }) {
+  const [open, setOpen] = useState(false);
+  if (open) {
+    return (
+      <>
+        {props.items.map((item) => (
+          <NoticedRow key={item.id} item={item} colors={props.colors} snoozeOptions={props.snoozeOptions} />
+        ))}
+      </>
+    );
+  }
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={`Show ${props.items.length} more noticed items`} onPress={() => setOpen(true)} style={{ padding: space.m }}>
+      <Text style={{ color: props.colors.accent, fontSize: 14 }}>Show all ({props.items.length} more)</Text>
+    </Pressable>
   );
 }

@@ -6,12 +6,16 @@ import { defineAgentTool, type AgentToolDefinition, type AgentToolResult } from 
 import { z } from "zod";
 import { RepeatSchema, type Reminder, type Source } from "../shared/model";
 import { scopeFor, type Config } from "./config";
+import type { Backfill } from "./backfill";
+import type { Suggestions } from "./noticing";
 import type { Recaps } from "./recaps";
 import type { Clock, ListFilter, Reminders, Result } from "./reminders";
 
 export interface ToolDeps {
   reminders: Reminders;
   recaps?: Recaps;
+  suggestions?: Suggestions;
+  backfill?: Backfill;
   config: () => Config;
   clock: Clock;
   /** True when the calling agent is the hopkins conversation itself. */
@@ -176,6 +180,61 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
           if (!r.ok) return textResult(`Not changed: ${r.error}.`, { changed: false }, true);
           deps.changed();
           return textResult(r.confirmation, { changed: true, ...recaps.times() });
+        },
+      }),
+    );
+  }
+  const { suggestions, backfill } = deps;
+  if (suggestions) {
+    tools.push(
+      defineAgentTool({
+        name: "hopkins_noticed",
+        title: "Things hopkins noticed",
+        description: `The things hopkins noticed in conversations and the user's notes that might deserve a reminder (shown under Noticed on its Today screen). action "list" shows them with ids; "keep" turns one into a reminder (at its suggested time, or pass \`when\`); "done" means it is already handled; "drop" means not needed. Nothing becomes a reminder unless the user says so.`,
+        input: z.object({
+          action: z.enum(["list", "keep", "done", "drop"]),
+          id: z.string().optional(),
+          when: z.string().optional(),
+        }),
+        async execute(input) {
+          if (input.action === "list") {
+            const open = suggestions.open();
+            if (open.length === 0) return textResult("Nothing waiting under Noticed.", { items: [] });
+            const lines = open.slice(0, 60).map((s) => `- ${s.id} · ${s.text} · ${suggestions.whenLabel(s) ?? "no time yet"} · ${s.scope}${s.why ? ` · ${s.why}` : ""}`);
+            return textResult(`${lines.join("\n")}${open.length > 60 ? `\n…and ${open.length - 60} more.` : ""}`, { count: open.length });
+          }
+          if (!input.id) return textResult("Not changed: pass the id from action list.", undefined, true);
+          const r = suggestions.act(input.id, input.action === "drop" ? "dismiss" : input.action, input.when);
+          if (!r.ok) return textResult(`Not changed: ${r.error}.`, r.needsTime ? { needsTime: true } : undefined, !r.needsTime);
+          deps.changed();
+          return textResult(r.message);
+        },
+      }),
+    );
+  }
+  if (backfill) {
+    tools.push(
+      defineAgentTool({
+        name: "hopkins_history",
+        title: "Look through history",
+        description: `Look through the user's past conversations and their assistant's notes for things they meant to do (one-off; results appear under Noticed, nothing is scheduled). action "start" begins it; "status" reports progress.`,
+        input: z.object({ action: z.enum(["start", "status"]) }),
+        async execute(input) {
+          if (input.action === "start") {
+            const r = backfill.start();
+            deps.changed();
+            return r.ok ? textResult(r.message) : textResult(`Not started: ${r.error}.`, undefined, true);
+          }
+          const b = backfill.status();
+          const text =
+            b.state === "running"
+              ? `Reading: ${b.done} of ${b.total} conversations.`
+              : b.state === "done"
+                ? `Done: ${b.found} things found${b.total ? ` in ${b.total} conversations and the notes` : ""}. They are under Noticed.`
+                : b.state === "idle"
+                  ? "Not run yet."
+                  : `Stopped (${b.state}${b.error ? `: ${b.error}` : ""}).`;
+          return textResult(text, b);
         },
       }),
     );

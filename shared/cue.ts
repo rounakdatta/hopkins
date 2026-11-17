@@ -4,7 +4,7 @@
 
 export const CUE_KIND = "hopkins.cue";
 
-export type CueKind = "due" | "nudge" | "hello" | "morning" | "evening";
+export type CueKind = "due" | "nudge" | "hello" | "morning" | "evening" | "note";
 
 export interface ParsedCue {
   kind: CueKind;
@@ -12,7 +12,7 @@ export interface ParsedCue {
   items: string[];
 }
 
-const HEAD = /^\s*<hopkins:(due|nudge|hello|recap)\b([^>]*)>/;
+const HEAD = /^\s*<hopkins:(due|nudge|hello|recap|note)\b([^>]*)>/;
 const ITEM = /^\d+\. "((?:[^"\\]|\\.)*)"/gm;
 
 export function parseCue(text: string): ParsedCue | null {
@@ -31,6 +31,7 @@ export function cueSummary(cue: ParsedCue): string {
   if (cue.kind === "hello") return "hopkins is set up";
   if (cue.kind === "morning") return "Morning note";
   if (cue.kind === "evening") return "Evening recap";
+  if (cue.kind === "note") return "A note from hopkins";
   const list = cue.items.length === 0 ? "" : cue.items.length <= 3 ? cue.items.join(", ") : `${cue.items.slice(0, 3).join(", ")} and ${cue.items.length - 3} more`;
   return cue.kind === "nudge" ? `Reminding again: ${list}` : `Reminder due: ${list}`;
 }

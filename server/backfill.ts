@@ -19,15 +19,40 @@ import type { Store } from "./store";
 
 export const REVIEW_SYSTEM = `You review candidate reminders found across many past conversations, together with the person's own notes, which are the most up-to-date record of what is done and what is still open. You answer with JSON only.
 
-Keep a candidate only if it is still open now and worth a reminder. Drop:
+Candidates marked "from your notes" were written down by the person themselves: keep them unless the notes say they are finished. For the rest, keep a candidate only if it is still open now and worth a reminder. Drop:
 - duplicates (merge them into one);
 - anything the notes say is done, live, merged, fixed, paid, filed or no longer needed;
 - one-off events whose date has passed, unless the action itself is still pending;
 - vague ideas and things the assistant was meant to do.
-Also add every open item that appears only in the notes: anything marked open, next, pending, waiting, asked, "check ~date", "expires", "to delete", "delete later", "rotate", "renew", or with a future date. Each notes section is labelled (work) or (personal): use that label as the scope of items taken from it.
+Use the notes only to judge whether a candidate is still open; their own open items are handled separately.
 
 For each item: text (short, imperative, in their words), due (ISO local date or date-time, or null), why (where it came from, a few words with a date if known), scope ("work" or "personal"), confidence (0 to 1).
 Order by how soon it matters. At most 40 items. Reply {"items": [...]}.`;
+
+/** For the notes an assistant keeps about the person: thorough, because these are the open items they already wrote down. */
+export const NOTES_SYSTEM = `You read a person's own notes: an index of the notes their AI assistant keeps about their life and work, one line per topic. You answer with JSON only.
+
+List every item in these lines that still needs the person's action or attention later. Be thorough: these are things they already decided were worth writing down. Look for:
+- claims, refunds, complaints and requests that are pending or "asked" and may need chasing;
+- things to delete, clean up, rotate, renew or remove later ("delete later", "to delete", "rotate the key");
+- things waiting on them: rows to review, sign-ins, approvals, decisions, "waits for", "needs";
+- expiries and deadlines, payments and filings, "check ~date", "NEXT: … by …";
+- pull requests or tickets they opened that are waiting on someone else.
+Skip anything the line itself says is done, LIVE, merged, fixed, won, declined or closed, unless it also names an open part.
+Skip rules and preferences about how the assistant should work ("answer the question asked", "preview before shipping", "never do X"): they are not open items.
+
+For each item:
+- text: short and imperative, in their words ("follow up on the Air India complaint").
+- due: an ISO local date or date-time when the line gives one, else null.
+- why: the few words of the line it came from.
+- confidence: 0 to 1 that it is still open.
+
+Reply {"items": [...]}.`;
+
+export const NOTES_REVIEW_SYSTEM = `You tidy a list of open items taken from a person's own notes. You answer with JSON only.
+Merge duplicates into one item. Drop only items the notes plainly say are finished. Keep every other item, even small ones: the person wrote them down. Rewrite each as a short imperative in their words.
+For each: text, due (ISO local or null), why (a few words: where in the notes), scope ("work" or "personal" as given), confidence (0 to 1).
+Order by how soon it matters. Reply {"items": [...]}.`;
 
 const ReviewSchema = z.object({
   items: z
@@ -40,7 +65,7 @@ const ReviewSchema = z.object({
         confidence: z.number().min(0).max(1).optional(),
       }),
     )
-    .max(60),
+    .max(120),
 });
 
 const NOTE_LINE = /\b(open|next|pending|waiting|asked|todo|to do|due|deadline|expires?|expiry|rotate|renew|delete later|to delete|check ~|follow up|chase|remind)\b/i;
@@ -84,7 +109,7 @@ export function condenseNotes(notes: MemoryNote[], scopeOf: (file: string) => Sc
 }
 
 /** Splits a notes index into chunks of whole lines, each small enough for one extraction call. */
-export function noteChunks(text: string, size = 10_000): string[][] {
+export function noteChunks(text: string, size = 5_000): string[][] {
   const chunks: string[][] = [];
   let current: string[] = [];
   let length = 0;
@@ -105,6 +130,8 @@ export function noteChunks(text: string, size = 10_000): string[][] {
 export interface BackfillOptions {
   transcriptsRoot?: string;
   concurrency?: number;
+  /** Told when a run finishes, e.g. to say so in the hopkins conversation. */
+  onFinished?: (result: { conversations: number; found: number }) => void;
 }
 
 export class Backfill {
@@ -207,7 +234,9 @@ export class Backfill {
       const project = projectPathOf(file);
       return project ? scopeFor(project, cfg.workRoots) : "personal";
     };
-    // The notes indexes get their own pass: their open items are found the same way as in conversations.
+    // The notes indexes get their own pass. What the person wrote down is kept unless the notes say it is
+    // finished; the stricter review below is only for what was found in conversations.
+    const fromNotes: Candidate[] = [];
     const seenIndexes = new Set<string>();
     for (const index of memory.filter((n) => path.basename(n.file) === "MEMORY.md")) {
       if (this.cancelled || seenIndexes.has(index.text)) continue;
@@ -218,28 +247,57 @@ export class Backfill {
             this.llm,
             { title: "their own notes (the most current record)", cwd: null, messages: chunk.map((text) => ({ at: index.modifiedAt, text })), lastAssistant: null },
             { nowText, tz: cfg.tz, tracked },
+            // Dense notes yield many items: a small chunk and a large reply budget keep the JSON whole.
+            { system: NOTES_SYSTEM, minConfidence: 0.5, maxTokens: 8_000 },
           );
-          for (const c of found) candidates.push({ ...c, scope: scopeOfNote(index.file), why: c.why || "from your notes" });
+          for (const c of found) fromNotes.push({ ...c, scope: scopeOfNote(index.file), why: `from your notes: ${c.why || "an open item"}` });
         } catch (err) {
           this.log.warn("backfill skipped part of the notes", { error: errorText(err) });
         }
       }
     }
     const notes = condenseNotes(memory, scopeOfNote);
-    const reviewed = await this.review(candidates.slice(0, MAX_CANDIDATES), notes, nowText);
-    const personal = reviewed.filter((c) => c.scope !== "work");
-    const work = reviewed.filter((c) => c.scope === "work");
+    const noteItems = fromNotes.length ? await this.tidyNotes(fromNotes) : [];
+    const reviewed = await this.review(candidates.slice(0, MAX_CANDIDATES), notes, nowText, noteItems.map((c) => c.text));
+    const all = [...noteItems, ...reviewed];
+    const personal = all.filter((c) => c.scope !== "work");
+    const work = all.filter((c) => c.scope === "work");
     const added = this.suggestions.add(personal, "history", null, "personal") + this.suggestions.add(work, "history", null, "work");
     this.save({ state: "done", finishedAt: this.clock.now(), found: added });
     this.log.info("backfill finished", { conversations: files.length, candidates: candidates.length, kept: added });
+    this.options.onFinished?.({ conversations: files.length, found: added });
     return added;
   }
 
-  private async review(candidates: Candidate[], notes: string, nowText: string): Promise<Candidate[]> {
-    if (candidates.length === 0 && !notes.trim()) return [];
+  /** Merges duplicates among the notes' open items and drops what the notes call finished; keeps the rest. */
+  private async tidyNotes(items: Candidate[]): Promise<Candidate[]> {
+    const parse = (reply: string) => ReviewSchema.parse(parseJsonObject(reply));
+    const out: Candidate[] = [];
+    // In batches, so a long list never truncates the reply.
+    for (let i = 0; i < items.length; i += 60) {
+      const batch = items.slice(i, i + 60);
+      try {
+        const parsed = await completeJson(
+          this.llm,
+          { system: NOTES_REVIEW_SYSTEM, user: JSON.stringify(batch.map((c) => ({ text: c.text, due: c.due, why: c.why, scope: c.scope ?? "personal" }))), maxTokens: 8_000 },
+          parse,
+        );
+        out.push(...parsed.items.map((x) => ({ text: x.text.trim(), due: x.due ?? null, why: (x.why ?? "").trim(), confidence: x.confidence ?? 0.7, ...(x.scope ? { scope: x.scope } : {}) })));
+      } catch (err) {
+        // If tidying fails, the raw items are still better than none.
+        this.log.warn("could not tidy the notes' items; keeping them as found", { error: errorText(err) });
+        out.push(...batch);
+      }
+    }
+    return out.filter((c) => c.confidence >= 0.5);
+  }
+
+  private async review(candidates: Candidate[], notes: string, nowText: string, fromNotes: string[] = []): Promise<Candidate[]> {
+    if (candidates.length === 0) return [];
     const user = [
       `Now: ${nowText}`,
       `Already on their list: ${this.suggestions.tracked().slice(0, 80).map((t) => `"${t}"`).join("; ") || "nothing"}`,
+      `Already found in their notes (do not repeat these, and do not add items from the notes yourself): ${fromNotes.slice(0, 120).map((t) => `"${t}"`).join("; ") || "nothing"}`,
       `\nTheir notes:\n${notes || "(none)"}`,
       `\nCandidates (JSON):\n${JSON.stringify(candidates.map((c) => ({ text: c.text, due: c.due, why: c.why, scope: c.scope ?? "personal" })))}`,
     ].join("\n");

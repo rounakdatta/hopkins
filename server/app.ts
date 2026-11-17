@@ -2,6 +2,8 @@
 // RPCs, its own daemon connection and the scheduler. Nothing here may throw
 // into Paseo: a throwing session-open hook would stop agents from opening.
 
+import fs from "node:fs";
+import path from "node:path";
 import type { PluginServerContext, PluginSettingsState } from "@getpaseo/plugin/server";
 import type { TodayView } from "../shared/model";
 import { actRpc, backfillRpc, recapsRpc, suggestionRpc, todayRpc, todayWatch } from "../shared/rpc";
@@ -62,8 +64,34 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   const llm = new AnthropicLlm(() => ({ model: config.llmModel }), () => readCredentials(dataDir));
   const suggestions = new Suggestions(store, reminders, clock, getConfig);
   const noticer = new LiveNoticer(store, suggestions, llm, () => paseoTimelineReader(link), clock, getConfig, log);
-  const backfill = new Backfill(store, suggestions, llm, clock, getConfig, log);
+  const backfill = new Backfill(store, suggestions, llm, clock, getConfig, log, {
+    onFinished: ({ conversations, found }) => {
+      queue.enqueueNote(
+        found > 0
+          ? `I looked through ${conversations} past conversations and your notes. ${found} things look still open; they're under Noticed on the Today screen, where you can keep, close or drop each.`
+          : `I looked through ${conversations} past conversations and your notes, and found nothing that still looks open.`,
+        clock.now(),
+      );
+      changed();
+    },
+  });
   backfill.recover();
+
+  // Dropping a file named `import-history` into hopkins's data folder runs the history import once,
+  // as soon as a model key is available: a way to ask for it on a fresh install, before any app opens.
+  const IMPORT_MARKER = path.join(dataDir, "import-history");
+  const maybeImport = () => {
+    if (!fs.existsSync(IMPORT_MARKER) || !llm.available || !link.connected) return;
+    const r = backfill.start();
+    if (r.ok || backfill.status().state === "running") {
+      try {
+        fs.rmSync(IMPORT_MARKER, { force: true });
+      } catch (err) {
+        log.warn("could not remove the import marker", { error: errorText(err) });
+      }
+      log.info("history import started from the marker");
+    }
+  };
 
   // --- Today view and live watchers ------------------------------------------------
 
@@ -143,6 +171,8 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   const tools = createTools({
     reminders,
     recaps,
+    suggestions,
+    backfill,
     config: getConfig,
     clock,
     isThread: (agentId) => agentId === store.threadAgentId(),
@@ -264,6 +294,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   });
   const refresh = setInterval(() => {
     notifyWatchers();
+    maybeImport();
     void noticer.maybeRun().then(notifyWatchers);
   }, 30_000);
   (refresh as { unref?: () => void }).unref?.();

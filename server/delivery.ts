@@ -5,7 +5,7 @@
 import type { Delivery, RecapKind, Reminder } from "../shared/model";
 import type { Config } from "./config";
 import { errorText, type Logger } from "./log";
-import { cueText, recapCueText } from "./prompts";
+import { cueText, noteCueText, recapCueText } from "./prompts";
 import type { RecapData } from "./recaps";
 import { newId, type Clock, type Reminders } from "./reminders";
 import type { Store } from "./store";
@@ -119,6 +119,15 @@ export class DeliveryQueue {
     return delivery;
   }
 
+  /** Queues a short note from hopkins itself. */
+  enqueueNote(text: string, now: number): Delivery {
+    const delivery: Delivery = { id: newId("d"), reminderIds: [], kind: "note", note: text.slice(0, 1_000), createdAt: now, state: "pending", attempts: 0 };
+    this.store.putDelivery(delivery);
+    this.store.save();
+    this.store.event("queued", { id: delivery.id, kind: "note" });
+    return delivery;
+  }
+
   /** Queues a daily recap once per kind and date. */
   enqueueRecap(kind: RecapKind, date: string, now: number): Delivery | null {
     const exists = this.store
@@ -172,6 +181,10 @@ export class DeliveryQueue {
 
   /** What to say and what to record once it is said; null when there is nothing left to send. */
   private async prepare(d: Delivery, now: number): Promise<{ reminderIds: string[]; cue: (delivery: Delivery) => string; onSent: (delivery: Delivery, at: number) => void } | null> {
+    if (d.kind === "note") {
+      if (!d.note) return null;
+      return { reminderIds: [], cue: (delivery) => noteCueText(delivery), onSent: () => undefined };
+    }
     if (d.kind === "recap") {
       const recap = d.recap;
       if (!recap || !this.recaps || !this.recaps.enabled(recap.kind)) return null;

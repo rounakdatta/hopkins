@@ -85,7 +85,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     counts: { waiting: waiting.length, today: today.length },
     snoozeOptions: snoozeOptions(cfg, now),
     recaps: { morning: recaps.morning, evening: recaps.evening },
-    noticed: (noticing?.suggestions.open() ?? []).slice(0, 40).map((s) => ({
+    noticed: (noticing?.suggestions.open() ?? []).slice(0, 200).map((s) => ({
       id: s.id,
       text: s.text,
       when: s.when,
