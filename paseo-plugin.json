@@ -1,7 +1,20 @@
 {
   "id": "hopkins",
   "name": "hopkins",
-  "description": "Remembers what you ask to be reminded of, and brings it back at the right moment, in one conversation you can reply to.",
+  "description": "Reminders, check-ins and timed tasks that come back at the right moment in one Paseo conversation you can reply to.",
+  "translations": {
+    "zh-CN": {
+      "description": "提醒、打卡和定时任务，会在合适的时间回到同一个可以直接回复的 Paseo 对话中。"
+    }
+  },
+  "icon": "assets/icon.png",
+  "media": [
+    "assets/01-today.png",
+    "assets/02-conversation.png",
+    "assets/03-phone.png",
+    "assets/04-today-dark.png",
+    "assets/05-noticed.png"
+  ],
   "requirements": {
     "paseo": "^0.16.1"
   }

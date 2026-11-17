@@ -1,7 +1,7 @@
 {
   "name": "paseo-hopkins",
-  "version": "0.3.0",
-  "description": "A Paseo plugin that remembers what you asked and reminds you at the right moment.",
+  "version": "0.3.1",
+  "description": "Reminders, check-ins and timed tasks that come back at the right moment in one Paseo conversation you can reply to.",
   "license": "MIT",
   "type": "module",
   "private": true,
@@ -13,7 +13,9 @@
     "client/",
     "shared/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "OVERVIEW.md",
+    "assets/"
   ],
   "scripts": {
     "test": "vitest run",

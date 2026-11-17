@@ -2,9 +2,11 @@
 
 **A Paseo plugin that remembers what you asked to be reminded of, and brings it back at the right moment, in one conversation you can reply to.**
 
+![The Today screen: check-ins waiting with Yes / Not today and a mood slider, and a timeline of what comes next](assets/01-today.png)
+
 Say *"remind me to call Ma on Sunday at 10"* to any agent in [Paseo](https://paseo.sh). On Sunday at 10 a conversation called **hopkins** says *"Call Ma. You'd said Sunday morning."*, and your phone buzzes. Answer right there: *"done"*, *"snooze an hour"*, *"move it to 6"*.
 
-It can also get things **done** at a time: *"today at 8pm, do my web check-in, and make sure the passport number and date of birth match"*. At 8pm hopkins starts an agent with your usual setup to do it, and tells you how it went. And a reminder can **stop by itself**: *"remind me to go to bed at 11 until I'm waking up by 7:30"* checks your sleep data each morning and stops once it has held a week.
+It can also get things **done** at a time: *"today at 8pm, do my web check-in, and make sure the passport number and date of birth match"*. At 8pm hopkins starts an agent with your usual setup to do it, and tells you how it went. A repeating reminder can be a **check-in** that asks *"Had some fruit today?"* with **Yes** and **Not today**, or how you feel with a mood slider, and keeps every answer. And a reminder can **stop by itself**: *"remind me to go to bed at 11 until I'm waking up by 7:30"* checks your sleep data each morning and stops once it has held a week.
 
 hopkins is built around a few rules:
 

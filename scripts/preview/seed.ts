@@ -44,14 +44,17 @@ clock.t = zonedToInstant({ ...localDateOf(realNow - 14 * DAY, TZ), hour: 7, minu
 const fruit = set({ text: "have some fruit", when: "1pm", repeat: "daily", ask: { kind: "yesno", question: "Had some fruit today?" } }, "eating better");
 const vitamins = set({ text: "take vitamins", when: "8:30am", repeat: "daily", ask: { kind: "yesno", question: "Took your vitamins?" } }, "eating better");
 const stretch = set({ text: "stretch for five minutes", when: "9:30am", repeat: "weekdays", ask: { kind: "yesno", question: "Stretched today?" } }, "back pain");
-const mood = set({ text: "mood check-in", when: "9:30pm", repeat: "daily", ask: { kind: "mood", question: "How are you feeling tonight?" } }, "evening routine");
+const mood = set({ text: "mood check-in", when: "9:30pm", repeat: "daily", ask: { kind: "mood", question: process.env.SEED_SCENE === "1" ? "How are you feeling today?" : "How are you feeling tonight?" } }, "evening routine");
 
-// What happened each day, oldest first; null is a day nobody answered.
+// What happened each day, oldest first; null is a day nobody answered. SEED_SCENE=1 answers
+// yesterday too, and brings today's fruit and mood check-ins forward to a couple of minutes from
+// now, so the cards in the conversation show a fortnight of record (for listing screenshots).
+const scene = process.env.SEED_SCENE === "1";
 const plan: Record<string, (string | number | null)[]> = {
-  [fruit.id]: ["yes", "yes", "no", "yes", "yes", null, "yes", "yes", "yes", "no", "yes", "yes", "yes", null],
+  [fruit.id]: ["yes", "yes", "no", "yes", "yes", null, "yes", "yes", "yes", "no", "yes", "yes", "yes", scene ? "yes" : null],
   [vitamins.id]: ["yes", "yes", "yes", "yes", "no", "yes", "yes", "yes", "yes", "yes", "no", "yes", "yes", "yes"],
   [stretch.id]: ["yes", "no", "yes", "yes", "yes", "yes", "no", "yes", "yes", "yes", "yes", "yes", "yes", "yes"],
-  [mood.id]: [62, 70, 45, 30, 55, 72, 80, 68, 50, 38, 65, 75, 82, null],
+  [mood.id]: [62, 70, 45, 30, 55, 72, 80, 68, 50, 38, 65, 75, 82, scene ? 70 : null],
 };
 const seen: Record<string, number> = {};
 let deliveries = 0;
@@ -79,6 +82,14 @@ clock.t = realNow;
 
 // SEED_DUE_NOW=1: two check-ins due a minute from now, to see the cards in the conversation
 // (install with THREAD_MODEL set to a real model, e.g. claude/claude-haiku-5-5).
+if (scene) {
+  // Today's fruit and mood check-ins, moved forward (this time only): they still answer today.
+  const hhmm = new Date(realNow + 2 * MIN).toLocaleTimeString("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
+  for (const id of [fruit.id, mood.id]) {
+    const moved = reminders.change(id, { when: hhmm });
+    if (!moved.ok) throw new Error(moved.error);
+  }
+}
 if (process.env.SEED_DUE_NOW === "1") {
   const soon = new Date(realNow + 2 * MIN);
   const hhmm = soon.toLocaleTimeString("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
