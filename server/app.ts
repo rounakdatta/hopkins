@@ -74,6 +74,10 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
       );
       changed();
     },
+    onFailed: (reason) => {
+      queue.enqueueNote(`I couldn't finish looking through your past conversations: ${reason}. Ask any agent to look through your history again when you like.`, clock.now());
+      changed();
+    },
   });
   backfill.recover();
 
@@ -295,7 +299,10 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   const refresh = setInterval(() => {
     notifyWatchers();
     maybeImport();
-    void noticer.maybeRun().then(notifyWatchers);
+    void noticer
+      .maybeRun()
+      .then(notifyWatchers)
+      .catch((err) => log.warn("noticing failed", { error: errorText(err) }));
   }, 30_000);
   (refresh as { unref?: () => void }).unref?.();
   log.info("started", { reminders: store.reminders().length });

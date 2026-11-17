@@ -7,7 +7,7 @@ import type { Scope, Suggestion } from "../shared/model";
 import { formatWhen, localDateOf, formatDay, parseLocalIso, zonedToInstant } from "../shared/time";
 import type { Config } from "./config";
 import { errorText, type Logger } from "./log";
-import { completeJson, parseJsonObject, type Llm } from "./llm";
+import { completeJson, ModelBusyError, parseJsonObject, type Llm } from "./llm";
 import { newId, type Clock, type Reminders, type Result } from "./reminders";
 import type { Store } from "./store";
 
@@ -274,32 +274,52 @@ export class LiveNoticer {
     try {
       for (const [agentId, info] of ready) {
         this.dirty.delete(agentId);
-        await this.scan(reader, agentId, info.scope);
+        if ((await this.scan(reader, agentId, info.scope)) === "busy") {
+          // Back in the queue (unless a newer turn already is), with the rest of this run left there too.
+          if (!this.dirty.has(agentId)) this.dirty.set(agentId, info);
+          break;
+        }
       }
     } finally {
       this.running = false;
     }
   }
 
-  private async scan(reader: TimelineReader, agentId: string, scope: Scope): Promise<void> {
+  /** "busy" when the model asked to wait: the cursor stays put, so the same messages are read again. */
+  private async scan(reader: TimelineReader, agentId: string, scope: Scope): Promise<"read" | "busy"> {
+    let page: Awaited<ReturnType<TimelineReader["read"]>> | null = null;
+    const moveCursor = () => {
+      if (!page?.cursor) return;
+      this.store.setCursor(agentId, page.cursor);
+      this.store.save();
+    };
     try {
-      const page = await reader.read(agentId, this.store.cursor(agentId));
-      if (page.cursor) {
-        this.store.setCursor(agentId, page.cursor);
-        this.store.save();
-      }
+      page = await reader.read(agentId, this.store.cursor(agentId));
       const typed = page.userMessages.filter((m) => m.text.trim().length > 0);
-      if (typed.reduce((n, m) => n + m.text.length, 0) < 20) return;
-      const cfg = this.config();
-      const candidates = await extract(
-        this.llm,
-        { title: page.title, cwd: page.cwd, messages: typed, lastAssistant: page.lastAssistant },
-        { nowText: this.suggestionsNow(), tz: cfg.tz, tracked: this.suggestions.tracked() },
-      );
-      const added = this.suggestions.add(candidates, "noticed", page.title, scope);
-      if (added > 0) this.log.info("noticed", { agent: agentId.slice(0, 8), count: added });
+      if (typed.reduce((n, m) => n + m.text.length, 0) >= 20) {
+        const cfg = this.config();
+        const candidates = await extract(
+          this.llm,
+          { title: page.title, cwd: page.cwd, messages: typed, lastAssistant: page.lastAssistant },
+          { nowText: this.suggestionsNow(), tz: cfg.tz, tracked: this.suggestions.tracked() },
+        );
+        const added = this.suggestions.add(candidates, "noticed", page.title, scope);
+        if (added > 0) this.log.info("noticed", { agent: agentId.slice(0, 8), count: added });
+      }
+      moveCursor();
+      return "read";
     } catch (err) {
+      if (err instanceof ModelBusyError) {
+        this.log.warn("noticing will read a conversation again: the model is busy", { agent: agentId.slice(0, 8) });
+        return "busy";
+      }
+      try {
+        moveCursor();
+      } catch (saveErr) {
+        this.log.warn("noticing could not save its place", { agent: agentId.slice(0, 8), error: errorText(saveErr) });
+      }
       this.log.warn("noticing skipped a conversation", { agent: agentId.slice(0, 8), error: errorText(err) });
+      return "read";
     }
   }
 

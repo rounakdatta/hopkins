@@ -11,7 +11,7 @@ import { idleBackfill, type BackfillState, type Scope } from "../shared/model";
 import { formatDay, localDateOf } from "../shared/time";
 import { scopeFor, type Config } from "./config";
 import { discoverMemoryDirs, listClaudeTranscripts, readClaudeTranscript, readMemoryNotes, type MemoryNote } from "./history";
-import { completeJson, parseJsonObject, type Llm } from "./llm";
+import { completeJson, ModelBusyError, parseJsonObject, patient, sleepFor, type Llm, type Sleep } from "./llm";
 import { errorText, type Logger } from "./log";
 import { extract, MIN_CONFIDENCE, type Candidate, type Suggestions } from "./noticing";
 import type { Clock, Result } from "./reminders";
@@ -132,10 +132,20 @@ export interface BackfillOptions {
   concurrency?: number;
   /** Told when a run finishes, e.g. to say so in the hopkins conversation. */
   onFinished?: (result: { conversations: number; found: number }) => void;
+  /** Told when a run fails, with the reason, so a run nobody watched does not fail unseen. */
+  onFailed?: (reason: string) => void;
+  /** How long to wait out a busy model, each time, before the run gives up (default about 15 minutes in all). */
+  busyWaitsMs?: number[];
+  sleep?: Sleep;
 }
+
+const BUSY_WAITS_MS = [30_000, 60_000, 120_000, 240_000, 480_000];
+const BUSY_REASON = "the model stayed busy (rate limited) for too long, so nothing was added; start the import again later";
 
 export class Backfill {
   private cancelled = false;
+  /** Ends the current run's waits for a busy model: Stop, or a worker that has given up. */
+  private stop: AbortController | null = null;
 
   constructor(
     private readonly store: Store,
@@ -163,14 +173,21 @@ export class Backfill {
     this.store.setBackfill({ ...idleBackfill(), state: "running", startedAt: this.clock.now() });
     this.store.save();
     void this.run().catch((err) => {
-      this.log.error("backfill failed", { error: errorText(err) });
-      this.save({ state: "failed", error: errorText(err), finishedAt: this.clock.now() });
+      if (this.cancelled) {
+        this.save({ state: "cancelled", finishedAt: this.clock.now() });
+        return;
+      }
+      const reason = err instanceof ModelBusyError ? BUSY_REASON : errorText(err);
+      this.log.error("backfill failed", { error: reason });
+      this.save({ state: "failed", error: reason, finishedAt: this.clock.now() });
+      this.options.onFailed?.(reason);
     });
     return { ok: true, message: "Looking through your past conversations. Anything still open will show up under Noticed." };
   }
 
   cancel(): void {
     this.cancelled = true;
+    this.stop?.abort();
   }
 
   /** Recovers a job interrupted by a restart: it is marked failed so it can be started again. */
@@ -188,9 +205,14 @@ export class Backfill {
     const nowText = `${formatDay(localDateOf(now, cfg.tz))} (${cfg.tz})`;
     let next = 0;
     let done = 0;
+    let busy: ModelBusyError | null = null;
+    const stop = new AbortController();
+    this.stop = stop;
+    if (this.cancelled) stop.abort();
+    const model = patient(this.llm, this.options.busyWaitsMs ?? BUSY_WAITS_MS, this.options.sleep ?? sleepFor, stop.signal);
 
     const worker = async () => {
-      while (next < files.length && !this.cancelled) {
+      while (next < files.length && !this.cancelled && !busy) {
         const file = files[next++]!;
         try {
           const conv = await readClaudeTranscript(file);
@@ -198,10 +220,17 @@ export class Backfill {
           if (conv && typed >= 40) {
             const scope: Scope = scopeFor(conv.cwd, cfg.workRoots);
             const title = conv.cwd ? path.basename(conv.cwd) : null;
-            const found = await extract(this.llm, { title, cwd: conv.cwd, messages: conv.messages, lastAssistant: conv.lastAssistant }, { nowText, tz: cfg.tz, tracked });
+            const found = await extract(model, { title, cwd: conv.cwd, messages: conv.messages, lastAssistant: conv.lastAssistant }, { nowText, tz: cfg.tz, tracked });
             for (const c of found) candidates.push({ ...c, scope: c.scope ?? scope, why: c.why || (title ? `in ${title}` : "") });
           }
         } catch (err) {
+          // Still busy after every wait (or stopped): end the whole run rather than skip what is
+          // left, and cut the other worker's wait short.
+          if (err instanceof ModelBusyError) {
+            busy = err;
+            stop.abort();
+            break;
+          }
           this.log.warn("backfill skipped a conversation", { error: errorText(err) });
         }
         done++;
@@ -213,6 +242,7 @@ export class Backfill {
       this.save({ state: "cancelled", finishedAt: this.clock.now() });
       return 0;
     }
+    if (busy) throw busy;
 
     // Configured folders first, then Claude Code's own; the same folder twice (a symlink) only once.
     const memoryDirs: string[] = [];
@@ -244,7 +274,7 @@ export class Backfill {
       for (const chunk of noteChunks(index.text)) {
         try {
           const found = await extract(
-            this.llm,
+            model,
             { title: "their own notes (the most current record)", cwd: null, messages: chunk.map((text) => ({ at: index.modifiedAt, text })), lastAssistant: null },
             { nowText, tz: cfg.tz, tracked },
             // Dense notes yield many items: a small chunk and a large reply budget keep the JSON whole.
@@ -252,13 +282,18 @@ export class Backfill {
           );
           for (const c of found) fromNotes.push({ ...c, scope: scopeOfNote(index.file), why: `from your notes: ${c.why || "an open item"}` });
         } catch (err) {
+          if (err instanceof ModelBusyError) throw err;
           this.log.warn("backfill skipped part of the notes", { error: errorText(err) });
         }
       }
     }
     const notes = condenseNotes(memory, scopeOfNote);
-    const noteItems = fromNotes.length ? await this.tidyNotes(fromNotes) : [];
-    const reviewed = await this.review(candidates.slice(0, MAX_CANDIDATES), notes, nowText, noteItems.map((c) => c.text));
+    const noteItems = fromNotes.length ? await this.tidyNotes(model, fromNotes) : [];
+    const reviewed = await this.review(model, candidates.slice(0, MAX_CANDIDATES), notes, nowText, noteItems.map((c) => c.text));
+    if (this.cancelled) {
+      this.save({ state: "cancelled", finishedAt: this.clock.now() });
+      return 0;
+    }
     const all = [...noteItems, ...reviewed];
     const personal = all.filter((c) => c.scope !== "work");
     const work = all.filter((c) => c.scope === "work");
@@ -270,7 +305,7 @@ export class Backfill {
   }
 
   /** Merges duplicates among the notes' open items and drops what the notes call finished; keeps the rest. */
-  private async tidyNotes(items: Candidate[]): Promise<Candidate[]> {
+  private async tidyNotes(model: Llm, items: Candidate[]): Promise<Candidate[]> {
     const parse = (reply: string) => ReviewSchema.parse(parseJsonObject(reply));
     const out: Candidate[] = [];
     // In batches, so a long list never truncates the reply.
@@ -278,12 +313,13 @@ export class Backfill {
       const batch = items.slice(i, i + 60);
       try {
         const parsed = await completeJson(
-          this.llm,
+          model,
           { system: NOTES_REVIEW_SYSTEM, user: JSON.stringify(batch.map((c) => ({ text: c.text, due: c.due, why: c.why, scope: c.scope ?? "personal" }))), maxTokens: 8_000 },
           parse,
         );
         out.push(...parsed.items.map((x) => ({ text: x.text.trim(), due: x.due ?? null, why: (x.why ?? "").trim(), confidence: x.confidence ?? 0.7, ...(x.scope ? { scope: x.scope } : {}) })));
       } catch (err) {
+        if (err instanceof ModelBusyError) throw err;
         // If tidying fails, the raw items are still better than none.
         this.log.warn("could not tidy the notes' items; keeping them as found", { error: errorText(err) });
         out.push(...batch);
@@ -292,7 +328,7 @@ export class Backfill {
     return out.filter((c) => c.confidence >= 0.5);
   }
 
-  private async review(candidates: Candidate[], notes: string, nowText: string, fromNotes: string[] = []): Promise<Candidate[]> {
+  private async review(model: Llm, candidates: Candidate[], notes: string, nowText: string, fromNotes: string[] = []): Promise<Candidate[]> {
     if (candidates.length === 0) return [];
     const user = [
       `Now: ${nowText}`,
@@ -301,7 +337,7 @@ export class Backfill {
       `\nTheir notes:\n${notes || "(none)"}`,
       `\nCandidates (JSON):\n${JSON.stringify(candidates.map((c) => ({ text: c.text, due: c.due, why: c.why, scope: c.scope ?? "personal" })))}`,
     ].join("\n");
-    const parsed = await completeJson(this.llm, { system: REVIEW_SYSTEM, user, maxTokens: 6_000 }, (reply) => ReviewSchema.parse(parseJsonObject(reply)));
+    const parsed = await completeJson(model, { system: REVIEW_SYSTEM, user, maxTokens: 6_000 }, (reply) => ReviewSchema.parse(parseJsonObject(reply)));
     return parsed.items
       .map((i) => ({ text: i.text.trim(), due: i.due ?? null, why: (i.why ?? "").trim(), confidence: i.confidence ?? 0.7, ...(i.scope ? { scope: i.scope } : {}) }))
       .filter((c) => c.confidence >= MIN_CONFIDENCE);
