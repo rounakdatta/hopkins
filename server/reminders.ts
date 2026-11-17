@@ -274,6 +274,8 @@ export class Reminders {
         return { ok: false, error: `${parsed.reason}. Ask the user when, offering these options.`, needsTime: true, suggestions: parsed.suggestions ?? suggestTimes(undefined, this.whenContext(now)) };
       }
       if (r.state === "fired") r.snoozes += 1;
+      // Moving the one that just went out handles it for now: it leaves Waiting and comes back at the new time.
+      if (r.last && !r.last.ackedAt) r.last.ackedAt = now;
       r.state = "scheduled";
       r.dueAt = parsed.instant;
       assumed = parsed.assumed;

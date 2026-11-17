@@ -69,6 +69,11 @@ export function headline(view: TodayView): { title: string; detail: string | nul
           : `${counted(tasks, "task needs", "tasks need")} you.`;
     return { title: sentenceCase(title), detail: next ? `Then: ${said(next)}.` : null };
   }
+  const running = view.tasks.filter((t) => t.state === "running");
+  if (running.length > 0) {
+    const title = running.length === 1 ? `Working on it: ${running[0]!.text}.` : `Working on ${number(running.length)} tasks.`;
+    return { title, detail: next ? `Then: ${said(next)}.` : null };
+  }
   if (next && dayOf(next) === "Today") {
     const more = ahead.filter((e) => dayOf(e) === "Today").length - 1;
     return { title: `Next: ${said(next)}.`, detail: more > 0 ? `${sentenceCase(number(more))} more later today.` : null };
@@ -92,4 +97,26 @@ export function clockLabel(value: string): string {
   const suffix = h < 12 ? "am" : "pm";
   const hour = h % 12 === 0 ? 12 : h % 12;
   return m === 0 ? `${hour}${suffix}` : `${hour}:${String(m).padStart(2, "0")}${suffix}`;
+}
+
+/**
+ * The review's order. The card on screen stays put until it is decided or skipped, even when a
+ * newer suggestion sorts ahead of it; then the ones not yet skipped, in list order; then the
+ * skipped ones in the order they were skipped, so Skip keeps cycling through all of them.
+ */
+export function reviewQueue<T extends { id: string; scope: string }>(items: T[], scope: "all" | "personal" | "work", skipped: string[], current: string | null): T[] {
+  const inScope = items.filter((i) => scope === "all" || i.scope === scope);
+  const byId = new Map(inScope.map((i) => [i.id, i]));
+  const later = new Set(skipped);
+  const ordered = [...inScope.filter((i) => !later.has(i.id)), ...skipped.flatMap((id) => byId.get(id) ?? [])];
+  const at = current === null ? -1 : ordered.findIndex((i) => i.id === current);
+  return at > 0 ? [ordered[at]!, ...ordered.slice(0, at), ...ordered.slice(at + 1)] : ordered;
+}
+
+/** When something was or is due, said as a phrase: "at 8pm", "yesterday at 8pm", "on Sat 14 Nov at 8pm". */
+export function spokenAt(day: string | null | undefined, time: string | null | undefined, fallback: string): string {
+  if (!day || !time) return fallback;
+  if (day === "Today") return `at ${time}`;
+  if (day === "Yesterday" || day === "Tomorrow") return `${day.toLowerCase()} at ${time}`;
+  return `on ${day} at ${time}`;
 }

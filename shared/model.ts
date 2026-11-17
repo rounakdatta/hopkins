@@ -238,6 +238,8 @@ export const TodayItemSchema = z.object({
   day: z.string().nullable().optional(),
   /** The time of day alone ("9am"); null without a time. */
   time: z.string().nullable().optional(),
+  /** For what is waiting: when the one that went out was due ("9am", "yesterday at 9am"). */
+  wasDue: z.string().nullable().optional(),
   /** For a reminder that stops by itself: what has to hold, and how far along it is. */
   until: z
     .object({ inARow: z.number(), streak: z.number(), last: z.string().nullable(), met: z.boolean().nullable() })

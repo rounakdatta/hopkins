@@ -47,7 +47,15 @@ export interface NoticingView {
 export function buildToday(store: Store, reminders: Reminders, cfg: Config, now: number, health: Health, noticing?: NoticingView, tasks?: Tasks): TodayView {
   const recaps = store.recaps();
   const endOfToday = zonedToInstant({ ...addDays(localDateOf(now, cfg.tz), 1), hour: 0, minute: 0 }, cfg.tz);
-  const item = (r: Reminder): TodayItem => ({
+  // "9am" today, "yesterday at 9am", "Sun 15 Nov at 9am": when something was due, as people say it.
+  const spoken = (at: number) => {
+    const day = dayLabel(at, cfg.tz, now);
+    const time = timeLabel(at, cfg.tz, cfg.clock);
+    return day === "Today" ? time : `${day === "Yesterday" ? "yesterday" : day} at ${time}`;
+  };
+  // Due and not delivered yet (paused, or the model is slow or down): it is waiting on them, not "next".
+  const overdue = (r: Reminder) => r.state === "scheduled" && r.dueAt !== null && r.dueAt <= now;
+  const item = (r: Reminder, waitingNow = false): TodayItem => ({
     id: r.id,
     text: r.text,
     scope: r.scope,
@@ -62,6 +70,8 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     late: Boolean(r.last?.late),
     day: r.dueAt !== null ? dayLabel(r.dueAt, cfg.tz, now) : null,
     time: r.dueAt !== null ? timeLabel(r.dueAt, cfg.tz, cfg.clock) : null,
+    // For what is waiting: the time that went out (a repeat's dueAt is already its next one).
+    wasDue: waitingNow ? ((at) => (at === null ? null : spoken(at)))(overdue(r) ? r.dueAt : (r.last?.dueAt ?? null)) : null,
     until: r.until && !r.until.metAt
       ? { inARow: r.until.inARow, streak: r.until.streak, last: r.until.log.at(-1)?.note ?? null, met: r.until.log.at(-1)?.met ?? null }
       : null,
@@ -69,7 +79,8 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
   const all = store.reminders();
   const recentRepeat = (r: Reminder) =>
     r.repeat !== null && r.state === "scheduled" && r.last !== undefined && !r.last.ackedAt && now - r.last.firedAt < 18 * 3_600_000;
-  const waiting = all.filter((r) => r.state === "fired" || recentRepeat(r)).sort((a, b) => (b.last?.firedAt ?? 0) - (a.last?.firedAt ?? 0));
+  const wentOut = (r: Reminder) => (overdue(r) ? r.dueAt! : (r.last?.firedAt ?? 0));
+  const waiting = all.filter((r) => r.state === "fired" || recentRepeat(r) || overdue(r)).sort((a, b) => wentOut(b) - wentOut(a));
   const waitingIds = new Set(waiting.map((r) => r.id));
   const scheduled = all.filter((r) => r.state === "scheduled" && r.dueAt !== null && !waitingIds.has(r.id)).sort((a, b) => a.dueAt! - b.dueAt!);
   const today = scheduled.filter((r) => r.dueAt! < endOfToday);
@@ -83,11 +94,11 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     generatedAt: now,
     tz: cfg.tz,
     dateLabel: longDate(now, cfg.tz),
-    waiting: waiting.map(item),
-    today: today.map(item),
-    upcoming: upcoming.map(item),
-    someday: someday.map(item),
-    recentlyClosed: recentlyClosed.map(item),
+    waiting: waiting.map((r) => item(r, true)),
+    today: today.map((r) => item(r)),
+    upcoming: upcoming.map((r) => item(r)),
+    someday: someday.map((r) => item(r)),
+    recentlyClosed: recentlyClosed.map((r) => item(r)),
     health: { ...health, threadAgentId: store.threadAgentId() },
     counts: { waiting: waiting.length, today: today.length },
     snoozeOptions: snoozeOptions(cfg, now),

@@ -26,7 +26,8 @@ hopkins plugin (inside the Paseo daemon)
   └─ delivery    writes the reminder into the hopkins conversation → Paseo pushes it
 hopkins conversation   one agent that turns due reminders into short messages
                        and handles your replies
-Today screen           sidebar row with a count · overdue · today · upcoming · someday
+Today screen           one headline · what needs you · one timeline of reminders and tasks
+                       · Noticed, reviewed one at a time; the sidebar badge counts what needs you
 ```
 
 - **Every agent gets four tools:** `hopkins_remind`, `hopkins_reminders`, `hopkins_change_reminder` and `hopkins_close_reminder`. They work from personal and work agents alike. A folder you mark as work tags its reminders `work`.
@@ -43,7 +44,7 @@ Some things never get said as "remind me". You tell an agent "I'll send the deck
 - **As you go.** When a conversation goes quiet, hopkins reads what *you* typed since it last looked, plus the agent's last hand-off. A small model looks for open loops. This happens at most every half hour.
 - **Your history, once.** "Look through history" on the Today screen reads Claude Code's past conversations and the memory notes it keeps. It finds open loops in each conversation, then reviews them all against your notes, which are the most current record of what is done. Finished and stale things are dropped.
 
-Either way they land under **Noticed** on Today, each with where it came from and a suggested time. You choose **Remind me**, **Already done** or **Drop**. Nothing becomes a reminder without your tap, and nothing you drop is suggested again.
+Either way they land under **Noticed** on Today, each with where it came from and a suggested time. **Review** walks through them one at a time: **Remind me** at the suggested time, **Another time**, **Already done**, **Not needed** or **Skip**, and **Undo** takes the last one back. On a keyboard: Enter, T, D, X, S and U. Nothing becomes a reminder without your tap, and nothing you set aside is suggested again.
 
 Noticing needs a model.
 

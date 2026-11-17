@@ -187,12 +187,16 @@ export class Suggestions {
     return added;
   }
 
-  /** Undoes a decision: back to Noticed, and a reminder it became (not yet delivered) is removed again. */
+  /**
+   * Undoes a decision: back to Noticed. A reminder the keep made is removed again, but only while
+   * it has never gone out; a keep that matched a reminder they already had stored no id, so theirs stays.
+   */
   private reopen(current: Suggestion): Result<{ message: string }> {
     if (current.state === "open") return { ok: true, message: `Still open: ${current.text}.` };
     if (current.state === "kept" && current.reminderId) {
       const reminder = this.reminders.get(current.reminderId);
-      if (reminder && reminder.state !== "scheduled") return { ok: false, error: "it already became a reminder that went out; close that one instead" };
+      if (reminder?.last) return { ok: false, error: "it already went out as a reminder; close that one instead" };
+      if (reminder && reminder.state !== "scheduled") return { ok: false, error: `that reminder is already ${reminder.state === "done" ? "done" : "closed"}` };
       if (reminder) this.store.remove(reminder.id);
     }
     const { reminderId: _gone, ...rest } = current;
@@ -202,12 +206,15 @@ export class Suggestions {
     return { ok: true, message: `Back under Noticed: ${current.text}.` };
   }
 
+  /** Its suggested time as people say it; null once that time has passed, so nobody is offered the past. */
   whenLabel(s: Suggestion): string | null {
     if (!s.when) return null;
     const local = parseLocalIso(s.when);
     if (!local) return null;
     const cfg = this.config();
-    return formatWhen(zonedToInstant(local, cfg.tz), cfg.tz, this.clock.now(), cfg.clock);
+    const instant = zonedToInstant(local, cfg.tz);
+    const now = this.clock.now();
+    return instant > now ? formatWhen(instant, cfg.tz, now, cfg.clock) : null;
   }
 
   /** keep → becomes a reminder (at `when`, else its own time); done/dismiss → closed, never offered again. */
@@ -225,7 +232,8 @@ export class Suggestions {
         current.scope,
       );
       if (!created.ok) return created;
-      this.store.putSuggestion({ ...current, state: "kept", reminderId: created.reminder.id });
+      // A keep that matched a reminder they already had made nothing, so an undo must not remove theirs.
+      this.store.putSuggestion({ ...current, state: "kept", ...(created.duplicate ? {} : { reminderId: created.reminder.id }) });
       this.store.save();
       return { ok: true, message: created.confirmation };
     }

@@ -6,11 +6,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { useRpc } from "@getpaseo/plugin/client";
-import { Icon, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
+import { Icon, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import type { TodayView } from "../shared/model";
 import { suggestionRpc } from "../shared/rpc";
 import { Button, Card, ChoiceRow, Tag, type } from "./kit";
 import { space, tabular, type Colors } from "./theme";
+import { reviewQueue } from "./words";
 
 export type NoticedItem = TodayView["noticed"][number];
 type Scope = "all" | "personal" | "work";
@@ -35,9 +36,13 @@ export function Review(props: {
 }) {
   const { colors, compact } = props;
   const act = useRpc(suggestionRpc);
+  const toast = useToast();
   const [scope, setScope] = useState<Scope>("all");
   const [skipped, setSkipped] = useState<string[]>([]);
-  const [front, setFront] = useState<string | null>(props.startAt ?? null);
+  // The card on screen: it stays until decided or skipped, whatever arrives meanwhile.
+  const [current, setCurrent] = useState<string | null>(props.startAt ?? null);
+  // Decided here: gone from the queue at once, before the next update arrives.
+  const [handled, setHandled] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [picking, setPicking] = useState(false);
   const [typed, setTyped] = useState("");
@@ -49,14 +54,19 @@ export function Review(props: {
     () => ({ all: props.items.length, personal: props.items.filter((i) => i.scope === "personal").length, work: props.items.filter((i) => i.scope === "work").length }),
     [props.items],
   );
-  // The queue: the chosen scope, the one just brought back first, skipped ones last.
-  const queue = useMemo(() => {
-    const inScope = props.items.filter((i) => scope === "all" || i.scope === scope);
-    const ordered = [...inScope.filter((i) => !skipped.includes(i.id)), ...inScope.filter((i) => skipped.includes(i.id))];
-    const lead = ordered.findIndex((i) => i.id === front);
-    return lead > 0 ? [ordered[lead]!, ...ordered.slice(0, lead), ...ordered.slice(lead + 1)] : ordered;
-  }, [props.items, scope, skipped, front]);
+  const queue = useMemo(
+    () => reviewQueue(props.items.filter((i) => !handled.includes(i.id)), scope, skipped, current),
+    [props.items, handled, scope, skipped, current],
+  );
   const item = queue[0] ?? null;
+  const itemId = item?.id ?? null;
+  // Pin whatever is on screen, and give each card a clean slate: no half-typed time from the last one.
+  useEffect(() => {
+    if (itemId !== current) setCurrent(itemId);
+    setPicking(false);
+    setTyped("");
+    setProblem(null);
+  }, [itemId]);
 
   // The undo strip stays a few seconds, then gets out of the way.
   useEffect(() => {
@@ -65,30 +75,37 @@ export function Review(props: {
     return () => clearTimeout(t);
   }, [last]);
 
+  // After a click, focus would stay on that button and Enter would press it on the next card.
+  const releaseFocus = () => {
+    if (Platform.OS === "web" && typeof document !== "undefined") (document.activeElement as { blur?: () => void } | null)?.blur?.();
+  };
+
   const decide = async (decision: Decision, when?: string) => {
     if (!item || busy) return;
-    if (decision === "keep" && !when && !item.when) {
+    // No usable time of its own (none, or it has passed): ask for one.
+    if (decision === "keep" && !when && !item.whenLabel) {
       setPicking(true);
       return;
     }
+    const id = item.id;
     setBusy(true);
     setProblem(null);
     try {
-      const result = await act({ id: item.id, action: decision, ...(when ? { when } : {}) });
+      const result = await act({ id, action: decision, ...(when ? { when } : {}) });
       if (result.ok) {
-        setLast({ id: item.id, message: result.message });
+        setLast({ id, message: result.message });
         setDecided((n) => n + 1);
-        setPicking(false);
-        setTyped("");
-        if (front === item.id) setFront(null);
+        setHandled((h) => [...h, id]);
+        setCurrent(null);
+        releaseFocus();
       } else if (result.needsTime) {
         setPicking(true);
-        setProblem(when ? "Couldn't read that time. Try “fri 5pm” or “tomorrow 9am”." : null);
+        setProblem(when ? "Couldn't read that time. Try “fri 5pm” or “tomorrow 9am”." : "Its time has passed. Pick a new one.");
       } else {
         setProblem(result.message);
       }
     } catch {
-      setProblem("Couldn't reach hopkins. Try again in a moment.");
+      toast.error("Couldn't reach hopkins. Try again in a moment.");
     } finally {
       setBusy(false);
     }
@@ -96,17 +113,21 @@ export function Review(props: {
 
   const undo = async () => {
     if (!last || busy) return;
+    const { id } = last;
     setBusy(true);
     try {
-      const result = await act({ id: last.id, action: "reopen" });
+      const result = await act({ id, action: "reopen" });
       if (result.ok) {
-        setFront(last.id);
-        setSkipped((s) => s.filter((id) => id !== last.id));
+        setHandled((h) => h.filter((x) => x !== id));
+        setSkipped((s) => s.filter((x) => x !== id));
+        setCurrent(id);
         setDecided((n) => Math.max(0, n - 1));
         setLast(null);
       } else {
-        setProblem(result.message);
+        toast.error(`Couldn't undo: ${result.message}.`);
       }
+    } catch {
+      toast.error("Couldn't reach hopkins to undo. Try again in a moment.");
     } finally {
       setBusy(false);
     }
@@ -114,22 +135,30 @@ export function Review(props: {
 
   const skip = () => {
     if (!item) return;
-    setSkipped((s) => [...s.filter((id) => id !== item.id), item.id]);
-    if (front === item.id) setFront(null);
-    setPicking(false);
-    setProblem(null);
+    const id = item.id;
+    setSkipped((s) => [...s.filter((x) => x !== id), id]);
+    setCurrent(null);
+    releaseFocus();
   };
 
-  // Desktop: the whole review from the keyboard. Ignored while typing a time.
+  // Desktop: the whole review from the keyboard. While typing a time only Esc counts (it closes
+  // the picker); a held key decides one card, not one per auto-repeat; and keys pressed while
+  // focus is somewhere else in the app are not ours.
+  const root = useRef<unknown>(null); // on the web, the review's own DOM node
   const keys = useRef({ decide, skip, undo, exit: props.onExit, picking, setPicking });
   keys.current = { decide, skip, undo, exit: props.onExit, picking, setPicking };
   useEffect(() => {
     if (Platform.OS !== "web" || typeof window === "undefined") return;
     const onKey = (e: KeyboardEvent) => {
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
       const target = e.target as HTMLElement | null;
-      if (e.metaKey || e.ctrlKey || e.altKey || target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
+      const mine = root.current as unknown as HTMLElement | null;
+      const away = target && target !== document.body && target !== document.documentElement && !(mine?.contains?.(target) ?? true);
+      if (away) return;
+      const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA";
       const k = keys.current;
       const key = e.key.toLowerCase();
+      if (typing && key !== "escape") return;
       if (key === "escape") k.picking ? k.setPicking(false) : k.exit();
       else if (key === "enter" || key === "k") void k.decide("keep");
       else if (key === "t") k.setPicking(!k.picking);
@@ -162,9 +191,10 @@ export function Review(props: {
 
   return (
     <ScrollView
-      contentContainerStyle={{ padding: compact ? space.l : space.xl, paddingBottom: space.xl * 2, gap: space.l, width: "100%", maxWidth: 680, alignSelf: "center" }}
+      contentContainerStyle={{ padding: compact ? space.l : space.xl, paddingBottom: space.xl * 2, width: "100%", maxWidth: 680, alignSelf: "center" }}
       keyboardShouldPersistTaps="handled"
     >
+      <View ref={root as never} style={{ gap: space.l }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: space.s, flexWrap: "wrap" }}>
         <Button colors={colors} tone="quiet" compact icon="ArrowLeft" label="Today" a11y="Back to Today" onPress={props.onExit} />
         <View style={{ flex: 1 }} />
@@ -235,6 +265,8 @@ export function Review(props: {
                 autoFocus={Platform.OS === "web"}
                 returnKeyType="done"
                 onSubmitEditing={() => typed.trim() && void decide("keep", typed.trim())}
+                // The field keeps its keys to itself on the web, so Esc is caught here: it closes the picker.
+                onKeyPress={(e: { nativeEvent: { key: string } }) => e.nativeEvent.key === "Escape" && setPicking(false)}
                 accessibilityLabel="Type a time to be reminded"
                 style={{
                   borderWidth: 1,
@@ -290,6 +322,7 @@ export function Review(props: {
           Enter keep · T time · D done · X not needed · → skip · U undo · Esc back
         </Text>
       ) : null}
+      </View>
     </ScrollView>
   );
 }

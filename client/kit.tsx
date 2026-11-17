@@ -2,7 +2,7 @@
 // accent used sparingly, and a type scale small enough to stay calm: hopkins sits
 // beside conversations, so it should read like a well-kept list, not a dashboard.
 
-import { useState, type ReactNode } from "react";
+import { Children, isValidElement, useState, type ReactNode } from "react";
 import { Platform, Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { space, tabular, type Colors } from "./theme";
@@ -50,13 +50,16 @@ export function Divider(props: { colors: Colors; inset?: number }) {
   return <View style={{ height: 1, backgroundColor: props.colors.border, marginLeft: props.inset ?? 0 }} />;
 }
 
-/** Puts dividers between children, so no row carries a border it may not need. */
-export function Rows(props: { colors: Colors; inset?: number; children: ReactNode[] }) {
-  const items = props.children.filter(Boolean);
+/**
+ * Puts dividers between children, so no row carries a border it may not need. Each row keeps its
+ * own key, so a row that is open stays open when another one arrives above it.
+ */
+export function Rows(props: { colors: Colors; inset?: number; children: ReactNode }) {
+  const items = Children.toArray(props.children).filter(Boolean);
   return (
     <>
       {items.map((child, i) => (
-        <View key={i}>
+        <View key={isValidElement(child) && child.key !== null ? child.key : i}>
           {i > 0 ? <Divider colors={props.colors} inset={props.inset} /> : null}
           {child}
         </View>
@@ -119,8 +122,8 @@ export function Button(props: {
   );
 }
 
-/** The ring you tap to mark something done: the most familiar gesture there is. */
-export function CompleteRing(props: { colors: Colors; label: string; onPress: () => void; disabled?: boolean }) {
+/** The ring you tap to mark something done: the most familiar gesture there is. If that fails, it un-ticks. */
+export function CompleteRing(props: { colors: Colors; label: string; onPress: () => Promise<boolean> | void; disabled?: boolean }) {
   const [hover, setHover] = useState(false);
   const [done, setDone] = useState(false);
   return (
@@ -132,9 +135,9 @@ export function CompleteRing(props: { colors: Colors; label: string; onPress: ()
       disabled={props.disabled || done}
       onHoverIn={() => setHover(true)}
       onHoverOut={() => setHover(false)}
-      onPress={() => {
+      onPress={async () => {
         setDone(true);
-        props.onPress();
+        if ((await props.onPress()) === false) setDone(false);
       }}
       style={{
         width: 22,

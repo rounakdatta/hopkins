@@ -11,9 +11,9 @@ import { actRpc, backfillRpc, recapsRpc, taskRpc, todayWatch } from "../shared/r
 import { Button, Card, ChoiceRow, CompleteRing, Divider, Rows, Section, Tag, type } from "./kit";
 import { NoticedLine, Review } from "./review";
 import { space, tabular, type Colors } from "./theme";
-import { clockLabel, dayOf, headline, recapSummary, upcoming, type TaskItem, type Upcoming } from "./words";
+import { clockLabel, dayOf, headline, recapSummary, spokenAt, upcoming, type TaskItem, type Upcoming } from "./words";
 
-type Act = (id: string, action: "done" | "drop" | "snooze", until?: string) => Promise<void>;
+type Act = (id: string, action: "done" | "drop" | "snooze", until?: string) => Promise<boolean>;
 
 const NOTICED_PREVIEW = 3;
 
@@ -33,8 +33,10 @@ export function TodayScreen(props: PluginScreenProps) {
       const result = await actRemote({ id, action, ...(until ? { until } : {}) });
       if (result.ok) toast.show(result.message, { variant: "success" });
       else toast.error(result.message);
+      return result.ok;
     } catch {
       toast.error("Couldn't reach hopkins. Try again in a moment.");
+      return false;
     } finally {
       setBusy(null);
     }
@@ -63,7 +65,8 @@ export function TodayScreen(props: PluginScreenProps) {
   // Scheduled tasks sit in the timeline with the reminders; this section is what is happening, or stuck.
   const activeTasks = view.tasks.filter((t) => t.state === "running" || t.state === "needs-you" || t.state === "missed");
   const finishedTasks = view.tasks.filter((t) => t.state === "done" || t.state === "failed" || t.state === "cancelled");
-  const empty = view.waiting.length + ahead.length + view.someday.length + view.noticed.length + view.tasks.length === 0;
+  // Nothing at all, ever: only then the first-run invitation. Having closed everything is "All clear".
+  const empty = view.waiting.length + ahead.length + view.someday.length + view.noticed.length + view.tasks.length + view.recentlyClosed.length === 0;
 
   return (
     <ScrollView
@@ -215,12 +218,12 @@ function WaitingRow(props: { item: TodayItem; colors: Colors; busy: boolean; act
   const { item, colors } = props;
   const [snoozing, setSnoozing] = useState(false);
   const [hover, setHover] = useState(false);
-  const meta = [`was due ${item.time && item.day === "Today" ? item.time : item.when}`, item.repeat, item.source ? `from ${item.source}` : null].filter(Boolean).join(" · ");
+  const meta = [`was due ${item.wasDue ?? item.when}`, item.repeat, item.source ? `from ${item.source}` : null].filter(Boolean).join(" · ");
   const unopened = item.important && item.seen === false;
   return (
     <View style={{ paddingHorizontal: space.l, paddingVertical: 14, gap: space.m, opacity: props.busy ? 0.5 : 1, backgroundColor: snoozing || hover ? colors.surface2 : "transparent" }}>
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 14 }}>
-        <CompleteRing colors={colors} label={`Done: ${item.text}`} disabled={props.busy} onPress={() => void props.act(item.id, "done")} />
+        <CompleteRing colors={colors} label={`Done: ${item.text}`} disabled={props.busy} onPress={() => props.act(item.id, "done")} />
         {/* The words open the snooze times: on a phone there is no room for a button on every row. */}
         <Pressable
           accessibilityRole="button"
@@ -504,7 +507,7 @@ function TaskRow(props: { task: TaskItem; colors: Colors; openAgent: ((agentId: 
     scheduled: { icon: "Clock", tint: colors.foregroundMuted, status: task.when },
     running: { icon: null, tint: colors.foregroundMuted, status: "Working on it now" },
     "needs-you": { icon: "CircleAlert", tint: colors.statusWarning, status: "Needs your answer" },
-    missed: { icon: "Clock", tint: colors.statusWarning, status: `Didn't start at ${task.time ?? task.when}: hopkins was offline` },
+    missed: { icon: "Clock", tint: colors.statusWarning, status: `Didn't start ${spokenAt(task.day, task.time, task.when)}: hopkins was offline` },
     done: { icon: "CircleCheck", tint: colors.foregroundMuted, status: `Done · ${task.when}` },
     failed: { icon: "TriangleAlert", tint: colors.foregroundMuted, status: `Didn't work · ${task.when}` },
     cancelled: { icon: "CircleX", tint: colors.foregroundMuted, status: "Cancelled" },

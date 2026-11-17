@@ -98,7 +98,8 @@ describe("the Today headline", () => {
   });
   const cleaning = reminder("pick up the dry cleaning", "Today", "7pm", now + 3 * 3_600_000);
   const challan = reminder("check the challan", "Tomorrow", "9am", now + 18 * 3_600_000);
-  const fired = (text: string) => ({ ...reminder(text, "Today", "2pm", now - 3_600_000), state: "fired" as const });
+  // As the server sends a delivered one-off: no next time, only when it was due.
+  const fired = (text: string): TodayItem => ({ ...reminder(text, "Today", "2pm", now - 3_600_000), state: "fired", dueAt: null, day: null, time: null, wasDue: "2pm" });
 
   it("counts exactly what is listed under it, and the badge agrees", () => {
     const view = { ...empty, waiting: [fired("call the bank"), fired("pay rent")], today: [cleaning], tasks: [task("web check-in", "needs-you", "Today", "3pm", now)] };
