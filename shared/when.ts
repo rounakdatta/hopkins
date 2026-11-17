@@ -241,11 +241,12 @@ export function parseWhen(input: string, ctx: WhenContext): WhenResult {
   if (v) return v;
 
   // Durations.
+  // Durations are exact: "in 1m" means sixty seconds from now, not the next whole minute.
   const duration = parseDuration(s);
   if (duration !== null) {
-    const p = zonedParts(ctx.now + duration, ctx.tz);
-    const local = { year: p.year, month: p.month, day: p.day, hour: p.hour, minute: p.minute, second: 0 };
-    return { ok: true, instant: zonedToInstant(local, ctx.tz), local };
+    const instant = ctx.now + duration;
+    const p = zonedParts(instant, ctx.tz);
+    return { ok: true, instant, local: { year: p.year, month: p.month, day: p.day, hour: p.hour, minute: p.minute, second: p.second } };
   }
 
   // Day words, with an optional time on either side.

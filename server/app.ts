@@ -9,6 +9,7 @@ import { hopkinsSettings, settingsSchema, type HopkinsSettings } from "../shared
 import { resolveConfig, type Config } from "./config";
 import { DeliveryQueue } from "./delivery";
 import { consoleLogger, errorText, type Logger } from "./log";
+import { HopkinsMcpServer, MCP_SERVER_NAME } from "./mcp-server";
 import { PaseoLink } from "./paseo-link";
 import { Reminders, systemClock, type Clock } from "./reminders";
 import { Scheduler } from "./scheduler";
@@ -121,11 +122,23 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     changed,
   });
 
-  server.addHook("agent.open.before", async (payload, context) => {
+  // Providers whose sessions take an extra MCP server. Pi refuses MCP servers (the open
+  // would fail) and Antigravity takes none, so they are left alone.
+  const MCP_PROVIDERS = new Set(["claude", "codex", "opencode"]);
+  const mcp = new HopkinsMcpServer(tools, log, () => link.api);
+  void mcp
+    .start()
+    .then(() => log.info("tools ready", { port: mcp.port }))
+    .catch((err) => log.error("could not start the tools server", { error: errorText(err) }));
+
+  server.addHook("agent.open.before", async ({ request }, context) => {
+    // Never throws: a failing session-open hook stops the agent from opening.
     try {
       link.adopt(context.paseo);
-      const request = payload.request;
-      request.tools = [...request.tools, ...tools];
+      if (request.purpose !== "interactive") return request;
+      mcp.remember({ id: request.agentId, workspaceId: request.workspaceId, cwd: request.cwd, title: request.title, provider: request.provider });
+      if (!MCP_PROVIDERS.has(request.provider) || !mcp.ready || request.mcpServers[MCP_SERVER_NAME]) return request;
+      request.mcpServers[MCP_SERVER_NAME] = mcp.configFor(request.agentId);
       return request;
     } catch (err) {
       log.error("could not attach the hopkins tools", { error: errorText(err) });
@@ -171,6 +184,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
 
   return () => {
     scheduler.stop();
+    mcp.stop();
     clearInterval(refresh);
     if (notifyTimer) clearTimeout(notifyTimer);
     unsubscribeSettings();

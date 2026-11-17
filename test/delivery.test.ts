@@ -64,7 +64,8 @@ describe("delivering due reminders", () => {
     await t.tick();
     expect(t.thread.cues).toHaveLength(1);
     expect(t.thread.cues[0]).toMatch(/1\. "buy milk".*\n2\. "call the vet"/);
-    expect(t.thread.cues[0]).toMatch(/one short line each/);
+    // Several due together become one message, one line each, not a burst of pushes.
+    expect(t.thread.cues[0]).toMatch(/one short line per reminder/);
   });
 
   it("waits for a busy conversation instead of interrupting it", async () => {

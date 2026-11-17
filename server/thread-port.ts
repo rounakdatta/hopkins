@@ -11,6 +11,15 @@ import type { Store } from "./store";
 
 export const THREAD_LABEL = "hopkins.role";
 
+/** Daemon calls can hang (clearAgentAttention never answers for an unknown agent), so every one is bounded. */
+export function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)}s`)), ms);
+  });
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+}
+
 interface AgentLike {
   id?: string;
   status?: string;
@@ -43,7 +52,7 @@ export class PaseoThreadPort implements ThreadPort {
     const api = this.api();
     const known = this.store.threadAgentId();
     if (known) {
-      const found = await api.agents.ref(known).refresh().catch(() => null);
+      const found = await withTimeout(api.agents.ref(known).refresh(), 15_000, "looking up the conversation").catch(() => null);
       if (found?.agent) return known; // archived is fine: sending revives it
     }
     const labelled = await this.findByLabel(api);
@@ -60,7 +69,7 @@ export class PaseoThreadPort implements ThreadPort {
 
   private async findByLabel(api: PaseoApi): Promise<string | null> {
     try {
-      const result = await api.agents.list({ filter: { labels: { [THREAD_LABEL]: "thread" } } } as never);
+      const result = await withTimeout(api.agents.list({ filter: { labels: { [THREAD_LABEL]: "thread" } } } as never), 15_000, "searching agents");
       for (const entry of result.entries as unknown[]) {
         const agent = ((entry as { agent?: AgentLike }).agent ?? entry) as AgentLike;
         if (agent.id && agent.labels?.[THREAD_LABEL] === "thread") return agent.id;
@@ -74,13 +83,13 @@ export class PaseoThreadPort implements ThreadPort {
   private async create(api: PaseoApi): Promise<string> {
     const cfg = this.config();
     fs.mkdirSync(cfg.threadCwd, { recursive: true, mode: 0o700 });
-    const handle = await api.agents.create({
+    const handle = await withTimeout(api.agents.create({
       cwd: cfg.threadCwd,
       title: THREAD_TITLE,
       labels: { [THREAD_LABEL]: "thread" },
       metadata: { "hopkins.thread": { version: 1 } },
       config: { provider: cfg.threadModel, modeId: cfg.threadMode, systemPrompt: THREAD_SYSTEM_PROMPT },
-    } as never);
+    } as never), 60_000, "creating the conversation");
     this.store.setThreadAgentId(handle.id);
     this.store.save();
     this.store.event("thread-created", { agent: handle.id });
@@ -94,7 +103,7 @@ export class PaseoThreadPort implements ThreadPort {
   }
 
   async status(agentId: string): Promise<ThreadStatus> {
-    const result = await this.api().agents.ref(agentId).refresh();
+    const result = await withTimeout(this.api().agents.ref(agentId).refresh(), 15_000, "reading the conversation's state");
     const agent = result?.agent as AgentLike | undefined;
     if (!agent) return { busy: false, requiresAttention: false };
     return {
@@ -104,11 +113,17 @@ export class PaseoThreadPort implements ThreadPort {
   }
 
   async clearAttention(agentId: string): Promise<void> {
-    if (this.link.daemon) await this.link.daemon.clearAgentAttention(agentId);
+    // Best effort: if it fails, the reminder still arrives; it just may not buzz while an earlier one is unread.
+    if (!this.link.daemon) return;
+    await withTimeout(this.link.daemon.clearAgentAttention(agentId), 10_000, "clearing the unread flag").catch(() => undefined);
   }
 
   async runTurn(agentId: string, text: string, timeoutMs: number): Promise<FinishResult> {
-    const result = await this.api().agents.ref(agentId).run(text, { timeoutMs, activeTurnBehavior: "steer" });
+    const result = await withTimeout(
+      this.api().agents.ref(agentId).run(text, { timeoutMs, activeTurnBehavior: "steer" }),
+      timeoutMs + 30_000,
+      "waiting for the conversation",
+    );
     return { status: result.status, lastMessage: result.lastMessage, ...(result.error ? { error: result.error } : {}) };
   }
 }

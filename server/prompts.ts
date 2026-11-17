@@ -59,7 +59,7 @@ export function cueText(delivery: Delivery, reminders: Reminder[], now: number, 
       `<hopkins:nudge id="${delivery.id}">`,
       ...lines,
       `</hopkins:nudge>`,
-      `Re-send this once, shorter than before: point first, under 120 characters, no question. Only the message.`,
+      `Send it once more, shorter: just the thing to do, in their words. No preamble. Only the message.`,
     ].join("\n");
   }
   return [
@@ -67,8 +67,8 @@ export function cueText(delivery: Delivery, reminders: Reminder[], now: number, 
     ...lines,
     `</hopkins:due>`,
     reminders.length === 1
-      ? `Write the reminder now: point first, in their words, under 200 characters. If it is late, say so in a few words. Only the message.`
-      : `Write one message with these reminders, one short line each, point first, in their words, under 300 characters in total. Mention lateness in a few words where it applies. Only the message.`,
+      ? `Write it as they'd want to read it on a lock screen: the thing to do, in their words, as one short sentence ("Water the ferns."). Add a few words only when they help: that it is late, or where it came from if that was days ago. No preamble, no "reminder", no "due now". Only the message.`
+      : `Write one message, one short line per reminder: the thing to do, in their words. Add a few words only where they help (late, or set days ago). No preamble. Only the message.`,
   ].join("\n");
 }
 
