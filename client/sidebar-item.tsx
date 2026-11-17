@@ -38,7 +38,7 @@ export function SidebarItem(props: PluginSidebarItemProps) {
 
   return (
     <SidebarRow
-      icon="bell"
+      icon="Bell"
       label="hopkins"
       active={props.currentScreen?.screenId === "today"}
       onPress={() => props.openScreen({ screenId: "today" })}

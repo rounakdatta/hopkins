@@ -9,7 +9,7 @@ export default function hopkins(client: PluginClientContext) {
   const cleanups = [
     client.addScreen({ id: "today", title: "hopkins", Component: TodayScreen }),
     client.addSidebarHeaderItem({ id: "today", title: "hopkins", Component: SidebarItem }),
-    client.addSettingsScreen({ id: "settings", title: "hopkins", icon: "bell", Component: SettingsScreen }),
+    client.addSettingsScreen({ id: "settings", title: "hopkins", icon: "Bell", Component: SettingsScreen }),
     client.addTimelineRenderer({ kind: CUE_KIND, version: 1, schema: cueRowSchema, Component: CueRow }),
     // hopkins's own prompts to its conversation render as a quiet line, not as a message you typed.
     client.addTimelineTransformer({

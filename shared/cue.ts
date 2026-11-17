@@ -2,7 +2,7 @@
 // marker, so the app can show them as a quiet row instead of a chat bubble
 // that looks like something you typed.
 
-export const CUE_KIND = "hopkins.cue";
+export const CUE_KIND = "hopkins-cue";
 
 export type CueKind = "due" | "nudge" | "hello" | "morning" | "evening" | "note";
 

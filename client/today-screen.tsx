@@ -216,7 +216,7 @@ function Row(props: {
         <Button
           colors={colors}
           tone={props.primary === "done" ? "primary" : "secondary"}
-          icon="check"
+          icon="Check"
           label="Done"
           a11y={`Mark "${item.text}" done`}
           disabled={props.busy}
@@ -226,7 +226,7 @@ function Row(props: {
           <Button
             colors={colors}
             tone="secondary"
-            icon="clock"
+            icon="Clock"
             label={item.state === "fired" ? "Snooze" : "Move"}
             a11y={`${item.state === "fired" ? "Snooze" : "Move"} "${item.text}"`}
             disabled={props.busy}
@@ -450,7 +450,7 @@ function NoticedRow(props: { item: NoticedItem; colors: Colors; snoozeOptions: T
         <Button
           colors={colors}
           tone="primary"
-          icon="bell-plus"
+          icon="BellPlus"
           label={item.whenLabel ? `Remind me ${item.whenLabel}` : "Remind me…"}
           a11y={`Keep "${item.text}" as a reminder`}
           disabled={busy}
@@ -458,9 +458,9 @@ function NoticedRow(props: { item: NoticedItem; colors: Colors; snoozeOptions: T
           onPress={() => (item.when ? void run("keep") : setPicking(!picking))}
         />
         {item.when ? (
-          <Button colors={colors} tone="secondary" icon="clock" label="Other time" a11y={`Pick another time for "${item.text}"`} disabled={busy} pressed={picking} onPress={() => setPicking(!picking)} />
+          <Button colors={colors} tone="secondary" icon="Clock" label="Other time" a11y={`Pick another time for "${item.text}"`} disabled={busy} pressed={picking} onPress={() => setPicking(!picking)} />
         ) : null}
-        <Button colors={colors} tone="secondary" icon="check" label="Already done" a11y={`"${item.text}" is already done`} disabled={busy} onPress={() => void run("done")} />
+        <Button colors={colors} tone="secondary" icon="Check" label="Already done" a11y={`"${item.text}" is already done`} disabled={busy} onPress={() => void run("done")} />
         <Button colors={colors} tone="quiet" label="Drop" a11y={`Drop "${item.text}"`} disabled={busy} onPress={() => void run("dismiss")} />
       </View>
       {picking ? (
@@ -516,7 +516,7 @@ function HistoryCard(props: { colors: Colors; noticing: TodayView["noticing"] })
         {running ? (
           <Button colors={props.colors} tone="quiet" label="Stop" a11y="Stop reading past conversations" onPress={() => void send("cancel")} />
         ) : (
-          <Button colors={props.colors} tone="secondary" icon="history" label={b.state === "failed" ? "Try again" : "Look through history"} a11y="Look through past conversations" onPress={() => void send("start")} />
+          <Button colors={props.colors} tone="secondary" icon="History" label={b.state === "failed" ? "Try again" : "Look through history"} a11y="Look through past conversations" onPress={() => void send("start")} />
         )}
       </View>
     </View>
