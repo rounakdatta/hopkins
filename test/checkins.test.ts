@@ -95,7 +95,7 @@ describe("the record", () => {
       t.clock.advance(20 * HOUR); // next day 9am
     }
     const b = t.view().rhythms[0]!;
-    expect(b.summary).toBe("5 of the last 7 days");
+    expect(b.summary).toBe("5 of 7 days so far");
     expect(b.history.map((d) => d.value)).toEqual(["yes", "yes", "no", "yes", null, "yes", "yes", null]);
     expect(b.history.at(-1)).toMatchObject({ label: "Today", upcoming: true }); // Wed, not due yet: not a gap
     expect(b.streak).toBe(2);
@@ -114,7 +114,7 @@ describe("the record", () => {
     const labels = t.view().rhythms[0]!.history.map((d) => d.label);
     expect(labels).not.toContain("Sat");
     expect(labels).not.toContain("Sun");
-    expect(t.view().rhythms[0]!.summary).toBe("7 of the last 7 times");
+    expect(t.view().rhythms[0]!.summary).toBe("10 of 10 times so far");
   });
 
   it("a mood reads back as words, and the week as a feeling", async () => {

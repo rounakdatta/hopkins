@@ -124,6 +124,8 @@ export class PaseoThreadPort implements ThreadPort {
     // Created inside the folder's one workspace: a bare create makes a new workspace each time, so
     // a provider that keeps failing would leave an empty "hopkins" in the sidebar per retry.
     const workspace = await withTimeout(api.workspaces.open(cfg.threadCwd), 15_000, "opening the conversation's folder");
+    // An opened workspace has no title of its own ("main" in the sidebar): it is the hopkins conversation.
+    await withTimeout(workspace.setTitle(THREAD_TITLE), 10_000, "naming the conversation's workspace").catch(() => undefined);
     // A retry of the same request reuses the key, so a create that timed out after the daemon made
     // the agent does not make a second one. A different request gets a different key: the daemon
     // refuses a reused key with a new body.

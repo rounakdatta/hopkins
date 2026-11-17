@@ -96,6 +96,8 @@ function unitOf(r: Reminder, n: number): string {
 
 /** Habits: "5 of the last 7 days". Mood: "Good lately". Counts only days it was due; never rounds up. */
 function summaryOf(r: Reminder, days: CheckinDay[]): string {
+  // "so far" only while the habit is younger than the two weeks shown.
+  const young = days.length < HISTORY;
   const past = days.filter((d) => !d.upcoming);
   if (r.ask?.kind === "mood") {
     const values = past.slice(-7).flatMap((d) => (typeof d.value === "number" ? [d.value] : []));
@@ -103,12 +105,12 @@ function summaryOf(r: Reminder, days: CheckinDay[]): string {
     if (values.length === 1) return `Last: ${moodWord(values[0]!)}`;
     return `${moodWord(values.reduce((a, b) => a + b, 0) / values.length)} lately`;
   }
-  const recent = past.slice(-7);
-  if (recent.every((d) => d.value === null)) return "No answers yet";
-  const yes = recent.filter((d) => d.value === "yes").length;
-  if (recent.length === 1) return `First ${unitOf(r, 1)}: ${answerLabel(recent[0]!.value!).toLowerCase()}`;
-  if (recent.length < 7) return `${yes} of ${recent.length} ${unitOf(r, recent.length)} so far`;
-  return `${yes} of the last 7 ${unitOf(r, 7)}`;
+  // Counts exactly the days drawn beside it (up to two weeks), so the dots and the words agree.
+  if (past.every((d) => d.value === null)) return "No answers yet";
+  const yes = past.filter((d) => d.value === "yes").length;
+  if (past.length === 1) return `First ${unitOf(r, 1)}: ${answerLabel(past[0]!.value!).toLowerCase()}`;
+  if (young) return `${yes} of ${past.length} ${unitOf(r, past.length)} so far`;
+  return `${yes} of the last ${past.length} ${unitOf(r, past.length)}`;
 }
 
 /** Yes in a row, counting back from the latest day answered (today, not yet due, does not break it). */

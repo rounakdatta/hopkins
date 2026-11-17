@@ -144,7 +144,7 @@ describe("6. a slow daemon never creates a second conversation", () => {
         list: () => Promise.reject(new Error("daemon busy")),
         create: make,
       },
-      workspaces: { open: () => Promise.resolve({ id: "w_1", agents: { create: make } }) },
+      workspaces: { open: () => Promise.resolve({ id: "w_1", setTitle: () => Promise.resolve({ title: "hopkins" }), agents: { create: make } }) },
     };
     const port = new PaseoThreadPort({ api, daemon: null } as never, env.store, env.config, silentLogger);
     await expect(port.ensureThread()).rejects.toThrow(/daemon busy/);
@@ -158,6 +158,7 @@ describe("6. a slow daemon never creates a second conversation", () => {
     let attempts = 0;
     const workspace = {
       id: "w_1",
+      setTitle: () => Promise.resolve({ title: "hopkins" }),
       agents: {
         create: (request: { idempotencyKey: string; cwd?: string }) => {
           keys.push(request.idempotencyKey);

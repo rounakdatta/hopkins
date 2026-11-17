@@ -18,7 +18,16 @@ export default function hopkins(client: PluginClientContext) {
       transform: ({ item }) => {
         const cue = parseCue(item.text);
         return cue
-          ? { items: [{ type: "plugin", kind: CUE_KIND, version: 1, data: { kind: cue.kind, items: cue.items, ...(cue.status ? { status: cue.status } : {}) } }] }
+          ? {
+              items: [
+                {
+                  type: "plugin",
+                  kind: CUE_KIND,
+                  version: 1,
+                  data: { kind: cue.kind, items: cue.items, ...(cue.status ? { status: cue.status } : {}), ...(cue.asks ? { asks: cue.asks.map((a) => ({ ...a })) } : {}) },
+                },
+              ],
+            }
           : undefined;
       },
     }),

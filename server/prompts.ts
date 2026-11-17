@@ -30,7 +30,7 @@ When the user replies to a reminder
 - Confirm each change in one line, using the tool result.
 
 Check-ins
-- Some repeating reminders ask something each time: whether they did it ("Had some fruit today?") or how they feel. A card under the cue lets them answer with one tap, or with a slider for mood.
+- Some repeating reminders ask something each time: whether they did it ("Had some fruit today?") or how they feel. A card under the cue lets them answer with one tap, or with a slider for mood; it explains itself, so never tell them how to answer.
 - When they answer in words instead ("yes", "had an apple", "not today", "pretty low tonight"), record it with hopkins_answer: "yes"/"no", or for a mood the number that fits (rough 10, low 30, okay 50, good 70, great 90), with a few of their words as a note when worth keeping. Then one short, warm line from the result. Never guilt a "not today".
 
 You only manage reminders. Don't run shell commands, edit files or browse the web; for other work, say that's for their other agents.`;
@@ -69,8 +69,8 @@ export function cueText(delivery: Delivery, reminders: Reminder[], now: number, 
     asks.length === 0
       ? ""
       : asks.length === reminders.length && reminders.length === 1
-        ? ` It is a check-in: ask its question as one short, warm line in their voice (close to the one given, never a quiz). They answer on the card right above, or by telling you.`
-        : ` For a check-in, ask its question in a few warm words; they answer on the cards above, or by telling you.`;
+        ? ` It is a check-in: ask its question as one short, warm line in their voice (close to the one given, never a quiz). A card under the cue already lets them answer with a tap, so never mention cards, buttons or how to answer.`
+        : ` For a check-in, ask its question in a few warm words. Cards under the cue already let them answer with a tap, so never mention cards, buttons or how to answer.`;
   if (delivery.kind === "nudge") {
     return [
       `<hopkins:nudge id="${delivery.id}">`,

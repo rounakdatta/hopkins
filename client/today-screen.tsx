@@ -12,6 +12,8 @@ import { Button, Card, ChoiceRow, CompleteRing, Divider, Rows, Section, Tag, typ
 import { NoticedLine, Review } from "./review";
 import { space, tabular, type Colors } from "./theme";
 import { clockLabel, dayOf, headline, recapSummary, spokenAt, upcoming, type TaskItem, type Upcoming } from "./words";
+import type { AnswerValue, CheckinBrief } from "../shared/checkin";
+import { Answer, lastMood, Record, useAnswer } from "./checkin";
 
 type Act = (id: string, action: "done" | "drop" | "snooze", until?: string) => Promise<boolean>;
 
@@ -86,7 +88,11 @@ export function TodayScreen(props: PluginScreenProps) {
           <Card colors={colors}>
             <Rows colors={colors} inset={52}>
               {view.waiting.map((item) => (
-                <WaitingRow key={item.id} item={item} colors={colors} busy={busy === item.id} act={act} snoozeOptions={view.snoozeOptions} compact={compact} />
+                item.ask ? (
+                  <AskRow key={item.id} item={item} ask={item.ask} colors={colors} busy={busy === item.id} act={act} snoozeOptions={view.snoozeOptions} compact={compact} />
+                ) : (
+                  <WaitingRow key={item.id} item={item} colors={colors} busy={busy === item.id} act={act} snoozeOptions={view.snoozeOptions} compact={compact} />
+                )
               ))}
             </Rows>
           </Card>
@@ -106,6 +112,8 @@ export function TodayScreen(props: PluginScreenProps) {
       ) : null}
 
       {ahead.length > 0 ? <Timeline entries={ahead} colors={colors} busy={busy} act={act} snoozeOptions={view.snoozeOptions} /> : null}
+
+      {(view.rhythms ?? []).length > 0 ? <Rhythms rhythms={view.rhythms} colors={colors} compact={compact} /> : null}
 
       <HistoryStrip colors={colors} noticing={view.noticing} />
 
@@ -309,7 +317,7 @@ function Timeline(props: { entries: Upcoming[]; colors: Colors; busy: string | n
 }
 
 /** Where a row's words start when it has a time column: dividers line up with them. */
-const TIME_WIDTH = 58;
+const TIME_WIDTH = 72;
 const TEXT_INSET = space.l + TIME_WIDTH + 14;
 
 /** The time column, and the row it heads, tappable to show what you can do with it. */
@@ -365,10 +373,19 @@ function TimelineRow(props: { item: TodayItem; colors: Colors; busy: boolean; ac
             </View>
           ) : null}
           {item.until ? <Streak colors={colors} streak={item.until.streak} of={item.until.inARow} /> : null}
+          {item.ask && item.ask.history.some((d) => d.value !== null) ? (
+            <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", columnGap: space.s, rowGap: 2, paddingTop: 2 }}>
+              <Record colors={colors} brief={item.ask} />
+              <Text style={[type.small, tabular, { color: colors.foregroundMuted }]}>{item.ask.summary}</Text>
+            </View>
+          ) : null}
         </View>
         {item.important ? <Icon name="Flag" size={14} color={colors.statusWarning} /> : null}
         {item.scope === "work" ? <Tag colors={colors} label="work" /> : null}
       </Expandable>
+      {open && item.ask && item.ask.open !== null ? (
+        <EarlyAnswer item={item} ask={item.ask} colors={colors} inset={props.withTime ? TEXT_INSET : space.l} />
+      ) : null}
       {open ? (
         <View style={{ paddingLeft: props.withTime ? TEXT_INSET : space.l, paddingRight: space.l, paddingBottom: space.m, gap: space.s }}>
           {item.until ? (
@@ -440,6 +457,122 @@ function ClosedRow(props: { item: TodayItem; colors: Colors }) {
   );
 }
 
+// --- check-ins ----------------------------------------------------------------------------
+
+/** A check-in that went out: its question, and the answer one tap (or one drag) away. */
+function AskRow(props: { item: TodayItem; ask: CheckinBrief; colors: Colors; busy: boolean; act: Act; snoozeOptions: TodayView["snoozeOptions"]; compact: boolean }) {
+  const { item, ask, colors } = props;
+  const { busy, send } = useAnswer();
+  const [optimistic, setOptimistic] = useState<AnswerValue | null>(null);
+  const [snoozing, setSnoozing] = useState(false);
+  const meta = [`was due ${item.wasDue ?? item.when}`, item.source ? `from ${item.source}` : null].filter(Boolean).join(" · ");
+  const answer = async (v: AnswerValue) => {
+    setOptimistic(v);
+    if (!(await send(item.id, v, "today", ask.open ?? undefined))) setOptimistic(null);
+  };
+  return (
+    <View style={{ paddingHorizontal: space.l, paddingVertical: 14, gap: space.m, opacity: props.busy ? 0.5 : 1, backgroundColor: snoozing ? colors.surface2 : "transparent" }}>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 14 }}>
+        <View style={{ width: 22, alignItems: "center", paddingTop: 1 }}>
+          <Icon name={ask.kind === "mood" ? "Smile" : "Repeat"} size={18} color={colors.foregroundMuted} />
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: snoozing }}
+          accessibilityLabel={`${ask.question} ${meta}. ${snoozing ? "Hide" : "Show"} snooze times`}
+          onPress={() => setSnoozing(!snoozing)}
+          style={{ flex: 1, gap: 2 }}
+        >
+          <Text style={[type.title, { color: colors.foreground, fontWeight: "600" }]}>{ask.question}</Text>
+          <Text style={[type.meta, { color: colors.foregroundMuted }]}>{meta}</Text>
+        </Pressable>
+        {item.scope === "work" ? <Tag colors={colors} label="work" /> : null}
+        {props.compact ? null : (
+          <Button colors={colors} tone="quiet" compact label="Later" a11y={`Ask again later: ${item.text}`} pressed={snoozing} disabled={props.busy} onPress={() => setSnoozing(!snoozing)} />
+        )}
+      </View>
+      <View style={{ paddingLeft: 36, gap: space.m }}>
+        <Answer colors={colors} kind={ask.kind} value={optimistic ?? ask.today} start={lastMood(ask.history)} busy={busy} label={ask.question} onAnswer={(v) => void answer(v)} />
+        {ask.history.some((d) => d.value !== null) ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.m, flexWrap: "wrap" }}>
+            <Record colors={colors} brief={ask} />
+            <Text style={[type.small, tabular, { color: colors.foregroundMuted }]}>{ask.summary}</Text>
+          </View>
+        ) : null}
+        {snoozing ? (
+          <ChoiceRow label="Ask again at">
+            {props.snoozeOptions.map((option) => (
+              <Button
+                key={option.until}
+                colors={colors}
+                tone="secondary"
+                compact
+                label={option.label}
+                a11y={`Ask again ${option.label}`}
+                disabled={props.busy}
+                onPress={() => {
+                  setSnoozing(false);
+                  void props.act(item.id, "snooze", option.until);
+                }}
+              />
+            ))}
+          </ChoiceRow>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+/** Opened in Coming up, today's check-in can be answered before it is asked. */
+function EarlyAnswer(props: { item: TodayItem; ask: CheckinBrief; colors: Colors; inset: number }) {
+  const { ask, colors } = props;
+  const { busy, send } = useAnswer();
+  return (
+    <View style={{ paddingLeft: props.inset, paddingRight: space.l, paddingBottom: space.s, gap: space.s }}>
+      <Text style={[type.meta, { color: colors.foregroundMuted }]}>Already know? Answer now and it won't ask today.</Text>
+      <Answer colors={colors} kind={ask.kind} value={ask.today} start={lastMood(ask.history)} busy={busy} label={ask.question} onAnswer={(v) => void send(props.item.id, v, "today", ask.open ?? undefined)} />
+    </View>
+  );
+}
+
+/** The record of every check-in: what they did, and how they felt, over the last two weeks. */
+function Rhythms(props: { rhythms: CheckinBrief[]; colors: Colors; compact: boolean }) {
+  const { colors } = props;
+  return (
+    <Section colors={colors} title="Rhythms">
+      <Card colors={colors}>
+        <Rows colors={colors} inset={space.l}>
+          {props.rhythms.map((r) => (
+            <View
+              key={r.id}
+              accessible
+              accessibilityLabel={`${r.text}: ${r.summary}`}
+              style={{ paddingHorizontal: space.l, paddingVertical: 14, gap: props.compact ? space.s : 0, flexDirection: props.compact ? "column" : "row", alignItems: props.compact ? "stretch" : "center" }}
+            >
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.s, flex: props.compact ? undefined : 1, minWidth: 0 }}>
+                <Icon name={r.kind === "mood" ? "Smile" : "Repeat"} size={14} color={colors.foregroundMuted} />
+                <Text style={[type.title, { color: colors.foreground, flex: 1 }]} numberOfLines={1}>
+                  {r.text}
+                </Text>
+                {props.compact ? <Text style={[type.small, tabular, { color: colors.foregroundMuted }]}>{r.summary}</Text> : null}
+              </View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.l, paddingLeft: props.compact ? 22 : 0 }}>
+                <Record colors={colors} brief={r} />
+                {props.compact ? null : (
+                  <Text style={[type.meta, tabular, { color: colors.foregroundMuted, width: 160, textAlign: "right" }]} numberOfLines={1}>
+                    {r.summary}
+                  </Text>
+                )}
+              </View>
+            </View>
+          ))}
+        </Rows>
+      </Card>
+    </Section>
+  );
+}
+
+
 // --- tasks ------------------------------------------------------------------------------
 
 /** Cancel or start a task, with the result said in a toast. */
@@ -472,17 +605,28 @@ function PlannedTaskRow(props: { task: TaskItem; colors: Colors }) {
       <Expandable colors={colors} label={`hopkins will do this: ${task.text}, ${task.when}`} open={open} time={task.time} withTime onToggle={() => setOpen(!open)}>
         <View style={{ flex: 1, gap: 3 }}>
           <Text style={[type.title, { color: colors.foreground }]}>{task.text}</Text>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-            <Icon name="Sparkles" size={12} color={colors.accent} />
-            <Text style={[type.meta, { color: colors.foregroundMuted }]}>hopkins will do this</Text>
-          </View>
+          {task.retry ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+              <Icon name="RotateCcw" size={12} color={colors.accent} />
+              <Text style={[type.meta, tabular, { color: colors.foregroundMuted }]}>
+                Trying again · try {task.retry.n} of {task.retry.of}
+              </Text>
+            </View>
+          ) : (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+              <Icon name="Sparkles" size={12} color={colors.accent} />
+              <Text style={[type.meta, { color: colors.foregroundMuted }]}>hopkins will do this</Text>
+            </View>
+          )}
         </View>
         {task.scope === "work" ? <Tag colors={colors} label="work" /> : null}
       </Expandable>
       {open ? (
         <View style={{ paddingLeft: TEXT_INSET, paddingRight: space.l, paddingBottom: space.m, gap: space.s }}>
           <Text style={[type.meta, { color: colors.foregroundMuted }]}>
-            {task.time ? `At ${task.time}` : "Then"} an agent starts on it, and hopkins tells you how it went.
+            {task.retry
+              ? `The last try didn't work: ${task.retry.why.replace(/\s+/g, " ").slice(0, 160)}${task.retry.why.length > 160 ? "…" : ""}`
+              : `${task.time ? `At ${task.time}` : "Then"} an agent starts on it, and hopkins tells you how it went.`}
           </Text>
           <ChoiceRow>
             <Button colors={colors} tone="secondary" compact icon="Play" label="Do it now" disabled={busy} onPress={() => void run("run-now")} />
@@ -508,8 +652,8 @@ function TaskRow(props: { task: TaskItem; colors: Colors; openAgent: ((agentId: 
     running: { icon: null, tint: colors.foregroundMuted, status: "Working on it now" },
     "needs-you": { icon: "CircleAlert", tint: colors.statusWarning, status: "Needs your answer" },
     missed: { icon: "Clock", tint: colors.statusWarning, status: `Didn't start ${spokenAt(task.day, task.time, task.when)}: hopkins was offline` },
-    done: { icon: "CircleCheck", tint: colors.foregroundMuted, status: `Done · ${task.when}` },
-    failed: { icon: "TriangleAlert", tint: colors.foregroundMuted, status: `Didn't work · ${task.when}` },
+    done: { icon: "CircleCheck", tint: colors.foregroundMuted, status: task.tries?.length ? `Done on try ${task.tries.length + 1} · ${task.when}` : `Done · ${task.when}` },
+    failed: { icon: "TriangleAlert", tint: colors.foregroundMuted, status: (task.tries?.length ?? 0) > 1 ? `Didn't work after ${task.tries!.length} tries · ${task.when}` : `Didn't work · ${task.when}` },
     cancelled: { icon: "CircleX", tint: colors.foregroundMuted, status: "Cancelled" },
   };
   const l = look[task.state];
