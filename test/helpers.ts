@@ -112,17 +112,13 @@ export class FakeThread implements ThreadPort {
     this.requiresAttention = false;
   }
 
-  async send(_agentId: string, text: string): Promise<void> {
+  async runTurn(_agentId: string, text: string): Promise<FinishResult> {
     this.calls.push("send");
     if (this.failures > 0) {
       this.failures--;
       throw new Error("provider unavailable");
     }
     this.cues.push(text);
-  }
-
-  async waitForFinish(): Promise<FinishResult> {
-    this.calls.push("wait");
     this.clock?.advance(5_000);
     if (this.finish !== "idle") return { status: this.finish, lastMessage: null };
     this.requiresAttention = true;

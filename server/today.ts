@@ -1,7 +1,7 @@
 // Builds the Today view the app renders.
 
 import type { Reminder, TodayItem, TodayView } from "../shared/model";
-import { addDays, localDateOf, zonedToInstant } from "../shared/time";
+import { addDays, formatClock, localDateOf, weekdayOf, zonedToInstant } from "../shared/time";
 import type { Config } from "./config";
 import type { Store } from "./store";
 import type { Reminders } from "./reminders";
@@ -19,6 +19,21 @@ function sourceLabel(r: Reminder): string | null {
   if (r.source.via === "today") return "Today";
   if (r.source.via === "import") return "history";
   return null;
+}
+
+/** "1 hour", "This evening, 7pm", "Tomorrow, 9am", "Monday, 9am": only the ones that make sense now. */
+export function snoozeOptions(cfg: Config, now: number): { label: string; until: string }[] {
+  const today = localDateOf(now, cfg.tz);
+  const options = [{ label: "1 hour", until: "in 1h" }];
+  const evening = zonedToInstant({ ...today, hour: cfg.evening.hour, minute: cfg.evening.minute }, cfg.tz);
+  if (evening - now >= 60 * 60_000) {
+    options.push({ label: `This evening, ${formatClock(cfg.evening.hour, cfg.evening.minute, cfg.clock)}`, until: "tonight" });
+  }
+  options.push({ label: `Tomorrow, ${formatClock(cfg.morning.hour, cfg.morning.minute, cfg.clock)}`, until: "tomorrow morning" });
+  if (weekdayOf(addDays(today, 1)) !== 1) {
+    options.push({ label: `Monday, ${formatClock(cfg.morning.hour, cfg.morning.minute, cfg.clock)}`, until: "next monday morning" });
+  }
+  return options;
 }
 
 export function buildToday(store: Store, reminders: Reminders, cfg: Config, now: number, health: Health): TodayView {
@@ -60,5 +75,6 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     recentlyClosed: recentlyClosed.map(item),
     health: { ...health, threadAgentId: store.threadAgentId() },
     counts: { waiting: waiting.length, today: today.length },
+    snoozeOptions: snoozeOptions(cfg, now),
   };
 }

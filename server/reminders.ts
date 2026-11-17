@@ -72,7 +72,7 @@ export class Reminders {
 
   describeDue(r: Reminder, now = this.clock.now()): string {
     if (r.state === "someday") return "someday";
-    if (r.dueAt === null) return r.last ? `fired ${formatWhen(r.last.firedAt, r.tz, now, this.config().clock)}` : "no time";
+    if (r.dueAt === null) return r.last ? formatWhen(r.last.dueAt, r.tz, now, this.config().clock) : "no time";
     return formatWhen(r.dueAt, r.tz, now, this.config().clock);
   }
 

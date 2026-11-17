@@ -27,9 +27,11 @@ export interface ThreadPort {
   status(agentId: string): Promise<ThreadStatus>;
   /** Clears the unread flag so the next finished turn pushes again. */
   clearAttention(agentId: string): Promise<void>;
-  /** Sends a prompt; queues behind a running turn instead of interrupting it. */
-  send(agentId: string, text: string): Promise<void>;
-  waitForFinish(agentId: string, timeoutMs: number): Promise<FinishResult>;
+  /**
+   * Sends a prompt and resolves when that turn finishes. It queues behind a
+   * running turn (steer) instead of interrupting it.
+   */
+  runTurn(agentId: string, text: string, timeoutMs: number): Promise<FinishResult>;
 }
 
 export interface DeliveryOptions {
@@ -150,8 +152,7 @@ export class DeliveryQueue {
       }
       if (status.requiresAttention) this.markPreviousUnseen(delivery.id);
       await port.clearAttention(agentId);
-      await port.send(agentId, cueText(delivery, live, this.clock.now(), this.config()));
-      const result = await port.waitForFinish(agentId, this.options.finishTimeoutMs);
+      const result = await port.runTurn(agentId, cueText(delivery, live, this.clock.now(), this.config()), this.options.finishTimeoutMs);
       const message = result.lastMessage?.trim();
       if (result.status !== "idle" || !message) {
         throw new Error(

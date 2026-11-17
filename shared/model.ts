@@ -132,6 +132,8 @@ export const TodayViewSchema = z.object({
     problems: z.array(z.string()),
   }),
   counts: z.object({ waiting: z.number(), today: z.number() }),
+  /** Snooze choices that make sense right now, in the user's zone. */
+  snoozeOptions: z.array(z.object({ label: z.string(), until: z.string() })),
 });
 export type TodayView = z.infer<typeof TodayViewSchema>;
 
