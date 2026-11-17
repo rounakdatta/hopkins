@@ -3,6 +3,7 @@
 
 import { randomBytes } from "node:crypto";
 import type { Delivery, Reminder, Scope, Source } from "../shared/model";
+import type { Ask } from "../shared/checkin";
 import { describeRepeat, firstOccurrence, nextOccurrence, parseRepeat, validateRepeat, type Repeat } from "../shared/recurrence";
 import { addDays, formatLocalIso, formatWhen, localDateOf, parseLocalIso, toLocal, zonedToInstant } from "../shared/time";
 import { describeNow, parseWhen, suggestTimes, type Suggestion, type WhenContext } from "../shared/when";
@@ -21,6 +22,8 @@ export interface CreateInput {
   repeat?: string | Repeat | null;
   important?: boolean;
   someday?: boolean;
+  /** A check-in: it asks each time (yes/no, or a mood) and keeps the answers. Needs a repeat. */
+  ask?: Ask;
 }
 
 export interface ChangeInput {
@@ -29,7 +32,12 @@ export interface ChangeInput {
   repeat?: string | Repeat | null;
   important?: boolean;
   someday?: boolean;
+  /** Make it a check-in, or (null) stop asking; past answers are kept either way. */
+  ask?: Ask | null;
 }
+
+/** A check-in asks every time it comes back, so it has to come back. */
+const ASK_NEEDS_REPEAT = "a check-in asks every time it comes back, so it needs a repeat (e.g. daily); for a one-off, leave ask out";
 
 export type Result<T> =
   | ({ ok: true } & T)
@@ -139,6 +147,7 @@ export class Reminders {
 
     const repeat = this.resolveRepeat(input.repeat);
     if (!repeat.ok) return repeat;
+    if (input.ask && !repeat.repeat) return { ok: false, error: ASK_NEEDS_REPEAT };
 
     let dueAt: number | null = null;
     let anchor: string | null = null;
@@ -190,6 +199,7 @@ export class Reminders {
       createdAt: now,
       updatedAt: now,
       source,
+      ...(input.ask ? { ask: { kind: input.ask.kind, ...(input.ask.question?.trim() ? { question: input.ask.question.trim().slice(0, 140) } : {}) } } : {}),
     };
     this.store.put(reminder);
     this.store.save();
@@ -307,6 +317,11 @@ export class Reminders {
           if (r.state === "fired") r.state = "scheduled";
         }
       }
+    }
+    if (patch.ask !== undefined) {
+      if (patch.ask === null) delete r.ask;
+      else if (!r.repeat) return { ok: false, error: ASK_NEEDS_REPEAT };
+      else r.ask = { kind: patch.ask.kind, ...(patch.ask.question?.trim() ? { question: patch.ask.question.trim().slice(0, 140) } : {}) };
     }
     r.updatedAt = now;
     this.store.put(r);

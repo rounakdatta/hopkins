@@ -41,7 +41,7 @@ describe("hopkins MCP server", () => {
     const tools = (res.json as { result: { tools: { name: string; inputSchema: { type: string; properties: Record<string, unknown>; required?: string[] } }[] } }).result.tools;
     expect(tools.map((x) => x.name)).toEqual(["hopkins_remind", "hopkins_reminders", "hopkins_change_reminder", "hopkins_close_reminder"]);
     expect(tools[0]!.inputSchema.type).toBe("object");
-    expect(Object.keys(tools[0]!.inputSchema.properties)).toEqual(["text", "when", "repeat", "important", "someday", "until"]);
+    expect(Object.keys(tools[0]!.inputSchema.properties)).toEqual(["text", "when", "repeat", "important", "someday", "until", "ask", "question"]);
     expect(tools[0]!.inputSchema.required).toEqual(["text"]);
   });
 

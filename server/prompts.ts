@@ -1,6 +1,7 @@
 // What hopkins says to its own conversation. Server-only: never shipped to clients.
 
 import type { Delivery, Reminder, Task, Until } from "../shared/model";
+import { defaultQuestion } from "../shared/checkin";
 import type { RecapData } from "./recaps";
 import { formatDay, formatWhen, localDateOf } from "../shared/time";
 import type { Config } from "./config";
@@ -28,6 +29,10 @@ When the user replies to a reminder
 - New reminders go through hopkins_remind. If they gave no time for something they intend to do, offer the options the tool returns instead of guessing.
 - Confirm each change in one line, using the tool result.
 
+Check-ins
+- Some repeating reminders ask something each time: whether they did it ("Had some fruit today?") or how they feel. A card under the cue lets them answer with one tap, or with a slider for mood.
+- When they answer in words instead ("yes", "had an apple", "not today", "pretty low tonight"), record it with hopkins_answer: "yes"/"no", or for a mood the number that fits (rough 10, low 30, okay 50, good 70, great 90), with a few of their words as a note when worth keeping. Then one short, warm line from the result. Never guilt a "not today".
+
 You only manage reminders. Don't run shell commands, edit files or browse the web; for other work, say that's for their other agents.`;
 
 /** Quotes user-supplied text for a cue; angle brackets are swapped so it can never close or open a tag. */
@@ -54,8 +59,18 @@ export function cueText(delivery: Delivery, reminders: Reminder[], now: number, 
           ? `was due ${formatWhen(due, cfg.tz, now, cfg.clock)} (late: hopkins could not deliver it then)`
           : "due now";
     const extras = [r.important ? "important" : "", r.scope === "work" ? "work" : "", r.repeat ? "repeats" : ""].filter(Boolean);
-    return `${i + 1}. ${quote(r.text)}: ${timing}; ${sourceLine(r, now, cfg)}${extras.length ? `; ${extras.join(", ")}` : ""}.`;
+    const ask = r.ask ? `; check-in (${r.ask.kind === "mood" ? "mood" : "yes or no"}, id ${r.id}), asking ${quote(r.ask.question ?? defaultQuestion(r.ask.kind, r.text))}` : "";
+    return `${i + 1}. ${quote(r.text)}: ${timing}; ${sourceLine(r, now, cfg)}${extras.length ? `; ${extras.join(", ")}` : ""}${ask}.`;
   });
+  // The cards in the conversation answer exactly these occurrences: id@due:kind, for each check-in.
+  const asks = delivery.kind === "due" ? reminders.filter((r) => r.ask).map((r) => `${r.id}@${r.dueAt ?? r.last?.dueAt ?? now}:${r.ask!.kind}`) : [];
+  const askAttr = asks.length ? ` ask="${asks.join(" ")}"` : "";
+  const askLine =
+    asks.length === 0
+      ? ""
+      : asks.length === reminders.length && reminders.length === 1
+        ? ` It is a check-in: ask its question as one short, warm line in their voice (close to the one given, never a quiz). They answer on the card right above, or by telling you.`
+        : ` For a check-in, ask its question in a few warm words; they answer on the cards above, or by telling you.`;
   if (delivery.kind === "nudge") {
     return [
       `<hopkins:nudge id="${delivery.id}">`,
@@ -65,12 +80,12 @@ export function cueText(delivery: Delivery, reminders: Reminder[], now: number, 
     ].join("\n");
   }
   return [
-    `<hopkins:due id="${delivery.id}">`,
+    `<hopkins:due id="${delivery.id}"${askAttr}>`,
     ...lines,
     `</hopkins:due>`,
-    reminders.length === 1
+    (reminders.length === 1
       ? `Write it as they'd want to read it on a lock screen: the thing to do, in their words, as one short sentence ("Water the ferns."). Add a few words only when they help: that it is late, or where it came from if that was days ago. No preamble, no "reminder", no "due now". Only the message.`
-      : `Write one message, one short line per reminder: the thing to do, in their words. Add a few words only where they help (late, or set days ago). No preamble. Only the message.`,
+      : `Write one message, one short line per reminder: the thing to do, in their words. Add a few words only where they help (late, or set days ago). No preamble. Only the message.`) + askLine,
   ].join("\n");
 }
 
@@ -131,17 +146,31 @@ export function taskPrompt(task: Task, cfg: Config, now: number): string {
     `What happened, point first, in at most three short lines for a phone: the outcome, the evidence (what you checked, where things are saved). With status "needs-you": the one question they must answer.`,
     `</hopkins-report>`,
     `Use status "needs-you" when you are waiting for them (they will answer here), and "failed" when it cannot be done.`,
+    `With "failed", add retry="…" when you can tell whether trying again could work: a site or service that was down, "in 20m"; a window that opens later, the local time just after it opens ("10:46"); something only they can fix, or that must not be repeated, "no". hopkins tries again at most a few times.`,
+    ...(task.tries?.length ? [``, `Earlier tries failed: ${task.tries.map((t) => quote(t.why.slice(0, 200))).join("; ")}. Check what state things were left in before acting again.`] : []),
   ].join("\n");
 }
 
 /** How a task went, for the hopkins conversation to tell the user. The report is the task agent's, so it is quoted. */
 export function taskCueText(delivery: Delivery, task: Task, now: number, cfg: Config): string {
   const state = delivery.task?.state ?? task.state;
-  const when = formatWhen(task.dueAt, cfg.tz, now, cfg.clock);
+  const when = formatWhen(task.lateFrom ?? task.dueAt, cfg.tz, now, cfg.clock);
+  const failures = task.tries?.length ?? 0;
+  const retryAt = delivery.task?.retryAt;
+  const nth = ["first", "second", "third", "fourth"][failures] ?? `${failures + 1}th`;
+  const lateLine = task.lateFrom ? ` It ran late: hopkins was offline at ${when}; mention that in a few words.` : "";
   const ask: Record<string, string> = {
-    done: `Tell them it is done, in one or two short lines, point first: the outcome and where things are, from the report.`,
+    scheduled:
+      retryAt !== undefined
+        ? `Tell them, point first, that it did not work and why (from the report), and that hopkins will try again at ${formatWhen(retryAt, cfg.tz, now, cfg.clock)} (try ${failures + 1} of ${task.retry?.of ?? failures + 1}). One or two short lines; no apology.`
+        : `Tell them in one short line what happens next with it.`,
+    done: failures
+      ? `Tell them it is done, on the ${nth} try, in one or two short lines, point first: the outcome and where things are, from the report.${lateLine}`
+      : `Tell them it is done, in one or two short lines, point first: the outcome and where things are, from the report.${lateLine}`,
     "needs-you": `Tell them, point first, the one thing it needs from them, from the report, and that they answer it in the task's run (hopkins's Today screen, under Tasks).`,
-    failed: `Tell them, point first, that it did not work and why, from the report, in one or two short lines; they can open the run from hopkins's Today screen.`,
+    failed: failures > 1
+      ? `Tell them, point first, that it did not work after ${failures} tries and why, from the report, in one or two short lines; they can try again or open the run from hopkins's Today screen.`
+      : `Tell them, point first, that it did not work and why, from the report, in one or two short lines; they can open the run from hopkins's Today screen.`,
     missed: `Tell them it did not start at ${when} because hopkins was offline then, and that they can say "run it now" or cancel it from hopkins's Today screen. One or two short lines.`,
   };
   return [
@@ -149,6 +178,7 @@ export function taskCueText(delivery: Delivery, task: Task, now: number, cfg: Co
     `1. ${quote(task.text)} (set for ${when})`,
     ...(task.report ? [`Its report: ${quote(task.report.slice(0, 1_200))}`] : []),
     ...(task.error && !task.report ? [`What went wrong: ${quote(task.error.slice(0, 300))}`] : []),
+    ...(retryAt !== undefined && task.retry ? [`hopkins's reason to try again: ${quote(task.retry.reason)}`] : []),
     `</hopkins:task>`,
     // The push shows only the opening words, so they have to say which task this is.
     `${ask[state] ?? ask.done} Open with the task in two to five words and a colon, so the notification alone says which task it is and how it went ("Sri Lanka web check-in: done, seat 25C."). No other preamble. Only the message.`,

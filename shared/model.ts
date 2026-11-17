@@ -2,6 +2,7 @@
 // Everything in shared/ is shipped to every connected client: no secrets, no prompts.
 
 import { z } from "zod";
+import { AnswerSchema, AskSchema, CheckinBriefSchema } from "./checkin";
 import { WEEKDAY_KEYS, type Repeat } from "./recurrence";
 
 export const ScopeSchema = z.enum(["personal", "work"]);
@@ -99,6 +100,10 @@ export const ReminderSchema = z.object({
   source: SourceSchema,
   last: LastFiringSchema.optional(),
   until: UntilSchema.optional(),
+  /** A check-in: it asks (yes/no, or a mood) each time, and keeps every answer. */
+  ask: AskSchema.optional(),
+  /** One per day it was due, newest last. */
+  answers: z.array(AnswerSchema).optional(),
 });
 export type Reminder = z.infer<typeof ReminderSchema>;
 
@@ -153,6 +158,14 @@ export const TaskSchema = z.object({
   createdAt: z.number(),
   updatedAt: z.number(),
   source: SourceSchema,
+  /** A deadline: nothing runs, or runs again, after it ("before the flight leaves"). */
+  by: z.number().optional(),
+  /** When this run is a retry: which one, and why it is being tried again. */
+  retry: z.object({ n: z.number().int().min(1), of: z.number().int().min(1), why: z.string(), reason: z.string() }).optional(),
+  /** Every try that failed so far, oldest first: when it ran, and why it failed. */
+  tries: z.array(z.object({ at: z.number(), outcome: z.enum(["done", "failed", "needs-you"]), why: z.string() })).optional(),
+  /** When it ran late (hopkins was offline at the time): the time it was due. */
+  lateFrom: z.number().optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
@@ -164,7 +177,7 @@ export const DeliverySchema = z.object({
    * For a task's outcome: which task, and the state it reached. Sent as kind "note", so a
    * rollback to a release without tasks still reads the state file (it drops this field).
    */
-  task: z.object({ id: z.string(), state: TaskStateSchema }).optional(),
+  task: z.object({ id: z.string(), state: TaskStateSchema, retryAt: z.number().optional() }).optional(),
   /** For recaps: which one, and the local date it is for. */
   recap: z.object({ kind: RecapKindSchema, date: z.string() }).optional(),
   /** For notes: what hopkins wants to tell the user (written by hopkins itself, never by others). */
@@ -240,6 +253,8 @@ export const TodayItemSchema = z.object({
   time: z.string().nullable().optional(),
   /** For what is waiting: when the one that went out was due ("9am", "yesterday at 9am"). */
   wasDue: z.string().nullable().optional(),
+  /** A check-in: how to answer it, today's answer, and its recent days. */
+  ask: CheckinBriefSchema.nullable().optional(),
   /** For a reminder that stops by itself: what has to hold, and how far along it is. */
   until: z
     .object({ inARow: z.number(), streak: z.number(), last: z.string().nullable(), met: z.boolean().nullable() })
@@ -285,6 +300,8 @@ export const TodayViewSchema = z.object({
   recaps: z.object({ morning: z.string().nullable(), evening: z.string().nullable() }),
   /** Snooze choices that make sense right now, in the user's zone. */
   snoozeOptions: z.array(z.object({ label: z.string(), until: z.string() })),
+  /** Every check-in, with its recent days: the record of what they did and how they felt. */
+  rhythms: z.array(CheckinBriefSchema).default([]),
   /** Things hopkins will have done, is doing, or did: open ones first, then the last few days'. */
   tasks: z
     .array(
@@ -301,6 +318,10 @@ export const TodayViewSchema = z.object({
         report: z.string().nullable(),
         agentId: z.string().nullable(),
         scope: ScopeSchema,
+        /** When this run is a retry: "try 2 of 3", and why the last one failed. */
+        retry: z.object({ n: z.number(), of: z.number(), why: z.string() }).nullable().optional(),
+        /** Every try so far, oldest first, as people say the time ("10:47pm"). */
+        tries: z.array(z.object({ when: z.string(), outcome: z.enum(["done", "failed", "needs-you"]), why: z.string() })).optional(),
       }),
     )
     .default([]),
@@ -320,6 +341,17 @@ export const SuggestionActionSchema = z.object({
   when: z.string().optional(),
 });
 export type SuggestionAction = z.infer<typeof SuggestionActionSchema>;
+
+export const AnswerActionSchema = z.object({
+  id: z.string(),
+  /** "yes", "no", or a mood 0–100. */
+  value: z.union([z.literal("yes"), z.literal("no"), z.number().min(0).max(100)]),
+  /** The occurrence a card answers; left out on Today, where it is the open one. */
+  occurrence: z.number().optional(),
+  note: z.string().max(280).optional(),
+  via: z.enum(["card", "today"]),
+});
+export type AnswerAction = z.infer<typeof AnswerActionSchema>;
 
 export const ReminderActionSchema = z.object({
   id: z.string(),

@@ -136,8 +136,16 @@ export class DeliveryQueue {
   }
 
   /** Queues how a task went (done, needs you, failed, missed): one message per outcome. */
-  enqueueTask(task: Task, now: number): Delivery {
-    const delivery: Delivery = { id: newId("d"), reminderIds: [], kind: "note", task: { id: task.id, state: task.state }, createdAt: now, state: "pending", attempts: 0 };
+  enqueueTask(task: Task, now: number, retryAt?: number): Delivery {
+    const delivery: Delivery = {
+      id: newId("d"),
+      reminderIds: [],
+      kind: "note",
+      task: { id: task.id, state: task.state, ...(retryAt !== undefined ? { retryAt } : {}) },
+      createdAt: now,
+      state: "pending",
+      attempts: 0,
+    };
     this.store.putDelivery(delivery);
     this.store.save();
     this.store.event("queued", { id: delivery.id, kind: "task", task: task.id, state: task.state });
@@ -200,7 +208,8 @@ export class DeliveryQueue {
     if (d.kind === "note" && d.task) {
       const task = this.store.getTask(d.task.id);
       // Moved on since this was queued (answered, retried, cancelled): the newer outcome has its own message.
-      if (!task || task.state !== d.task.state) return null;
+      // A "trying again at…" note stands while that retry is still the plan.
+      if (!task || task.state !== d.task.state || (d.task.retryAt !== undefined && task.dueAt !== d.task.retryAt)) return null;
       return { reminderIds: [], cue: (delivery) => taskCueText(delivery, task, this.clock.now(), this.config()), onSent: () => undefined };
     }
     if (d.kind === "note") {

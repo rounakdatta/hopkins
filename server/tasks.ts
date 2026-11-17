@@ -12,6 +12,7 @@ import { parseWhen, suggestTimes } from "../shared/when";
 import { expandHome, type Config } from "./config";
 import type { FinishResult } from "./delivery";
 import { errorText, type Logger } from "./log";
+import { MAX_TRIES, type Retries } from "./retry";
 import { taskPrompt } from "./prompts";
 import { newId, normalizeText, type Clock, type Reminders, type Result } from "./reminders";
 import type { Store } from "./store";
@@ -29,7 +30,8 @@ export interface TaskPort {
 
 /** Where outcomes go: hopkins's own conversation. */
 export interface TaskReporter {
-  report(task: Task, now: number): void;
+  /** Tells the user how a task went; `retryAt` when it failed and will be tried again then. */
+  report(task: Task, now: number, retryAt?: number): void;
 }
 
 export interface CreateTaskInput {
@@ -37,6 +39,8 @@ export interface CreateTaskInput {
   instructions?: string;
   when?: string;
   cwd?: string;
+  /** A deadline, when there is one: nothing runs, or runs again, after it. */
+  by?: string;
 }
 
 const OPEN: readonly TaskState[] = ["scheduled", "running", "needs-you", "missed"];
@@ -53,13 +57,14 @@ export function isOpen(task: Task): boolean {
  * The agent's closing block. Without one, nobody can say whether it worked, so the
  * task asks for a look instead of claiming success or failure.
  */
-export function parseReport(text: string | null): { state: "done" | "needs-you" | "failed"; report: string } {
+export function parseReport(text: string | null): { state: "done" | "needs-you" | "failed"; report: string; retry?: string } {
   const raw = (text ?? "").trim();
-  const blocks = [...raw.matchAll(/<hopkins-report\s+status="(done|needs-you|failed)"\s*>([\s\S]*?)<\/hopkins-report>/gi)];
+  const blocks = [...raw.matchAll(/<hopkins-report\s+status="(done|needs-you|failed)"(?:\s+retry="([^"]{0,60})")?\s*>([\s\S]*?)<\/hopkins-report>/gi)];
   const last = blocks.at(-1);
   if (last) {
-    const report = last[2]!.trim();
-    return { state: last[1]!.toLowerCase() as "done" | "needs-you" | "failed", report: (report || "(no details)").slice(0, 1_500) };
+    const report = last[3]!.trim();
+    const state = last[1]!.toLowerCase() as "done" | "needs-you" | "failed";
+    return { state, report: (report || "(no details)").slice(0, 1_500), ...(state === "failed" && last[2] ? { retry: last[2] } : {}) };
   }
   if (!raw) return { state: "needs-you", report: "It stopped without a word. Open the run to see where it got to." };
   return { state: "needs-you", report: `It stopped without saying whether it worked. Its last words: ${raw.slice(-600)}` };
@@ -112,6 +117,13 @@ export class Tasks {
     if (parsed.instant < now - 60_000) return { ok: false, error: "that time has already passed" };
     const cwd = this.folderFor(input.cwd, scope, source, cfg);
     if (!cwd.ok) return cwd;
+    let by: number | undefined;
+    if (input.by?.trim()) {
+      const deadline = parseWhen(input.by, ctx);
+      if (!deadline.ok) return { ok: false, error: `could not read the deadline: ${deadline.reason}` };
+      if (deadline.instant <= Math.max(parsed.instant, now)) return { ok: false, error: "the deadline is before the task's time" };
+      by = deadline.instant;
+    }
     const task: Task = {
       id: newId("t"),
       text,
@@ -126,6 +138,7 @@ export class Tasks {
       createdAt: now,
       updatedAt: now,
       source,
+      ...(by !== undefined ? { by } : {}),
     };
     this.store.putTask(task);
     this.store.save();
@@ -225,6 +238,10 @@ export class TaskRunner {
   private readonly lastFollowAt = new Map<string, number>();
   /** Set once the Conditions module exists (it needs Tasks, so it comes later). */
   checks: CheckHandler | null = null;
+  /** Set once the model is known: whether and when a failed task is tried again, and late runs. */
+  retries: Retries | null = null;
+  /** Tasks whose next step is being decided (by a model): nothing else touches them meanwhile. */
+  private readonly deciding = new Set<string>();
 
   constructor(
     private readonly store: Store,
@@ -240,9 +257,12 @@ export class TaskRunner {
   tick(now: number): void {
     const cfg = this.config();
     for (const task of this.tasks.due(now)) {
-      // A late check still tells something about today: it simply runs. A late task waits to be asked.
+      if (this.deciding.has(task.id)) continue;
+      // A late check still tells something about today: it simply runs. A late task runs only if
+      // that still makes sense (before its deadline, or judged harmless); otherwise it waits to be asked.
       if (task.kind !== "check" && now - task.dueAt > cfg.taskGraceMs) {
-        this.settle(task.id, { state: "missed" }, now);
+        if (this.retries) void this.lateOrMissed(task.id);
+        else this.settle(task.id, { state: "missed" }, now);
         continue;
       }
       void this.start(task.id);
@@ -373,20 +393,93 @@ export class TaskRunner {
     if (result.status === "timeout") {
       this.settle(id, { state: "failed", error: `still going after ${minutes} minutes; it may yet finish, so open the run to see` }, now);
     } else if (result.status === "error") {
-      this.settle(id, { state: "failed", error: result.error || "the agent hit an error" }, now);
+      this.failed(id, { error: result.error || "the agent hit an error" }, undefined, now);
     } else if (result.status === "permission") {
       this.settle(id, { state: "needs-you", report: "It is waiting for a permission only you can give. Open the run to answer it." }, now);
     } else {
       const parsed = parseReport(result.lastMessage);
-      this.settle(id, { state: parsed.state, report: parsed.report }, now);
+      if (parsed.state === "failed") this.failed(id, { report: parsed.report }, parsed.retry, now);
+      else this.settle(id, { state: parsed.state, report: parsed.report }, now);
     }
+  }
+
+  /**
+   * A run failed. Try again later when that could work (the agent's advice, else the model, else a
+   * rule; bounded by MAX_TRIES and the deadline), telling them once; otherwise say it did not work.
+   * A timeout is never retried here: the run may still be going.
+   */
+  private failed(id: string, patch: { report?: string; error?: string }, advice: string | undefined, now: number): void {
+    const retries = this.retries;
+    if (!retries) {
+      this.settle(id, { state: "failed", ...patch }, now);
+      return;
+    }
+    if (this.deciding.has(id)) return;
+    this.deciding.add(id);
+    void (async () => {
+      try {
+        const task = this.store.getTask(id);
+        if (!task || task.state !== "running") return;
+        const why = patch.report ?? patch.error ?? "it did not work";
+        const decision = await retries.decide(task, why, advice);
+        const current = this.store.getTask(id);
+        // Cancelled, or answered and moved on, while deciding: stay quiet.
+        if (!current || current.state !== "running" || current.attempts !== task.attempts) return;
+        const at = this.clock.now();
+        const tries = [...(current.tries ?? []), { at: current.startedAt ?? at, outcome: "failed" as const, why: why.slice(0, 400) }];
+        if (decision.retry) {
+          const next: Task = { ...current, ...patch, state: "scheduled", dueAt: decision.at, agentId: null, tries, retry: { n: tries.length + 1, of: MAX_TRIES, why: why.slice(0, 400), reason: decision.reason }, updatedAt: at };
+          this.put(next);
+          this.store.event("task-retry", { id, n: tries.length + 1, by: decision.by });
+          this.log.info("task will be tried again", { task: id, try: tries.length + 1, by: decision.by });
+          this.reporter.report(next, at, decision.at);
+        } else {
+          this.put({ ...current, tries });
+          this.settle(id, { state: "failed", ...patch }, at);
+        }
+      } catch (err) {
+        this.log.warn("could not decide about a retry", { task: id, error: errorText(err) });
+        const current = this.store.getTask(id);
+        if (current?.state === "running") this.settle(id, { state: "failed", ...patch }, this.clock.now());
+      } finally {
+        this.deciding.delete(id);
+      }
+    })();
+  }
+
+  /** It was due while hopkins was offline: run it late if that still makes sense, else wait to be asked. */
+  private async lateOrMissed(id: string): Promise<void> {
+    const retries = this.retries;
+    if (!retries || this.deciding.has(id)) return;
+    this.deciding.add(id);
+    let run = false;
+    try {
+      const task = this.store.getTask(id);
+      if (!task || task.state !== "scheduled") return;
+      const decision = await retries.late(task);
+      const current = this.store.getTask(id);
+      if (!current || current.state !== "scheduled" || current.dueAt !== task.dueAt) return;
+      const now = this.clock.now();
+      if (decision.run) {
+        this.put({ ...current, lateFrom: current.lateFrom ?? current.dueAt, dueAt: now, updatedAt: now });
+        this.store.event("task-late", { id, by: decision.by });
+        run = true;
+      } else {
+        this.settle(id, { state: "missed" }, now);
+      }
+    } catch (err) {
+      this.log.warn("could not decide about a late run", { task: id, error: errorText(err) });
+    } finally {
+      this.deciding.delete(id);
+    }
+    if (run) void this.start(id);
   }
 
   private settle(id: string, patch: Pick<Task, "state"> & Partial<Pick<Task, "report" | "error">>, now: number): void {
     const task = this.store.getTask(id);
     if (!task) return;
     const closed = patch.state === "done" || patch.state === "failed";
-    const outcome = `${patch.state}:${patch.report ?? patch.error ?? ""}`;
+    const outcome = `${patch.state}:${task.tries?.length ?? 0}:${patch.report ?? patch.error ?? ""}`;
     const fresh = task.reported !== outcome;
     const next: Task = { ...task, ...patch, updatedAt: now, ...(closed ? { finishedAt: now } : {}), ...(fresh ? { reported: outcome } : {}) };
     this.put(next);

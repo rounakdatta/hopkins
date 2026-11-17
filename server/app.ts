@@ -6,14 +6,16 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PluginServerContext, PluginSettingsState } from "@getpaseo/plugin/server";
 import type { TodayView } from "../shared/model";
-import { actRpc, backfillRpc, recapsRpc, suggestionRpc, taskRpc, todayRpc, todayWatch } from "../shared/rpc";
+import { actRpc, answerRpc, backfillRpc, checkinWatch, recapsRpc, suggestionRpc, taskRpc, todayRpc, todayWatch } from "../shared/rpc";
+import { card as checkinCard, CheckIns } from "./checkins";
 import { localDateOf, zonedToInstant } from "../shared/time";
 import { hopkinsSettings, settingsSchema, type HopkinsSettings } from "../shared/settings";
 import { Backfill } from "./backfill";
 import { resolveConfig, scopeFor, type Config } from "./config";
 import { defaultDeliveryOptions, DeliveryQueue, type RecapSource } from "./delivery";
 import { consoleLogger, errorText, type Logger } from "./log";
-import { AnthropicLlm, readCredentials } from "./llm";
+import { AnthropicLlm, patient, readCredentials, sleepFor } from "./llm";
+import { Retries } from "./retry";
 import { HopkinsMcpServer, MCP_SERVER_NAME, THREAD_AGENT_MARKER } from "./mcp-server";
 import { LiveNoticer, Suggestions } from "./noticing";
 import { PaseoLink } from "./paseo-link";
@@ -68,8 +70,8 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     tasks,
     () => (link.connected ? taskPort : null),
     {
-      report: (task, now) => {
-        queue.enqueueTask(task, now);
+      report: (task, now, retryAt) => {
+        queue.enqueueTask(task, now, retryAt);
         changed();
       },
     },
@@ -101,6 +103,9 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   // --- Noticing and backfill -----------------------------------------------------------
 
   const llm = new AnthropicLlm(() => ({ model: config.llmModel }), () => readCredentials(dataDir));
+  // A failed task is tried again when that could work; the model weighs why it failed.
+  // A busy model is waited out briefly; past that, a plain rule decides rather than holding the news.
+  runner.retries = new Retries(patient(llm, [15_000, 30_000, 60_000], sleepFor), reminders, clock, getConfig, log);
   const suggestions = new Suggestions(store, reminders, clock, getConfig);
   const noticer = new LiveNoticer(store, suggestions, llm, () => paseoTimelineReader(link), clock, getConfig, log);
   const backfill = new Backfill(store, suggestions, llm, clock, getConfig, log, {
@@ -139,6 +144,9 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   // --- Today view and live watchers ------------------------------------------------
 
   const watchers = new Set<(view: TodayView) => void>();
+  // Each check-in card in the conversation follows its own reminder.
+  const cardWatchers = new Set<() => void>();
+  const checkins = new CheckIns(store, clock);
   const problems = (): string[] => [
     ...(link.connected ? [] : [`Not connected to Paseo yet${link.lastError ? ` (${link.lastError})` : ""}.`]),
     ...(link.connected && !link.own ? ["Running on a fallback connection: a reminder may not buzz while an earlier one is unread."] : []),
@@ -157,11 +165,14 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     );
   let notifyTimer: ReturnType<typeof setTimeout> | null = null;
   const notifyWatchers = () => {
-    if (notifyTimer || watchers.size === 0) return;
+    if (notifyTimer || watchers.size + cardWatchers.size === 0) return;
     notifyTimer = setTimeout(() => {
       notifyTimer = null;
-      const view = today();
-      for (const push of watchers) push(view);
+      if (watchers.size > 0) {
+        const view = today();
+        for (const push of watchers) push(view);
+      }
+      for (const push of cardWatchers) push();
     }, 100);
   };
   const changed = () => {
@@ -221,6 +232,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     backfill,
     tasks,
     conditions,
+    checkins,
     config: getConfig,
     clock,
     isThread: (agentId) => agentId === store.threadAgentId(),
@@ -317,6 +329,32 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     if (!result.ok) return { ok: false, message: result.error, ...(result.needsTime ? { needsTime: true } : {}) };
     changed();
     return { ok: true, message: result.message };
+  });
+
+  server.handle(answerRpc, async (input, context) => {
+    link.adopt(context.paseo);
+    const result = checkins.answer(input.id, input.value, {
+      via: input.via,
+      ...(input.occurrence !== undefined ? { occurrence: input.occurrence } : {}),
+      ...(input.note ? { note: input.note } : {}),
+    });
+    if (!result.ok) return { ok: false, message: result.error };
+    changed();
+    return { ok: true, message: result.confirmation };
+  });
+
+  server.handle(checkinWatch, async (input, context) => {
+    link.adopt(context.paseo);
+    const push = () => {
+      void context.push(checkinCard(store.get(input.id), input.occurrence, clock.now())).catch(() => cardWatchers.delete(push));
+    };
+    cardWatchers.add(push);
+    push();
+    await new Promise<void>((resolve) => {
+      if (context.signal.aborted) resolve();
+      else context.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    cardWatchers.delete(push);
   });
 
   server.handle(backfillRpc, async (input, context) => {

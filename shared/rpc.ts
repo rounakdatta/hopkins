@@ -2,7 +2,8 @@
 
 import { defineRpc, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
-import { ReminderActionSchema, SuggestionActionSchema, TaskActionSchema, TodayViewSchema } from "./model";
+import { CheckinCardSchema } from "./checkin";
+import { AnswerActionSchema, ReminderActionSchema, SuggestionActionSchema, TaskActionSchema, TodayViewSchema } from "./model";
 
 export const todayRpc = defineRpc({
   name: "hopkins.today",
@@ -39,6 +40,20 @@ export const taskRpc = defineRpc({
   name: "hopkins.task",
   input: TaskActionSchema,
   output: z.object({ ok: z.boolean(), message: z.string() }),
+});
+
+/** Answers a check-in: from a card in the conversation (its own occurrence) or from Today. */
+export const answerRpc = defineRpc({
+  name: "hopkins.answer",
+  input: AnswerActionSchema,
+  output: z.object({ ok: z.boolean(), message: z.string() }),
+});
+
+/** One check-in card's live state: an event on every change; null once the check-in is gone. */
+export const checkinWatch = defineSubscription({
+  name: "hopkins.checkin.watch",
+  input: z.object({ id: z.string(), occurrence: z.number() }),
+  event: CheckinCardSchema.nullable(),
 });
 
 export const backfillRpc = defineRpc({

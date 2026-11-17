@@ -88,6 +88,7 @@ describe("the Today headline", () => {
     recaps: { morning: null, evening: null },
     snoozeOptions: [],
     tasks: [],
+    rhythms: [],
   };
   const reminder = (text: string, day: string, time: string, dueAt: number): TodayItem => ({
     id: `r_${text.length}_${dueAt}`, text, scope: "personal", important: false, state: "scheduled", dueAt, when: `${day} ${time}`,

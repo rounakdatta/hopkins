@@ -2,10 +2,11 @@
 
 import type { BackfillState, Reminder, TodayItem, TodayView } from "../shared/model";
 import type { Suggestions } from "./noticing";
-import { addDays, dayLabel, formatClock, localDateOf, longDate, timeLabel, weekdayOf, zonedToInstant } from "../shared/time";
+import { addDays, dayLabel, formatClock, localDateOf, longDate, timeLabel, weekdayOf, zonedToInstant, formatWhen } from "../shared/time";
 import type { Config } from "./config";
 import type { Store } from "./store";
 import type { Reminders } from "./reminders";
+import { brief } from "./checkins";
 import type { Tasks } from "./tasks";
 
 export interface Health {
@@ -70,6 +71,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     late: Boolean(r.last?.late),
     day: r.dueAt !== null ? dayLabel(r.dueAt, cfg.tz, now) : null,
     time: r.dueAt !== null ? timeLabel(r.dueAt, cfg.tz, cfg.clock) : null,
+    ask: r.ask ? brief(r, now) : null,
     // For what is waiting: the time that went out (a repeat's dueAt is already its next one).
     wasDue: waitingNow ? ((at) => (at === null ? null : spoken(at)))(overdue(r) ? r.dueAt : (r.last?.dueAt ?? null)) : null,
     until: r.until && !r.until.metAt
@@ -99,6 +101,11 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     upcoming: upcoming.map((r) => item(r)),
     someday: someday.map((r) => item(r)),
     recentlyClosed: recentlyClosed.map((r) => item(r)),
+    // Every check-in still running, oldest first: the record of what they did and how they felt.
+    rhythms: all
+      .filter((r) => r.ask && r.state !== "done" && r.state !== "dropped")
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((r) => brief(r, now)),
     health: { ...health, threadAgentId: store.threadAgentId() },
     counts: { waiting: waiting.length, today: today.length },
     snoozeOptions: snoozeOptions(cfg, now),
@@ -126,6 +133,8 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       report: (t.report ?? t.error ?? null)?.slice(0, 400) ?? null,
       agentId: t.agentId,
       scope: t.scope,
+      retry: t.state === "scheduled" && t.retry ? { n: t.retry.n, of: t.retry.of, why: t.retry.why.slice(0, 300) } : null,
+      ...(t.tries?.length ? { tries: t.tries.map((x) => ({ when: formatWhen(x.at, cfg.tz, now, cfg.clock), outcome: x.outcome, why: x.why.slice(0, 200) })) } : {}),
     })),
   };
 }

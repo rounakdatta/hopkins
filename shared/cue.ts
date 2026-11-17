@@ -6,12 +6,34 @@ export const CUE_KIND = "hopkins-cue";
 
 export type CueKind = "due" | "nudge" | "hello" | "morning" | "evening" | "note" | "task";
 
+/** A check-in a due cue carries: the card under it answers exactly this occurrence. */
+export interface CueAsk {
+  id: string;
+  occurrence: number;
+  kind: "yesno" | "mood";
+}
+
 export interface ParsedCue {
   kind: CueKind;
   /** The reminder texts the cue is about. */
   items: string[];
   /** For a task: how it went ("done", "needs-you", "failed", "missed"). */
   status?: string;
+  /** For a due cue: the check-ins it carries. */
+  asks?: CueAsk[];
+}
+
+const ASK = /^(r_[A-Za-z0-9_-]+)@(\d+):(yesno|mood)$/;
+
+function parseAsks(attrs: string): CueAsk[] {
+  const raw = /\bask="([^"]*)"/.exec(attrs)?.[1] ?? "";
+  return raw
+    .split(/\s+/)
+    .flatMap((token) => {
+      const m = ASK.exec(token);
+      return m ? [{ id: m[1]!, occurrence: Number(m[2]), kind: m[3] as CueAsk["kind"] }] : [];
+    })
+    .slice(0, 10);
 }
 
 const HEAD = /^\s*<hopkins:(due|nudge|hello|recap|note|task)\b([^>]*)>/;
@@ -30,7 +52,8 @@ export function parseCue(text: string): ParsedCue | null {
     const status = /status="([a-z-]+)"/.exec(head[2] ?? "")?.[1] ?? "done";
     return { kind: "task", items, status };
   }
-  return { kind: head[1] as CueKind, items };
+  const asks = head[1] === "due" ? parseAsks(head[2] ?? "") : [];
+  return { kind: head[1] as CueKind, items, ...(asks.length ? { asks } : {}) };
 }
 
 export function cueSummary(cue: ParsedCue): string {
@@ -40,7 +63,7 @@ export function cueSummary(cue: ParsedCue): string {
   if (cue.kind === "note") return "A note from hopkins";
   if (cue.kind === "task") {
     const what = cue.items[0] ?? "a task";
-    const lead: Record<string, string> = { done: "Done", "needs-you": "Needs you", failed: "Didn't work", missed: "Didn't start" };
+    const lead: Record<string, string> = { done: "Done", "needs-you": "Needs you", failed: "Didn't work", missed: "Didn't start", scheduled: "Trying again" };
     return `${lead[cue.status ?? "done"] ?? "Task"}: ${what}`;
   }
   const list = cue.items.length === 0 ? "" : cue.items.length <= 3 ? cue.items.join(", ") : `${cue.items.slice(0, 3).join(", ")} and ${cue.items.length - 3} more`;

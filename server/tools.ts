@@ -12,6 +12,7 @@ import type { Recaps } from "./recaps";
 import type { Clock, ListFilter, Reminders, Result } from "./reminders";
 import type { Tasks } from "./tasks";
 import type { Conditions } from "./conditions";
+import { brief, type CheckIns } from "./checkins";
 
 export interface ToolDeps {
   reminders: Reminders;
@@ -20,6 +21,7 @@ export interface ToolDeps {
   backfill?: Backfill;
   tasks?: Tasks;
   conditions?: Conditions;
+  checkins?: CheckIns;
   config: () => Config;
   clock: Clock;
   /** True when the calling agent is the hopkins conversation itself. */
@@ -40,6 +42,7 @@ Use it whenever the user asks to be reminded of something, or agrees to a remind
 - repeat: for repeating reminders, e.g. "daily", "weekdays", "every monday", "every 2 weeks", "on the 1st of every month", "on the last friday of every month", "yearly". \`when\` then sets the first time and the time of day.
 - important: true if they say it is important or "don't let me forget". hopkins re-pings once if they have not opened it.
 - until: for a repeating reminder that should stop by itself once something has held for some days ("remind me to sleep at 11 until I'm waking up on time"). check = what to look at and what counts as met for ONE day, concretely, naming where to look (e.g. "In Zepp Life sleep data: did they wake up (sleep end) by 07:30 their time today?"); checkAt = when to check each day (default their morning time); inARow = days in a row before it stops (default 7). Turn their words into a concrete rule and confirm it with them once before setting it. hopkins checks quietly every day and tells them when it stops.
+- ask: makes a repeating reminder a check-in that asks every time and keeps every answer. "yesno" for a habit they want to keep (have some fruit, take vitamins, stretch): they answer Yes or Not today with one tap. "mood" for a mood check-in ("check in on my mood every night"): they answer with a slider. question: the question, short, in their voice ("Had some fruit today?"); hopkins writes one if you leave it out.
 After it is saved, give the user the one-line confirmation from the result, as is.`;
 
 const LIST_DESCRIPTION = `List or find the user's hopkins reminders. Use it before changing or closing one (to get its id), and to answer questions like "what reminders do I have this week?".
@@ -49,7 +52,14 @@ const LIST_DESCRIPTION = `List or find the user's hopkins reminders. Use it befo
 const CHANGE_DESCRIPTION = `Change a hopkins reminder: move it (snooze), reword it, change or remove its repeat, or mark it important. Get the id from hopkins_reminders first.
 - when: the new time. ${WHEN_HELP} Snoozing a delivered reminder means setting a new \`when\`.
 - repeat: a new repeat, or "none" to stop repeating but keep the reminder.
-- someday: true to keep it with no time.`;
+- someday: true to keep it with no time.
+- ask: "yesno" or "mood" to make a repeating reminder a check-in, "none" to stop asking (its answers are kept); question: the question it asks.`;
+
+const ANSWER_DESCRIPTION = `Record the user's answer to a hopkins check-in: a repeating reminder that asks ("Had some fruit today?", or a mood check-in). Use it when they answer in words: "yes", "had an apple", "not today", "feeling pretty low", even in a conversation about something else.
+- id: the check-in's reminder id (in the hopkins cue, or from hopkins_reminders).
+- answer: for a yes/no check-in, "yes" or "no". For a mood, 0–100, or the word that fits their words best: rough (10), low (30), okay (50), good (70), great (90).
+- note: optional, a few of their own words worth keeping ("long day at work").
+It answers the one that just went out, or today's. Then reply in one short line, using the result.`;
 
 const CLOSE_DESCRIPTION = `Close a hopkins reminder. as: "done" when it is handled (for a repeating reminder this closes only the current time; the series continues), or "dropped" when it is no longer needed (for a repeating reminder this stops the series). Get the id from hopkins_reminders first.`;
 
@@ -60,6 +70,8 @@ action "create":
 - instructions: the brief the agent works from. It starts fresh and never sees this conversation, so make it complete: what to do; where things are (file paths, Nextcloud folders, sites, which booking); what to check before acting (e.g. that the passport number and date of birth on the ticket match their passport); what counts as done; anything to avoid. Find out what you can yourself first; ask the user only for what you cannot find, before creating it.
 - when: ${WHEN_HELP} If they gave no time, ask; never guess one for a task.
 - cwd: optional folder to work in; by default their personal (or work) folder.
+- by: optional deadline, when there is one ("before 5am on the 19th", the flight's departure): if it fails, hopkins tries again only before this, and runs it late after downtime only before this.
+If it fails, hopkins decides from why whether and when to try again (at most 3 tries) and tells them.
 After it is saved, give them the one-line confirmation from the result, as is.
 action "list": scheduled, running and recent tasks with ids and outcomes. action "cancel" or "run_now": with id.`;
 
@@ -83,6 +95,10 @@ export function reminderLine(r: Reminder, deps: ToolDeps): string {
   const repeat = deps.reminders.describeRepeatOf(r);
   if (repeat) bits.push(repeat);
   if (r.until && !r.until.metAt) bits.push(`stops after ${r.until.inARow} days in a row (${r.until.streak} so far)`);
+  if (r.ask) {
+    const b = brief(r, deps.clock.now());
+    bits.push(`${r.ask.kind === "mood" ? "mood check-in" : "check-in (yes/no)"}: ${b.summary}${b.today !== null ? `, answered today` : ""}`);
+  }
   if (r.important) bits.push("important");
   bits.push(r.scope);
   if (r.state === "done" || r.state === "dropped") bits.push(r.state);
@@ -108,6 +124,8 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
         })
         .optional()
         .describe("Stop the repeats by themselves once this has held for some days in a row."),
+      ask: z.enum(["yesno", "mood"]).optional().describe("Make it a check-in: Yes / Not today buttons for a habit, a slider for a mood. Needs a repeat."),
+      question: z.string().max(140).optional().describe("The question a check-in asks, short, in their voice."),
     }),
     async execute(input, { agent }) {
       const cfg = deps.config();
@@ -128,8 +146,11 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
         ...(agent.cwd ? { cwd: agent.cwd } : {}),
         at: deps.clock.now(),
       };
-      const r = deps.reminders.create(input, source, scopeFor(agent.cwd, cfg.workRoots));
+      const ask = input.ask ? { kind: input.ask, ...(input.question ? { question: input.question } : {}) } : undefined;
+      const r = deps.reminders.create({ ...input, ask }, source, scopeFor(agent.cwd, cfg.workRoots));
       if (!r.ok) return failure(r, deps, "saved");
+      // The same reminder set again as a check-in becomes one; one that already asks keeps its question.
+      if (r.duplicate && ask && !r.reminder.ask) deps.reminders.change(r.reminder.id, { ask });
       // A repeat of an existing reminder gets the stopping rule if it has none yet; one it already has is kept.
       const current = deps.reminders.get(r.reminder.id) ?? r.reminder;
       const untilLine =
@@ -177,9 +198,12 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
       repeat: z.union([z.string(), RepeatSchema]).optional(),
       important: z.boolean().optional(),
       someday: z.boolean().optional(),
+      ask: z.enum(["yesno", "mood", "none"]).optional(),
+      question: z.string().max(140).optional(),
     }),
     async execute(input) {
-      const { id, ...patch } = input;
+      const { id, ask, question, ...rest } = input;
+      const patch = { ...rest, ...(ask === "none" ? { ask: null } : ask ? { ask: { kind: ask, ...(question ? { question } : {}) } } : {}) };
       const r = deps.reminders.change(id, patch);
       if (!r.ok) return failure(r, deps, "changed");
       deps.changed();
@@ -204,6 +228,27 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
   });
 
   const tools = [remind, list, change, close];
+  const checkins = deps.checkins;
+  if (checkins) {
+    tools.push(
+      defineAgentTool({
+        name: "hopkins_answer",
+        title: "Answer a check-in",
+        description: ANSWER_DESCRIPTION,
+        input: z.object({
+          id: z.string().describe("The check-in's reminder id, e.g. r_k3x9qa."),
+          answer: z.union([z.string(), z.number()]).describe('"yes" or "no"; for a mood, 0–100 or a word.'),
+          note: z.string().max(280).optional(),
+        }),
+        async execute(input) {
+          const r = checkins.answer(input.id, input.answer, { via: "thread", ...(input.note ? { note: input.note } : {}) });
+          if (!r.ok) return failure(r, deps, "recorded");
+          deps.changed();
+          return textResult(r.confirmation, { recorded: true, id: r.reminder.id, today: r.brief.today, summary: r.brief.summary });
+        },
+      }),
+    );
+  }
   const recaps = deps.recaps;
   if (recaps) {
     tools.push(
@@ -238,6 +283,7 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
           instructions: z.string().optional().describe("The complete brief for the agent that will do it."),
           when: z.string().optional().describe(`When to do it. ${WHEN_HELP}`),
           cwd: z.string().optional().describe("Folder to work in (optional)."),
+          by: z.string().optional().describe("A deadline, if there is one: no tries after it."),
           id: z.string().optional().describe("For cancel and run_now: the task id, e.g. t_k3x9qa."),
         }),
         async execute(input, { agent }) {
