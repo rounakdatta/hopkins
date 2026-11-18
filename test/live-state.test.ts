@@ -401,14 +401,53 @@ describe("what the reviewer found in the fixes", () => {
     expect(w.told.map((x) => x.state)).toEqual(["needs-you", "done"]);
   });
 
+  it("leaves a waiting task as it is when its run comes back without words (not loaded after a restart)", async () => {
+    const w = world();
+    const t = await w.asking();
+    w.runner.recover();
+    w.port.end({ status: "idle", lastMessage: null });
+    await settle();
+    expect(w.tasks.get(t.id)).toMatchObject({ state: "needs-you", report: QUESTION });
+    expect(w.told.map((x) => x.state)).toEqual(["needs-you"]);
+  });
+
   it("leaves a waiting task as it is when its run cannot be read at all", async () => {
     const w = world();
     const t = await w.asking();
     w.runner.recover();
-    w.port.end({ status: "error", lastMessage: null, error: "Agent not found" }); // the run was deleted
+    w.port.end({ status: "error", lastMessage: null, error: "Agent not found: run-1" }); // the run was deleted
     await settle();
     expect(w.tasks.get(t.id)).toMatchObject({ state: "needs-you", report: QUESTION });
     expect(w.told.map((x) => x.state)).toEqual(["needs-you"]);
+  });
+});
+
+describe("what the reviewer found in the second fixes", () => {
+  it("does not reopen a run past its limit that they stopped, when hopkins restarts later", async () => {
+    // The reviewer's S1: past its time limit, they open the run and stop it; days later hopkins restarts.
+    const w = world();
+    w.port.first = { status: "timeout", lastMessage: null };
+    const t = await w.asking();
+    w.runner.onTurnFinished(t.agentId!, true); // they pressed stop
+    w.env.clock.advance(2 * 86_400_000);
+    w.runner.recover(); // the run is loaded and idle, with half a sentence as its last words
+    w.port.end({ status: "idle", lastMessage: "Re-running the suite a 14th time to see whether it" });
+    await settle();
+    expect(w.tasks.get(t.id)!.state).toBe("failed");
+    expect(w.told.map((x) => x.state)).toEqual(["failed"]);
+  });
+
+  it("records a run past its limit whose turn then failed, rather than calling it gone", async () => {
+    // The reviewer's S2: the run went on past its limit, and its turn then failed (the API was overloaded).
+    const w = world();
+    w.port.first = { status: "timeout", lastMessage: null };
+    const t = await w.asking();
+    w.runner.onTurnFinished(t.agentId!); // the turn-end hook, outcome "failed"
+    w.port.end({ status: "error", lastMessage: null, error: "Claude API error: overloaded" });
+    await settle();
+    expect(w.tasks.get(t.id)).toMatchObject({ state: "failed", error: "Claude API error: overloaded" });
+    expect(w.tasks.get(t.id)!.timedOut).toBeUndefined();
+    expect(w.told.map((x) => x.error)).toEqual([expect.stringMatching(/still going after/), "Claude API error: overloaded"]);
   });
 });
 

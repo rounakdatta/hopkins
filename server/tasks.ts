@@ -363,6 +363,8 @@ export class TaskRunner {
     if (!task) return;
     if (canceled) {
       if (task.state === "running") this.quiet.add(task.id);
+      // Past its limit and now stopped by them: it will not finish by itself, so nothing more is awaited.
+      if (task.state === "failed" && task.timedOut) this.put({ ...task, timedOut: undefined });
       return;
     }
     // Waiting on them, or failed at the time limit: read the run where the task stands (its start was
@@ -460,8 +462,11 @@ export class TaskRunner {
         this.rereads.delete(id);
         // Still busy: it started a turn hopkins did not see, so it is working again.
         if (result.status === "timeout") busy = true;
-        // The run cannot be read (it is gone): the task stays as it stands, never "failed" for that.
-        if (result.status === "timeout" || result.status === "error") return;
+        // The run cannot be read (it is gone, or not loaded since a restart, so it has no words to give):
+        // the task stays as it stands, never "failed" or "stopped without a word" for that. Any other
+        // error is the run's own (its turn failed): that is recorded like any outcome.
+        const gone = result.status === "error" && /^agent not found/i.test(result.error ?? "");
+        if (result.status === "timeout" || gone || (result.status === "idle" && !result.lastMessage?.trim())) return;
       }
       this.finish(id, result, reread);
     } catch (err) {
