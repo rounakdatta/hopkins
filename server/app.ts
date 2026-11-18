@@ -279,15 +279,16 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
 
   // A task's run is working again, from now: it started a turn (the user answered it there), or the
   // user settled its permission prompt (that carries on in the same turn, so no turn starts).
-  const resumed = async ({ agent }: { agent: { id: string } }) => {
+  const resumed = (retell: boolean) => async ({ agent }: { agent: { id: string } }) => {
     try {
-      if (runner.isTaskAgent(agent.id)) runner.onResumed(agent.id);
+      if (runner.isTaskAgent(agent.id)) runner.onResumed(agent.id, retell);
     } catch (err) {
       log.warn("could not note a resumed run", { error: errorText(err) });
     }
   };
-  server.addHook("agent.turn.before", resumed);
-  server.addHook("agent.permission.after", resumed);
+  server.addHook("agent.turn.before", resumed(false));
+  // A second permission prompt reads the same as the first, yet it is news: tell it again.
+  server.addHook("agent.permission.after", resumed(true));
 
   // A conversation finished a turn: note it, so noticing reads it once it settles.
   server.addHook("agent.turn.after", async ({ agent, outcome }) => {

@@ -194,7 +194,7 @@ describe("what the reviewer found", () => {
     const task = await w.asking();
     expect(task.state).toBe("needs-you");
     // Approving it carries on in the same turn: no turn starts, the permission hook says so.
-    w.runner.onResumed(task.agentId!);
+    w.runner.onResumed(task.agentId!, true);
     expect(w.tasks.get(task.id)!.state).toBe("running");
     w.port.end({ status: "permission", lastMessage: null }); // it asks for another
     await settle();
@@ -297,6 +297,118 @@ describe("what the reviewer found", () => {
     await settle();
     expect(w.tasks.get(task.id)).toMatchObject({ state: "needs-you", report: QUESTION });
     expect(w.tasks.get(task.id)!.unreported).toBeUndefined();
+  });
+});
+
+describe("what the reviewer found in the fixes", () => {
+  it("tells the outcome of a turn that replaced one they stopped by typing", async () => {
+    // The reviewer's scenario A: sending while it works cancels the turn and starts its replacement.
+    const w = world();
+    const t = await w.asking();
+    const agent = t.agentId!;
+    w.runner.onResumed(agent); // T1: they answer
+    w.runner.onTurnFinished(agent, true); // they send a correction mid-turn: T1 is cancelled…
+    w.runner.onResumed(agent); // …and T2 starts at once; the task is still running
+    w.env.clock.advance(20 * 60_000);
+    w.port.end({ status: "idle", lastMessage: report("done", "Deployed to prod; health checks green.") }); // the wait ends with T2
+    await settle();
+    expect(w.tasks.get(t.id)!.state).toBe("done");
+    expect(w.told.map((x) => x.state)).toEqual(["needs-you", "done"]);
+  });
+
+  it("does not repeat a question each time a background job wakes the run", async () => {
+    // The reviewer's scenario B: three wakes it did not cause, the same question each time.
+    const w = world();
+    const t = await w.asking();
+    for (let i = 0; i < 3; i++) {
+      w.runner.onResumed(t.agentId!); // the turn it started by itself
+      w.port.end({ status: "idle", lastMessage: report("needs-you", QUESTION) });
+      await settle();
+    }
+    expect(w.tasks.get(t.id)!.state).toBe("needs-you");
+    expect(w.told.map((x) => x.state)).toEqual(["needs-you"]);
+  });
+
+  it("reads a run again later when it could not when the turn ended", async () => {
+    // The reviewer's scenario: hopkins restarts while they answer, and the turn ends before its connection is up.
+    const home = tmpDir();
+    const env = setup("2026-11-18T07:00:00Z", { personalFolder: home, workRoots: [home] });
+    let connected = true;
+    let waits = 0;
+    const port: TaskPort = {
+      async run(task: Task, _p: string, _c: Config, created: (id: string) => void): Promise<FinishResult> {
+        created(`run-${task.id}`);
+        return { status: "idle", lastMessage: report("needs-you", "Which region?") };
+      },
+      async waitForFinish(): Promise<FinishResult> {
+        waits++;
+        return { status: "idle", lastMessage: report("done", "Deployed to eu-west.") };
+      },
+    };
+    const tasks = new Tasks(env.store, env.reminders, env.clock, env.config);
+    const told: Task[] = [];
+    const runner = new TaskRunner(env.store, tasks, () => (connected ? port : null), { report: (t) => void told.push(t) }, env.clock, env.config, silentLogger);
+    const r = tasks.create({ text: "deploy", instructions: "Do the deploy and check it carefully, then report.", when: "in 1m" }, { via: "agent", agentId: "a", cwd: home, at: env.clock.now() }, "personal");
+    if (!r.ok) throw new Error(r.error);
+    env.clock.advance(120_000);
+    runner.tick(env.clock.now());
+    await settle();
+    connected = false;
+    runner.onTurnFinished(`run-${r.task.id}`);
+    await settle();
+    connected = true;
+    for (let i = 0; i < 3; i++) {
+      env.clock.advance(60_000);
+      runner.tick(env.clock.now());
+      await settle();
+    }
+    expect(tasks.get(r.task.id)).toMatchObject({ state: "done", report: "Deployed to eu-west." });
+    expect(told.map((t) => t.state)).toEqual(["needs-you", "done"]);
+    expect(waits).toBe(1);
+  });
+
+  it("keeps a run that started a new turn working, when an older reading comes back late", async () => {
+    // The reviewer's scenario: a late hook's re-read is answered with turn N's words after turn N+1 began.
+    const w = world();
+    w.port.first = { status: "idle", lastMessage: report("needs-you", "Q1: which region?") };
+    const t = await w.asking();
+    const agent = t.agentId!;
+    w.runner.onResumed(agent); // they answer: turn N
+    w.port.end({ status: "idle", lastMessage: report("needs-you", "Q2: which account?") }); // its result beats the hook
+    await settle();
+    w.runner.onTurnFinished(agent); // the late hook for N: a re-read, answered at once
+    w.env.clock.advance(1_000);
+    w.runner.onResumed(agent); // turn N+1 starts right away
+    w.port.end({ status: "idle", lastMessage: report("needs-you", "Q2: which account?") }); // the re-read's answer, N's words
+    await settle();
+    expect(w.tasks.get(t.id)!.state).toBe("running");
+    expect(w.told.map((x) => x.report)).toEqual(["Q1: which region?", "Q2: which account?"]);
+    expect(w.port.waits.length).toBe(3); // N, the re-read, and N+1 followed again
+  });
+
+  it("finds on start a run that went on while hopkins was away", async () => {
+    const w = world();
+    const t = await w.asking();
+    // hopkins restarts. The run is busy with a turn it never saw start: it is working.
+    w.runner.recover();
+    w.port.end({ status: "timeout", lastMessage: null }); // the look finds it busy
+    await settle();
+    expect(w.tasks.get(t.id)!.state).toBe("running");
+    // Its turn ends with the report, and that is recorded and told.
+    w.port.end({ status: "idle", lastMessage: report("done", "Checked in, seat 23A.") });
+    await settle();
+    expect(w.tasks.get(t.id)).toMatchObject({ state: "done" });
+    expect(w.told.map((x) => x.state)).toEqual(["needs-you", "done"]);
+  });
+
+  it("leaves a waiting task as it is when its run cannot be read at all", async () => {
+    const w = world();
+    const t = await w.asking();
+    w.runner.recover();
+    w.port.end({ status: "error", lastMessage: null, error: "Agent not found" }); // the run was deleted
+    await settle();
+    expect(w.tasks.get(t.id)).toMatchObject({ state: "needs-you", report: QUESTION });
+    expect(w.told.map((x) => x.state)).toEqual(["needs-you"]);
   });
 });
 
