@@ -93,7 +93,8 @@ export function Porthole(props: { colors: Colors; size: number; running: boolean
               height: H,
               borderRadius: 3,
               backgroundColor: fill,
-              borderWidth: 1,
+              // The same paper as its card below; a touch firmer edge, so a pale card still shows on the glass.
+              borderWidth: 1.25,
               borderColor: edge,
               transform: [{ rotate: `${angle + 90 + (i % 2 ? 14 : -10)}deg` }],
             };

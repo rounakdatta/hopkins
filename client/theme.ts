@@ -82,13 +82,32 @@ function hsl(h: number, sat: number, light: number): string {
 }
 
 /**
- * A machine card's dye from its hue: a soft fill and a firmer edge, toned for the theme (pastel on a
- * light desk, deeper on a dark one) and softened toward the paper, so every hue sits calmly.
+ * Index-card paper from a hue: the colour is the card itself, not a stripe on it. On a light desk a
+ * pale wash, an edge a little deeper in the same colour, and an ink for its small heading; on a dark
+ * desk a muted tint of the dark paper, its edge and ink in the same family. Yellow and green read
+ * stronger than blue at the same numbers, so each paper is tuned by eye.
  */
-export function dye(hue: number, colors: Colors): { fill: string; edge: string } {
-  const dark = isDark(colors);
+const PAPERS: Record<number, { s: number; l: number }> = {
+  48: { s: 92, l: 87 }, // canary
+  350: { s: 78, l: 93 }, // rose
+  205: { s: 78, l: 92 }, // sky
+  150: { s: 52, l: 89 }, // mint
+  265: { s: 70, l: 94 }, // lavender
+  25: { s: 90, l: 91 }, // apricot
+};
+
+export function dye(hue: number, colors: Colors): { fill: string; edge: string; ink: string } {
+  const p = PAPERS[hue] ?? { s: 70, l: 92 };
+  if (isDark(colors)) {
+    return {
+      fill: mix(colors.surface1, hsl(hue, 42, 52), 0.17),
+      edge: mix(colors.surface1, hsl(hue, 46, 62), 0.42),
+      ink: hsl(hue, 58, 76),
+    };
+  }
   return {
-    fill: mix(dark ? hsl(hue, 42, 40) : hsl(hue, 62, 76), colors.surface1, 0.15),
-    edge: dark ? hsl(hue, 48, 62) : hsl(hue, 46, 48),
+    fill: mix(hsl(hue, p.s, p.l), colors.surface1, 0.12),
+    edge: hsl(hue, Math.round(p.s * 0.55), p.l - 14),
+    ink: hsl(hue, 58, 30),
   };
 }
