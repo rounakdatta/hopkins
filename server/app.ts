@@ -277,21 +277,24 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     }
   });
 
-  // A task's run started a turn: the user answered it there, so it is working again, from now.
-  server.addHook("agent.turn.before", async ({ agent }) => {
+  // A task's run is working again, from now: it started a turn (the user answered it there), or the
+  // user settled its permission prompt (that carries on in the same turn, so no turn starts).
+  const resumed = async ({ agent }: { agent: { id: string } }) => {
     try {
-      if (runner.isTaskAgent(agent.id)) runner.onTurnStarted(agent.id);
+      if (runner.isTaskAgent(agent.id)) runner.onResumed(agent.id);
     } catch (err) {
-      log.warn("could not note a started turn", { error: errorText(err) });
+      log.warn("could not note a resumed run", { error: errorText(err) });
     }
-  });
+  };
+  server.addHook("agent.turn.before", resumed);
+  server.addHook("agent.permission.after", resumed);
 
   // A conversation finished a turn: note it, so noticing reads it once it settles.
   server.addHook("agent.turn.after", async ({ agent, outcome }) => {
     try {
       // A task's run finished a turn (the user answered it there): its outcome may have changed.
       if (runner.isTaskAgent(agent.id)) {
-        if (outcome.kind !== "canceled") runner.onTurnFinished(agent.id);
+        runner.onTurnFinished(agent.id, outcome.kind === "canceled");
         return;
       }
       if (outcome.kind === "canceled" || agent.parentAgentId || agent.background || agent.id === store.threadAgentId()) return;

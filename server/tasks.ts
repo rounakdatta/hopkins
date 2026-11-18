@@ -53,6 +53,11 @@ export function isOpen(task: Task): boolean {
   return OPEN.includes(task.state);
 }
 
+/** Stopped, but its run may have moved on: waiting on them, or failed only at the time limit. */
+function rereadable(task: Task): boolean {
+  return task.state === "needs-you" || (task.state === "failed" && task.timedOut === true);
+}
+
 /**
  * The agent's closing block. Without one, nobody can say whether it worked, so the
  * task asks for a look instead of claiming success or failure (`unreported`: it asked nothing).
@@ -250,6 +255,8 @@ export class TaskRunner {
   retries: Retries | null = null;
   /** Tasks whose next step is being decided (by a model): nothing else touches them meanwhile. */
   private readonly deciding = new Set<string>();
+  /** Tasks whose current turn the user stopped themselves: its outcome is recorded, not told. */
+  private readonly quiet = new Set<string>();
 
   constructor(
     private readonly store: Store,
@@ -307,28 +314,36 @@ export class TaskRunner {
   }
 
   /**
-   * The run started another turn: the user answered it there (or it picked itself up), so it is
-   * working again, from this moment. Every view shows that at once; the turn's end is followed.
+   * The run is working again: a new turn started (the user answered it there, or it picked itself
+   * up), or the user settled its permission prompt. It shows as running from this moment, on every
+   * view; the turn's end is followed. Whatever it says next is news, even if it is said again.
    */
-  onTurnStarted(agentId: string): void {
+  onResumed(agentId: string): void {
     const task = this.store.tasks().find((t) => t.agentId === agentId);
     if (!task || task.state !== "needs-you") return;
     const now = this.clock.now();
+    this.quiet.delete(task.id);
     // Its time limit counts from now: an answer that comes hours later still gets the whole time.
-    this.put({ ...task, state: "running", startedAt: now, updatedAt: now, report: undefined, unreported: undefined });
+    this.put({ ...task, state: "running", startedAt: now, updatedAt: now, report: undefined, error: undefined, unreported: undefined, timedOut: undefined, reported: undefined });
     this.store.event("task-resumed", { id: task.id });
     void this.follow(task.id);
   }
 
-  /** The run finished a turn: record its outcome, unless it is already being recorded. */
-  onTurnFinished(agentId: string): void {
+  /**
+   * The run finished a turn: record its outcome, unless it is already being recorded. `canceled`:
+   * the user stopped that turn themselves, so its outcome is recorded but not told.
+   */
+  onTurnFinished(agentId: string, canceled = false): void {
     const task = this.store.tasks().find((t) => t.agentId === agentId);
     if (!task) return;
-    // needs-you here: its start was missed (hopkins was away), or this is a late hook for the turn already recorded.
-    // Failed at the time limit: the run went on, and has ended now; how it ended is the truth.
-    if (task.state === "needs-you" || (task.state === "failed" && task.timedOut)) this.put({ ...task, state: "running", updatedAt: this.clock.now() });
-    else if (task.state !== "running") return;
-    void this.follow(task.id);
+    if (canceled) {
+      if (task.state === "running") this.quiet.add(task.id);
+      return;
+    }
+    // Waiting on them, or failed at the time limit: read the run where the task stands (its start was
+    // missed, the run went on past the limit, or this is a late hook for the turn already recorded).
+    if (rereadable(task)) void this.follow(task.id, true);
+    else if (task.state === "running") void this.follow(task.id);
   }
 
   isTaskAgent(agentId: string): boolean {
@@ -390,19 +405,24 @@ export class TaskRunner {
     }
   }
 
-  /** Waits for the run's current turn to end and records how it ended. */
-  async follow(id: string): Promise<void> {
+  /**
+   * Waits for the run's current turn to end and records how it ended. `reread`: the turn has ended
+   * already; read it where the task stands (waiting on them, or failed at the time limit).
+   */
+  async follow(id: string, reread = false): Promise<void> {
     if (this.following.has(id)) return;
     const port = this.port();
     const task = this.store.getTask(id);
-    if (!port || !task?.agentId || task.state !== "running") return;
+    if (!port || !task?.agentId || !(task.state === "running" || (reread && rereadable(task)))) return;
     this.following.add(id);
     this.lastFollowAt.set(id, this.clock.now());
     try {
       const cfg = this.config();
       const deadline = (task.startedAt ?? this.clock.now()) + cfg.taskTimeoutMs;
       const result = await port.waitForFinish(task.agentId, Math.max(60_000, deadline - this.clock.now()));
-      this.finish(id, result);
+      // Answered while this wait ran: the time limit counts from the answer now, so the next tick follows on.
+      if (result.status === "timeout" && this.store.getTask(id)?.startedAt !== task.startedAt) return;
+      this.finish(id, result, reread);
     } catch (err) {
       // Lost track (the connection dropped): a later tick picks it up again.
       this.log.warn("lost track of a task's run for now", { task: id, error: errorText(err) });
@@ -411,9 +431,13 @@ export class TaskRunner {
     }
   }
 
-  private finish(id: string, result: FinishResult): void {
-    const task = this.store.getTask(id);
-    if (!task || task.state !== "running") return; // cancelled meanwhile: stay quiet
+  private finish(id: string, result: FinishResult, reread = false): void {
+    const current = this.store.getTask(id);
+    // Cancelled (or answered, or retried) meanwhile: stay quiet.
+    if (!current || !(current.state === "running" || (reread && rereadable(current)))) return;
+    // A re-read records from "running" like any turn, in this same step: nobody sees it in between.
+    if (current.state !== "running") this.put({ ...current, state: "running", updatedAt: this.clock.now() });
+    const task = this.store.getTask(id)!;
     if (task.kind === "check") {
       this.checks?.record(task, result);
       return;
@@ -516,7 +540,9 @@ export class TaskRunner {
     this.put(next);
     this.store.event("task-settled", { id, state: next.state });
     // A late hook for a turn already reported leads here with the same outcome: say nothing new.
-    if (fresh) this.reporter.report(next, now);
+    // Nor about a turn they stopped themselves: they were there.
+    const quiet = this.quiet.delete(id);
+    if (fresh && !quiet) this.reporter.report(next, now);
   }
 
   private put(task: Task): void {

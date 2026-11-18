@@ -141,8 +141,9 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       state: t.state,
       dueAt: t.dueAt,
       when: tasks!.describe(t, now),
-      day: dayLabel(t.dueAt, cfg.tz, now),
-      time: timeLabel(t.dueAt, cfg.tz, cfg.clock),
+      // Running: since when it has been working (an answer restarts that), not when it was due.
+      day: dayLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.dueAt, cfg.tz, now),
+      time: timeLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.dueAt, cfg.tz, cfg.clock),
       report: (t.report ?? t.error ?? null)?.slice(0, 400) ?? null,
       ...(t.state === "needs-you" && t.unreported ? { unreported: true } : {}),
       agentId: t.agentId,

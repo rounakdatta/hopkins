@@ -84,7 +84,7 @@ describe("answering a task in its run", () => {
     expect(needsYou(w.view())).toBe(2);
 
     // They answer in the run: its next turn starts.
-    w.runner.onTurnStarted(task.agentId!);
+    w.runner.onResumed(task.agentId!);
     const answered = w.tasks.get(task.id)!;
     expect(answered).toMatchObject({ state: "running" });
     expect(answered.report).toBeUndefined(); // the question is not shown under the spinner
@@ -109,7 +109,7 @@ describe("answering a task in its run", () => {
     const w = world();
     const task = await w.asking();
     w.env.clock.advance(3 * 3_600_000); // past the 90-minute limit counted from the first start
-    w.runner.onTurnStarted(task.agentId!);
+    w.runner.onResumed(task.agentId!);
     expect(w.port.waits).toEqual([{ agentId: task.agentId!, timeoutMs: 90 * 60_000 }]);
   });
 
@@ -117,13 +117,13 @@ describe("answering a task in its run", () => {
     const w = world();
     w.port.first = { status: "idle", lastMessage: report("done", "Checked in.") };
     const done = await w.asking();
-    w.runner.onTurnStarted(done.agentId!); // they asked a follow-up question in the finished run
+    w.runner.onResumed(done.agentId!); // they asked a follow-up question in the finished run
     expect(w.tasks.get(done.id)!.state).toBe("done");
 
     w.port.first = { status: "idle", lastMessage: report("needs-you", QUESTION) };
     const asking = await w.asking();
     w.tasks.cancel(asking.id);
-    w.runner.onTurnStarted(asking.agentId!);
+    w.runner.onResumed(asking.agentId!);
     expect(w.tasks.get(asking.id)!.state).toBe("cancelled");
     expect(w.port.waits).toEqual([]);
   });
@@ -171,7 +171,7 @@ describe("a run that stops without its report", () => {
     expect(cueSummary(parseCue(cue)!)).toBe('Stopped without saying how it went: web check-in');
 
     // A real question afterwards is a question again: the flag belongs to the outcome it came with.
-    w.runner.onTurnStarted(task.agentId!);
+    w.runner.onResumed(task.agentId!);
     w.port.end({ status: "idle", lastMessage: report("needs-you", QUESTION) });
     await settle();
     expect(w.tasks.get(task.id)).toMatchObject({ state: "needs-you", report: QUESTION });
@@ -184,6 +184,119 @@ describe("a run that stops without its report", () => {
     const r = w.tasks.create({ text: "web check-in", instructions: brief, when: "in 1m" }, w.source, "personal");
     if (!r.ok) throw new Error(r.error);
     expect(taskPrompt(r.task, w.env.config(), w.env.clock.now())).toMatch(/After they answer, carry on, and end with the block again whenever you stop\./);
+  });
+});
+
+describe("what the reviewer found", () => {
+  it("shows a run working again once they approve its permission, and tells a second prompt too", async () => {
+    const w = world();
+    w.port.first = { status: "permission", lastMessage: null };
+    const task = await w.asking();
+    expect(task.state).toBe("needs-you");
+    // Approving it carries on in the same turn: no turn starts, the permission hook says so.
+    w.runner.onResumed(task.agentId!);
+    expect(w.tasks.get(task.id)!.state).toBe("running");
+    w.port.end({ status: "permission", lastMessage: null }); // it asks for another
+    await settle();
+    expect(w.tasks.get(task.id)!.state).toBe("needs-you");
+    expect(w.told.map((t) => t.state)).toEqual(["needs-you", "needs-you"]);
+  });
+
+  it("never loses the message about a new question to a late turn-end hook", async () => {
+    // The reviewer's scenario, as it ran it: Q2 is recorded and queued, the hook for that same turn
+    // arrives late, and the queue frees up while hopkins reads the run again.
+    const home = tmpDir();
+    const env = setup("2026-11-18T07:00:00Z", { personalFolder: home, workRoots: [home] });
+    const thread = new FakeThread(env.clock);
+    const queue = new DeliveryQueue(env.store, env.reminders, () => thread, env.clock, env.config, silentLogger, { idleWaitMs: 0, idlePollMs: 1, finishTimeoutMs: 1000, sleep: instantSleep(env.clock) });
+    const tasks = new Tasks(env.store, env.reminders, env.clock, env.config);
+    const port = new ManualPort();
+    port.first = { status: "idle", lastMessage: report("needs-you", "Q1: which region?") };
+    const runner = new TaskRunner(env.store, tasks, () => port, { report: (t, now, retryAt) => void queue.enqueueTask(t, now, retryAt) }, env.clock, env.config, silentLogger);
+    const r = tasks.create({ text: "deploy", instructions: "Do the deploy and check it carefully, then report.", when: "in 1m" }, { via: "agent", agentId: "a", cwd: home, at: env.clock.now() }, "personal");
+    if (!r.ok) throw new Error(r.error);
+    env.clock.advance(120_000);
+    runner.tick(env.clock.now());
+    await settle();
+    await queue.pump(); // Q1 is told
+    const agent = `run-${r.task.id}`;
+    runner.onResumed(agent); // they answer
+    env.clock.advance(1_000);
+    port.end({ status: "idle", lastMessage: report("needs-you", "Q2: and which account?") });
+    await settle(); // Q2 recorded and queued, while the queue is busy elsewhere
+    runner.onTurnFinished(agent); // the turn-end hook lands after that
+    await queue.pump(); // the queue frees up during the re-read
+    port.end({ status: "idle", lastMessage: report("needs-you", "Q2: and which account?") });
+    await settle();
+    await queue.pump();
+    expect(tasks.get(r.task.id)!.state).toBe("needs-you");
+    expect(thread.cues.map((c) => /Its report: "([^"]*)"/.exec(c)?.[1])).toEqual(["Q1: which region?", "Q2: and which account?"]);
+  });
+
+  it("shows nothing old under the spinner after an answer", async () => {
+    // The reviewer's scenario: a run past its time limit, then a question, then the answer.
+    const w = world();
+    w.port.first = { status: "timeout", lastMessage: null };
+    const task = await w.asking();
+    w.runner.onTurnFinished(task.agentId!);
+    w.port.end({ status: "idle", lastMessage: report("needs-you", "Which region should I deploy to?") });
+    await settle();
+    expect(w.tasks.get(task.id)).toMatchObject({ state: "needs-you", report: "Which region should I deploy to?" });
+    w.runner.onResumed(task.agentId!);
+    expect(w.view().tasks[0]).toMatchObject({ state: "running", report: null });
+    expect(w.tasks.get(task.id)!.error).toBeUndefined();
+  });
+
+  it("does not call a run failed when the time limit it hit was from before the answer", async () => {
+    const w = world();
+    w.port.first = { status: "idle", lastMessage: "Watching the deploy." };
+    const task = await w.asking();
+    // hopkins reads the run again (the hook for the turn that just ended)…
+    w.runner.onTurnFinished(task.agentId!);
+    // …and while it waits, they answer: a new turn starts, with its own time limit.
+    w.env.clock.advance(5 * 60_000);
+    w.runner.onResumed(task.agentId!);
+    w.port.end({ status: "timeout", lastMessage: null }); // the earlier wait gives up
+    await settle();
+    expect(w.tasks.get(task.id)!.state).toBe("running");
+    expect(w.told.map((t) => t.state)).toEqual(["needs-you"]);
+  });
+
+  it("says since when it has been working again, not when it was due", async () => {
+    const w = world(); // due 12:33pm
+    const task = await w.asking();
+    w.env.clock.set("2026-11-18T09:40:00Z"); // they answer at 3:10pm
+    w.runner.onResumed(task.agentId!);
+    expect(w.view().tasks[0]).toMatchObject({ state: "running", day: "Today", time: "3:10pm" });
+  });
+
+  it("records a turn they stopped themselves without telling them about it", async () => {
+    const w = world();
+    const task = await w.asking();
+    w.runner.onResumed(task.agentId!);
+    w.runner.onTurnFinished(task.agentId!, true); // they pressed stop: the hook comes first
+    w.port.end({ status: "idle", lastMessage: "Starting on the merge now, then" });
+    await settle();
+    expect(w.tasks.get(task.id)).toMatchObject({ state: "needs-you", unreported: true });
+    expect(w.told.map((t) => t.state)).toEqual(["needs-you"]);
+    // The next answer's outcome is told as usual.
+    w.runner.onResumed(task.agentId!);
+    w.port.end({ status: "idle", lastMessage: report("done", "Merged and deployed.") });
+    await settle();
+    expect(w.told.map((t) => t.state)).toEqual(["needs-you", "done"]);
+  });
+
+  it("drops the stop-without-report flag when a later outcome has a report, even with no turn start seen", async () => {
+    const w = world();
+    w.port.first = { status: "idle", lastMessage: "Watching the deploy." };
+    const task = await w.asking();
+    expect(task.unreported).toBe(true);
+    // hopkins missed the turn start (it was restarting); the turn's end is all it sees.
+    w.runner.onTurnFinished(task.agentId!);
+    w.port.end({ status: "idle", lastMessage: report("needs-you", QUESTION) });
+    await settle();
+    expect(w.tasks.get(task.id)).toMatchObject({ state: "needs-you", report: QUESTION });
+    expect(w.tasks.get(task.id)!.unreported).toBeUndefined();
   });
 });
 
@@ -276,6 +389,52 @@ function fakeHost() {
   return { server, hooks, handlers };
 }
 
+/** hopkins running inside the fake host, with a seeded task whose run ends its turn when told. */
+function plugin(dir: string, clock: FakeClock, task: Partial<Task>) {
+  // What hopkins had saved: a reminder waiting on them, and a task waiting on them.
+  const seed = new Store(dir, silentLogger);
+  seed.load();
+  const reminders = new Reminders(seed, clock, () => testConfig(), idFactory());
+  const bank = reminders.create({ text: "call the bank", when: "in 1m" }, agentSource(clock.now()), "personal");
+  if (!bank.ok) throw new Error("create failed");
+  seed.put({ ...seed.get(bank.reminder.id)!, state: "fired", last: { dueAt: clock.now(), firedAt: clock.now(), deliveryId: "d_0" } });
+  seed.putTask({
+    id: "t_qf45xh", text: "Portfolio polaroids fix", instructions: brief, scope: "personal", state: "needs-you", tz: "Asia/Kolkata",
+    dueAt: clock.now() - 27 * 60_000, cwd: dir, agentId: "run-1", attempts: 2, startedAt: clock.now() - 20 * 60_000,
+    createdAt: clock.now() - 3_600_000, updatedAt: clock.now() - 17 * 60_000, source: agentSource(clock.now()), report: QUESTION,
+    reported: `needs-you:0:${QUESTION}`, ...task,
+  });
+  seed.save();
+  let endTurn: (r: { status: string; lastMessage: string | null }) => void = () => undefined;
+  const turn = new Promise<{ status: string; lastMessage: string | null }>((resolve) => (endTurn = resolve));
+  const paseo = {
+    agents: {
+      ref: () => ({ waitForFinish: () => turn, refresh: () => Promise.reject(new Error("no such agent here")) }),
+      list: () => Promise.reject(new Error("not in this test")),
+      create: () => Promise.reject(new Error("not in this test")),
+    },
+    workspaces: { open: () => Promise.reject(new Error("not in this test")) },
+  };
+  const host = fakeHost();
+  const views: TodayView[] = [];
+  const subscription = new AbortController();
+  let stop: () => void = () => undefined;
+  const begin = () => {
+    stop = startHopkins(host.server, { dataDir: dir, clock, log: silentLogger, tickMs: 3_600_000 });
+    void host.handlers.get("hopkins.today.watch")!({}, { paseo, signal: subscription.signal, push: async (v: TodayView) => void views.push(v) });
+  };
+  const until = async (what: (v: TodayView) => boolean) => {
+    for (let i = 0; i < 100 && !(views.length && what(views.at(-1)!)); i++) await new Promise((r) => setTimeout(r, 20));
+    return views.at(-1)!;
+  };
+  const fire = (hook: string, payload: unknown) => host.hooks.get(hook)?.(payload, { paseo, signal: subscription.signal });
+  const end = () => {
+    subscription.abort();
+    stop();
+  };
+  return { begin, until, fire, endTurn: (r: { status: string; lastMessage: string | null }) => endTurn(r), end };
+}
+
 describe("the whole plugin, when they answer a task in its run", () => {
   const saved: Record<string, string | undefined> = {};
   beforeEach(() => {
@@ -288,70 +447,51 @@ describe("the whole plugin, when they answer a task in its run", () => {
   afterEach(() => {
     for (const [key, value] of Object.entries(saved)) if (value !== undefined) process.env[key] = value;
   });
+  const card = (v: TodayView) => v.tasks.find((t) => t.id === "t_qf45xh");
 
   it("updates the screen, the badge and the conversation without a reload", async () => {
     expect(process.env.PASEO_LISTEN).toBeUndefined();
     const dir = tmpDir();
-    const clock = new FakeClock(Date.parse("2026-11-18T07:27:00Z")); // 12:57pm IST
-    // What hopkins had saved: a reminder waiting on them, and a task that stopped to ask.
-    const seed = new Store(dir, silentLogger);
-    seed.load();
-    const reminders = new Reminders(seed, clock, () => testConfig(), idFactory());
-    const bank = reminders.create({ text: "call the bank", when: "in 1m" }, agentSource(clock.now()), "personal");
-    if (!bank.ok) throw new Error("create failed");
-    seed.put({ ...seed.get(bank.reminder.id)!, state: "fired", last: { dueAt: clock.now(), firedAt: clock.now(), deliveryId: "d_0" } });
-    seed.putTask({
-      id: "t_qf45xh", text: "Portfolio polaroids fix", instructions: brief, scope: "personal", state: "needs-you", tz: "Asia/Kolkata",
-      dueAt: clock.now() - 27 * 60_000, cwd: dir, agentId: "run-1", attempts: 2, startedAt: clock.now() - 20 * 60_000,
-      createdAt: clock.now() - 3_600_000, updatedAt: clock.now() - 17 * 60_000, source: agentSource(clock.now()), report: QUESTION,
-      reported: `needs-you:0:${QUESTION}`,
-    });
-    seed.save();
-
-    // The run: its turn ends when the test says so.
-    let endTurn: (r: { status: string; lastMessage: string | null }) => void = () => undefined;
-    const turn = new Promise<{ status: string; lastMessage: string | null }>((resolve) => (endTurn = resolve));
-    const paseo = {
-      agents: {
-        ref: () => ({ waitForFinish: () => turn, refresh: () => Promise.reject(new Error("no such agent here")) }),
-        list: () => Promise.reject(new Error("not in this test")),
-        create: () => Promise.reject(new Error("not in this test")),
-      },
-      workspaces: { open: () => Promise.reject(new Error("not in this test")) },
-    };
-    const host = fakeHost();
-    const stop = startHopkins(host.server, { dataDir: dir, clock, log: silentLogger, tickMs: 3_600_000 });
-    const views: TodayView[] = [];
-    const subscription = new AbortController();
-    void host.handlers.get("hopkins.today.watch")!({}, { paseo, signal: subscription.signal, push: async (v: TodayView) => void views.push(v) });
-    const until = async (what: (v: TodayView) => boolean) => {
-      for (let i = 0; i < 100 && !(views.length && what(views.at(-1)!)); i++) await new Promise((r) => setTimeout(r, 20));
-      return views.at(-1)!;
-    };
-    const card = (v: TodayView) => v.tasks.find((t) => t.id === "t_qf45xh");
+    const p = plugin(dir, new FakeClock(Date.parse("2026-11-18T07:27:00Z")), {}); // 12:57pm IST
     try {
-      const before = await until(() => true);
+      p.begin();
+      const before = await p.until(() => true);
       expect(card(before)?.state).toBe("needs-you");
       expect(headline(before).title).toBe("Two things need you: a reminder and a task.");
       expect(needsYou(before)).toBe(2); // the sidebar badge
 
       // They answer in the run: Paseo says its turn started.
-      await host.hooks.get("agent.turn.before")?.({ agent: { id: "run-1", background: true }, turnId: "turn-2" }, { paseo, signal: subscription.signal });
-      const answered = await until((v) => card(v)?.state === "running");
+      await p.fire("agent.turn.before", { agent: { id: "run-1", background: true }, turnId: "turn-2" });
+      const answered = await p.until((v) => card(v)?.state === "running");
       expect(card(answered)).toMatchObject({ state: "running", report: null });
       expect(headline(answered).title).toBe("A reminder is waiting on you.");
       expect(needsYou(answered)).toBe(1);
 
       // The turn ends with the agent's report: done, on every view, and told once in the conversation.
-      endTurn({ status: "idle", lastMessage: report("done", "Merged and deployed; the polaroids no longer zoom.") });
-      const done = await until((v) => card(v)?.state === "done");
+      p.endTurn({ status: "idle", lastMessage: report("done", "Merged and deployed; the polaroids no longer zoom.") });
+      const done = await p.until((v) => card(v)?.state === "done");
       expect(card(done)?.report).toBe("Merged and deployed; the polaroids no longer zoom.");
       expect(headline(done).title).toBe("A reminder is waiting on you.");
       const saved = JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8")) as { deliveries: { task?: { id: string; state: string } }[] };
       expect(saved.deliveries.filter((d) => d.task?.id === "t_qf45xh").map((d) => d.task!.state)).toEqual(["done"]);
     } finally {
-      subscription.abort();
-      stop();
+      p.end();
+    }
+  });
+
+  it("updates them the moment they approve a permission the run asked for", async () => {
+    expect(process.env.PASEO_LISTEN).toBeUndefined();
+    const waiting = "It is waiting for a permission only you can give. Open the run to answer it.";
+    const p = plugin(tmpDir(), new FakeClock(Date.parse("2026-11-18T07:27:00Z")), { report: waiting, reported: `needs-you:0:${waiting}` });
+    try {
+      p.begin();
+      expect(card(await p.until(() => true))?.state).toBe("needs-you");
+      await p.fire("agent.permission.after", { agent: { id: "run-1", background: true }, requestId: "perm-1", resolution: { behavior: "allow" } });
+      const approved = await p.until((v) => card(v)?.state === "running");
+      expect(card(approved)?.state).toBe("running");
+      expect(needsYou(approved)).toBe(1);
+    } finally {
+      p.end();
     }
   });
 });
