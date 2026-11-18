@@ -337,7 +337,7 @@ function Stamp(props: { colors: Colors; usd: number | undefined }) {
     <View
       accessible
       accessibilityLabel={`Cost ${tag.exact} in tokens`}
-      style={{ alignSelf: "flex-end", marginTop: 2, transform: [{ rotate: "-5deg" }], borderWidth: 1.25, borderColor: fade(props.colors.foregroundMuted, 0.55), borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}
+      style={{ transform: [{ rotate: "-5deg" }], borderWidth: 1.25, borderColor: fade(props.colors.foregroundMuted, 0.55), borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}
     >
       <Text style={[tabular, { fontSize: 11, lineHeight: 14, fontWeight: "700", letterSpacing: 0.4, color: ink }]}>{tag.label}</Text>
     </View>
@@ -355,12 +355,16 @@ export function BasketFace(props: { entry: BasketEntry; colors: Colors; full?: b
     <View style={{ gap: 4 }}>
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.s }}>
         <Text style={[type.title, { color: colors.foreground, flex: 1, minWidth: 0 }]}>{entry.text}</Text>
-        <Text style={[type.small, tabular, { color: colors.foregroundMuted, paddingTop: 2 }]}>{entry.time}</Text>
+        {/* The corner: when it landed, and what it cost, stamped beneath like a receipt's. */}
+        <View style={{ alignItems: "flex-end", gap: 6, paddingTop: 2 }}>
+          <Text style={[type.small, tabular, { color: colors.foregroundMuted }]}>{entry.time}</Text>
+          <Stamp colors={colors} usd={entry.costUsd} />
+        </View>
       </View>
       {entry.kind === "answer" && entry.answer !== null && entry.answer !== undefined ? (
         <AnswerChip colors={colors} value={entry.answer} />
       ) : line ? (
-        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 5, paddingRight: priceTag(entry.costUsd) ? 4 : 0 }}>
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 5 }}>
           {exception ? (
             <View style={{ paddingTop: 2 }}>
               <Icon name={exception} size={12} color={entry.outcome === "failed" ? colors.statusWarning : colors.foregroundMuted} />
@@ -373,7 +377,6 @@ export function BasketFace(props: { entry: BasketEntry; colors: Colors; full?: b
           <Text style={[type.meta, { color: colors.foregroundMuted, flex: 1 }]}>{line}</Text>
         </View>
       ) : null}
-      <Stamp colors={colors} usd={entry.costUsd} />
     </View>
   );
 }
