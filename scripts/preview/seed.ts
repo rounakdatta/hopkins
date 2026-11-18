@@ -157,14 +157,20 @@ store.putTask(
 // (a task done with its report, one that didn't work, a reminder done, one dropped).
 if (process.env.SEED_DESK === "1") {
   const at = (minutesAgo: number) => realNow - minutesAgo * MIN;
-  // With TASK_MODEL set (e.g. claude/claude-haiku-5-5), a real run that waits two minutes starts in
-  // a minute, so the machine can be seen turning. It backs nothing up.
-  if (process.env.SEED_RUN === "1") {
+  // With TASK_MODEL set (e.g. claude/claude-haiku-5-5), real runs that wait two minutes start in a
+  // minute, so the machine can be seen turning. They do nothing else.
+  // SEED_RUN=3 starts three at once, to see several cards in the drum.
+  const runs = [
+    ["t_run", "back up the photo library to the home server"],
+    ["t_run2", "tidy the downloads folder into this month's archive"],
+    ["t_run3", "sum up this week's receipts for the shared account"],
+  ].slice(0, Number(process.env.SEED_RUN ?? 0));
+  for (const [id, text] of runs) {
     store.putTask(
       task({
-        id: "t_run",
-        text: "back up the photo library to the home server",
-        instructions: "This is an automated preview of hopkins's desk: nothing is backed up. Run the shell command `sleep 240` once, then end with the report block, status done, saying 'Backed up 1,204 photos (6.1 GB).'. Do not use any other tool, and do not read or change any file.",
+        id: id!,
+        text: text!,
+        instructions: "This is an automated preview of hopkins's desk: nothing is really done. Run the shell command `sleep 110` once, then end with the report block, status done, saying 'Done in the preview.'. Do not use any other tool, and do not read or change any file.",
         state: "scheduled",
         attempts: 0,
         dueAt: realNow + MIN,

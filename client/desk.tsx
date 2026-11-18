@@ -10,10 +10,10 @@ import type { TodayView } from "../shared/model";
 import { backfillRpc } from "../shared/rpc";
 import { AskFace, BasketFace, ComingFace, MachineFace, TaskHandFace, TextLink, WaitingFace, type Act, type OpenAgent } from "./cards";
 import { Button, ChoiceRow, Section, type } from "./kit";
-import { MachineBody, Porthole } from "./machine";
-import { basketSummary, cardLabel, machineLine, tableShown, type Desk, type TableCard } from "./places";
+import { MachineBody, Porthole, type DrumCard } from "./machine";
+import { basketSummary, cardLabel, drumCards, machineHues, machineLine, tableShown, type Desk, type MachineCard, type TableCard } from "./places";
 import { Paper, useStage } from "./stage";
-import { fade, isDark, mix, shadow, space, tabular, type Colors } from "./theme";
+import { dye, fade, isDark, mix, shadow, space, tabular, type Colors } from "./theme";
 import { dayOf } from "./words";
 
 export type DeskMode = "wide" | "medium" | "narrow";
@@ -259,18 +259,38 @@ function HistoryOffer(props: { colors: Colors; noticing: TodayView["noticing"] }
 
 // --- the machine ------------------------------------------------------------------------------
 
+/**
+ * The machine's cards: one in the drum for each thing it is doing (six at most, then "+N"), each
+ * dyed its own colour, the same colour edging its card beneath. On the big machine a drum card can be
+ * picked up like its card below; on a phone's strip the drum is too small to aim at, so it only shows.
+ */
+function useDrum(machine: MachineCard[], colors: Colors, pickable: boolean) {
+  const stage = useStage();
+  const hues = machineHues(machine.map((c) => c.key));
+  const { shown, more } = drumCards(machine);
+  const cards: DrumCard[] = shown.map((card) => ({
+    key: card.key,
+    hue: hues.get(card.key)!,
+    label: cardLabel(card),
+    ...(pickable && stage ? { onPress: () => stage.lift(card.key, `drum:${card.key}`), register: (n: unknown) => stage.register(`drum:${card.key}`, n) } : {}),
+  }));
+  const edge = (key: string) => ({ borderLeftWidth: 4, borderLeftColor: dye(hues.get(key)!, colors).edge });
+  return { cards, more, edge };
+}
+
 /** On a wide desk: the machine drawn whole, what is in it beneath. */
 function MachineColumn(props: DeskProps) {
   const { desk, colors, view } = props;
   const running = desk.machine.length > 0;
   const line = machineLine(view);
+  const drum = useDrum(desk.machine, colors, true);
   return (
     <Section colors={colors} title="In the machine" count={running ? desk.machine.length : undefined}>
       <View style={{ gap: space.m }}>
-        <MachineBody colors={colors} running={running} reduced={props.reduced} size={124} />
+        <MachineBody colors={colors} running={running} reduced={props.reduced} size={124} cards={drum.cards} more={drum.more} />
         {running ? (
           desk.machine.map((card) => (
-            <Paper key={card.key} cardKey={card.key} label={cardLabel(card)} colors={colors} padding={12}>
+            <Paper key={card.key} cardKey={card.key} label={cardLabel(card)} colors={colors} padding={12} style={drum.edge(card.key)}>
               <MachineFace item={card.item} colors={colors} />
             </Paper>
           ))
@@ -295,6 +315,7 @@ function MachineStrip(props: DeskProps) {
   const running = desk.machine.length > 0;
   const line = machineLine(view);
   const dark = isDark(colors);
+  const drum = useDrum(desk.machine, colors, false);
   if (!running) {
     return (
       <View accessible accessibilityLabel={`The machine is idle.${line.detail ? ` ${line.detail}` : ""}`} style={{ flexDirection: "row", alignItems: "center", gap: space.m, paddingHorizontal: 2 }}>
@@ -309,10 +330,10 @@ function MachineStrip(props: DeskProps) {
   return (
     <Section colors={colors} title="In the machine" count={desk.machine.length}>
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.m, padding: space.m, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: mix(colors.surface0, colors.foreground, dark ? 0.03 : 0.015) }}>
-        <Porthole colors={colors} size={64} running reduced={props.reduced} />
+        <Porthole colors={colors} size={64} running reduced={props.reduced} cards={drum.cards} more={drum.more} />
         <View style={{ flex: 1, minWidth: 0, gap: space.s }}>
           {desk.machine.map((card) => (
-            <Paper key={card.key} cardKey={card.key} label={cardLabel(card)} colors={colors} padding={10}>
+            <Paper key={card.key} cardKey={card.key} label={cardLabel(card)} colors={colors} padding={10} style={drum.edge(card.key)}>
               <MachineFace item={card.item} colors={colors} />
             </Paper>
           ))}

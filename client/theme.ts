@@ -67,3 +67,28 @@ export function shadow(level: 0 | 1 | 2 | 3, dark: boolean) {
   }[level];
   return { shadowColor: "#000", shadowOffset: { width: 0, height: spec.y }, shadowRadius: spec.r, shadowOpacity: spec.o, elevation: spec.e };
 }
+
+/** A colour from a hue, in hex. */
+function hsl(h: number, sat: number, light: number): string {
+  const s = sat / 100;
+  const l = light / 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(c * 255).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+/**
+ * A machine card's dye from its hue: a soft fill and a firmer edge, toned for the theme (pastel on a
+ * light desk, deeper on a dark one) and softened toward the paper, so every hue sits calmly.
+ */
+export function dye(hue: number, colors: Colors): { fill: string; edge: string } {
+  const dark = isDark(colors);
+  return {
+    fill: mix(dark ? hsl(hue, 42, 40) : hsl(hue, 62, 76), colors.surface1, 0.15),
+    edge: dark ? hsl(hue, 48, 62) : hsl(hue, 46, 48),
+  };
+}

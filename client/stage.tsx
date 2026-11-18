@@ -70,7 +70,8 @@ interface StageApi {
   register(key: string, node: unknown | null): void;
   /** A card laid out in its place: if it is travelling there, it flies in now. */
   laidOut(key: string): void;
-  lift(key: string): void;
+  /** Picks a card up, growing from where it lies, or from another view of it (its card in the drum). */
+  lift(key: string, from?: string): void;
 }
 
 const StageContext = createContext<StageApi | null>(null);
@@ -141,8 +142,8 @@ export function useStageState(colors: Colors) {
     setTravelling((s) => new Set([...s].filter((k) => k !== key)));
   }, []);
 
-  const lift = useCallback((key: string) => {
-    void Promise.all([measure(nodes.current.get(key)), measure(root.current)]).then(([r, base]) => {
+  const lift = useCallback((key: string, from?: string) => {
+    void Promise.all([measure(nodes.current.get(from ?? key)), measure(root.current)]).then(([r, base]) => {
       setLifted({ key, from: r && base ? { x: r.x - base.x, y: r.y - base.y, w: r.w, h: r.h } : null });
     });
   }, []);
