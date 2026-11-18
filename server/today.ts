@@ -7,6 +7,7 @@ import type { Config } from "./config";
 import type { Store } from "./store";
 import type { Reminders } from "./reminders";
 import { brief } from "./checkins";
+import { basketToday, machineNow, waitingOnYou } from "./desk";
 import type { Tasks } from "./tasks";
 
 export interface Health {
@@ -39,18 +40,8 @@ export function snoozeOptions(cfg: Config, now: number): { label: string; until:
   return options;
 }
 
-/**
- * What is waiting on them, newest first: delivered and not handled yet (a repeat stays a while after
- * it went out, though its dueAt is already the next one), or due and not delivered (paused, or the
- * model is slow or down). The Today screen and the daily notes both list exactly these.
- */
-export function waitingOnYou(all: readonly Reminder[], now: number): Reminder[] {
-  const overdue = (r: Reminder) => r.state === "scheduled" && r.dueAt !== null && r.dueAt <= now;
-  const recentRepeat = (r: Reminder) =>
-    r.repeat !== null && r.state === "scheduled" && r.last !== undefined && !r.last.ackedAt && now - r.last.firedAt < 18 * 3_600_000;
-  const wentOut = (r: Reminder) => (overdue(r) ? r.dueAt! : (r.last?.firedAt ?? 0));
-  return all.filter((r) => r.state === "fired" || recentRepeat(r) || overdue(r)).sort((a, b) => wentOut(b) - wentOut(a));
-}
+// What is waiting on them lives with the rest of the desk's questions; recaps read it from here too.
+export { waitingOnYou } from "./desk";
 
 export interface NoticingView {
   suggestions: Suggestions;
@@ -151,5 +142,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       retry: t.state === "scheduled" && t.retry ? { n: t.retry.n, of: t.retry.of, why: t.retry.why.slice(0, 300) } : null,
       ...(t.tries?.length ? { tries: t.tries.map((x) => ({ when: formatWhen(x.at, cfg.tz, now, cfg.clock), outcome: x.outcome, why: x.why.slice(0, 200) })) } : {}),
     })),
+    machine: machineNow(store, cfg, noticing?.backfill ?? store.backfill()),
+    ...basketToday(store, cfg, now),
   };
 }

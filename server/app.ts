@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PluginServerContext, PluginSettingsState } from "@getpaseo/plugin/server";
 import type { TodayView } from "../shared/model";
-import { actRpc, answerRpc, backfillRpc, checkinWatch, recapsRpc, suggestionRpc, taskRpc, todayRpc, todayWatch } from "../shared/rpc";
+import { actRpc, answerRpc, backfillRpc, checkinWatch, dayRpc, daysRpc, recapsRpc, suggestionRpc, taskRpc, todayRpc, todayWatch } from "../shared/rpc";
 import { card as checkinCard, CheckIns } from "./checkins";
 import { localDateOf, zonedToInstant } from "../shared/time";
 import { hopkinsSettings, settingsSchema, type HopkinsSettings } from "../shared/settings";
@@ -27,6 +27,7 @@ import { TaskRunner, Tasks } from "./tasks";
 import { Conditions } from "./conditions";
 import { defaultDataDir, Store } from "./store";
 import { PaseoThreadPort, paseoTimelineReader, THREAD_LABEL } from "./thread-port";
+import { buildDay, buildDays, parseDate } from "./desk";
 import { buildToday } from "./today";
 import { createTools } from "./tools";
 
@@ -310,6 +311,20 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   server.handle(todayRpc, async (_input, context) => {
     link.adopt(context.paseo);
     return today();
+  });
+
+  server.handle(daysRpc, async (input, context) => {
+    link.adopt(context.paseo);
+    const from = parseDate(input.from);
+    if (!from) throw new Error(`not a date: ${input.from}`);
+    return buildDays(store, reminders, config, clock.now(), backfill.status(), from, input.days);
+  });
+
+  server.handle(dayRpc, async (input, context) => {
+    link.adopt(context.paseo);
+    const date = parseDate(input.date);
+    if (!date) throw new Error(`not a date: ${input.date}`);
+    return buildDay(store, reminders, config, clock.now(), date);
   });
 
   server.handle(actRpc, async (input, context) => {

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { BackfillStateSchema, DeliverySchema, idleBackfill, ReminderSchema, SuggestionSchema, TaskSchema, type BackfillState, type Delivery, type Reminder, type Suggestion, type Task } from "../shared/model";
+import { ArchivedTaskSchema, BackfillStateSchema, DeliverySchema, idleBackfill, ReminderSchema, SuggestionSchema, TaskSchema, type ArchivedTask, type BackfillState, type Delivery, type Reminder, type Suggestion, type Task } from "../shared/model";
 import { errorText, type Logger } from "./log";
 
 const RecapStateSchema = z.object({
@@ -28,16 +28,25 @@ const StateSchema = z.object({
   cursors: z.record(z.string(), z.object({ epoch: z.string(), seq: z.number() })).default({}),
   backfill: BackfillStateSchema.default(idleBackfill()),
   tasks: z.array(TaskSchema).default([]),
+  /**
+   * Finished tasks past the last 100, as the Week and Month views show them, for 62 days. A new key:
+   * an older hopkins drops it and loads the rest of the file.
+   */
+  archive: z.array(ArchivedTaskSchema).default([]),
 });
 export type State = z.infer<typeof StateSchema>;
 
-const emptyState = (): State => ({ version: 1, reminders: [], deliveries: [], thread: { agentId: null }, recaps: { morning: null, evening: null, sent: {} }, suggestions: [], cursors: {}, backfill: idleBackfill(), tasks: [] });
+const emptyState = (): State => ({ version: 1, reminders: [], deliveries: [], thread: { agentId: null }, recaps: { morning: null, evening: null, sent: {} }, suggestions: [], cursors: {}, backfill: idleBackfill(), tasks: [], archive: [] });
 
 const STATE_FILE = "state.json";
 const BACKUP_FILE = "state.json.bak";
 const JOURNAL_FILE = "events.jsonl";
 const JOURNAL_MAX_BYTES = 5 * 1024 * 1024;
 const KEEP_DELIVERIES = 300;
+const KEEP_CLOSED_TASKS = 100;
+/** How long finished tasks stay in the archive: this month and the last, whole. */
+export const ARCHIVE_DAYS = 62;
+const ARCHIVE_MAX = 5000;
 
 export function defaultDataDir(): string {
   const home = process.env.PASEO_HOME || path.join(os.homedir(), ".paseo");
@@ -253,12 +262,36 @@ export class Store {
     const i = this.state.tasks.findIndex((t) => t.id === task.id);
     if (i === -1) this.state.tasks.push(task);
     else this.state.tasks[i] = task;
-    // Keep every open task and the last 100 closed ones.
+    // Keep every open task and the last 100 closed ones whole; older ones go to the archive, which
+    // keeps what the Week and Month views show of them.
     const closed = this.state.tasks.filter((t) => t.state === "done" || t.state === "failed" || t.state === "cancelled");
-    if (closed.length > 100) {
-      const drop = new Set(closed.sort((a, b) => a.updatedAt - b.updatedAt).slice(0, closed.length - 100).map((t) => t.id));
+    if (closed.length > KEEP_CLOSED_TASKS) {
+      const old = closed.sort((a, b) => a.updatedAt - b.updatedAt).slice(0, closed.length - KEEP_CLOSED_TASKS);
+      const drop = new Set(old.map((t) => t.id));
       this.state.tasks = this.state.tasks.filter((t) => !drop.has(t.id));
+      const archived = this.state.archive.filter((a) => !drop.has(a.id));
+      for (const t of old) {
+        if (t.kind === "check") continue;
+        archived.push({
+          id: t.id,
+          text: t.text,
+          state: t.state as ArchivedTask["state"],
+          scope: t.scope,
+          dueAt: t.dueAt,
+          finishedAt: t.finishedAt ?? t.updatedAt,
+          ...(t.report ?? t.error ? { report: (t.report ?? t.error)!.slice(0, 400) } : {}),
+          agentId: t.agentId,
+          ...(t.tries?.length ? { tries: t.tries.length } : {}),
+        });
+      }
+      const cutoff = task.updatedAt - ARCHIVE_DAYS * 86_400_000;
+      this.state.archive = archived.filter((a) => a.finishedAt >= cutoff).slice(-ARCHIVE_MAX);
     }
+  }
+
+  /** Finished tasks past the last 100 (see putTask). */
+  archive(): readonly ArchivedTask[] {
+    return this.state.archive;
   }
 
   removeTask(id: string): void {

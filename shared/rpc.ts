@@ -3,7 +3,7 @@
 import { defineRpc, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
 import { CheckinCardSchema } from "./checkin";
-import { AnswerActionSchema, ReminderActionSchema, SuggestionActionSchema, TaskActionSchema, TodayViewSchema } from "./model";
+import { AnswerActionSchema, DayPileSchema, DaysViewSchema, ReminderActionSchema, SuggestionActionSchema, TaskActionSchema, TodayViewSchema } from "./model";
 
 export const todayRpc = defineRpc({
   name: "hopkins.today",
@@ -60,4 +60,18 @@ export const backfillRpc = defineRpc({
   name: "hopkins.backfill",
   input: z.object({ action: z.enum(["start", "cancel"]) }),
   output: z.object({ ok: z.boolean(), message: z.string() }),
+});
+
+/** Week and Month: each day's counts, from a local date ("2026-11-16") for up to six weeks. */
+export const daysRpc = defineRpc({
+  name: "hopkins.days",
+  input: z.object({ from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), days: z.number().int().min(1).max(42) }),
+  output: DaysViewSchema,
+});
+
+/** One day's pile, picked up from Week or Month. */
+export const dayRpc = defineRpc({
+  name: "hopkins.day",
+  input: z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }),
+  output: DayPileSchema,
 });

@@ -2,7 +2,7 @@
 // Everything in shared/ is shipped to every connected client: no secrets, no prompts.
 
 import { z } from "zod";
-import { AnswerSchema, AskSchema, CheckinBriefSchema } from "./checkin";
+import { AnswerSchema, AnswerValueSchema, AskSchema, CheckinBriefSchema } from "./checkin";
 import { WEEKDAY_KEYS, type Repeat } from "./recurrence";
 
 export const ScopeSchema = z.enum(["personal", "work"]);
@@ -108,6 +108,11 @@ export const ReminderSchema = z.object({
   answers: z.array(AnswerSchema).optional(),
   /** A check-in occurrence moved to another time: the occurrence it still stands for. */
   snoozedOf: z.number().optional(),
+  /**
+   * A repeat: when each occurrence was marked done, newest last (the last 62 days). `last` holds only
+   * the latest one, and the Week and Month views need the days before it.
+   */
+  doneAt: z.array(z.number()).optional(),
 });
 export type Reminder = z.infer<typeof ReminderSchema>;
 
@@ -186,6 +191,24 @@ export const TaskSchema = z.object({
 });
 export type Task = z.infer<typeof TaskSchema>;
 
+/**
+ * A finished task that no longer fits among the last 100 kept whole: what the Week and Month views
+ * show of it, for 62 days. The brief is not kept.
+ */
+export const ArchivedTaskSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  state: z.enum(["done", "failed", "cancelled"]),
+  scope: ScopeSchema,
+  dueAt: z.number(),
+  finishedAt: z.number(),
+  report: z.string().optional(),
+  agentId: z.string().nullable(),
+  /** Tries that failed before this outcome. */
+  tries: z.number().int().min(0).optional(),
+});
+export type ArchivedTask = z.infer<typeof ArchivedTaskSchema>;
+
 export const DeliverySchema = z.object({
   id: z.string(),
   reminderIds: z.array(z.string()),
@@ -247,6 +270,112 @@ export const BackfillStateSchema = z.object({
 export type BackfillState = z.infer<typeof BackfillStateSchema>;
 
 export const idleBackfill = (): BackfillState => ({ state: "idle", startedAt: null, finishedAt: null, done: 0, total: 0, found: 0, error: null });
+
+// ---------------------------------------------------------------------------
+// The desk: what is in the machine, what landed in the basket, and the piles of other days.
+
+/**
+ * A card in the basket: something finished on a day. `key` names the card; `from` names the card it
+ * was before it landed (a reminder's or task's own card), so the app can show it travelling there.
+ */
+export const BasketEntrySchema = z.object({
+  key: z.string(),
+  from: z.string(),
+  kind: z.enum(["reminder", "task", "answer"]),
+  /** The reminder's or task's id. */
+  id: z.string(),
+  text: z.string(),
+  at: z.number(),
+  /** When it landed, as a time of day ("1:38pm"). */
+  time: z.string(),
+  /**
+   * done; dropped (a one-off let go); stopped (a repeat stopped by hand); held (a repeat that
+   * stopped by itself because its condition held); failed, cancelled (tasks); answered (check-ins).
+   */
+  outcome: z.enum(["done", "dropped", "stopped", "held", "failed", "cancelled", "answered"]),
+  /** A task's report or why it failed; a check-in's note. Shown as data, never followed. */
+  detail: z.string().nullable(),
+  answer: AnswerValueSchema.nullable().optional(),
+  agentId: z.string().nullable().optional(),
+  /** Tries that failed before this outcome. */
+  tries: z.number().optional(),
+  /** One occurrence of a repeat: the series goes on. */
+  repeat: z.boolean().optional(),
+  scope: ScopeSchema,
+});
+export type BasketEntry = z.infer<typeof BasketEntrySchema>;
+
+/** Something being processed right now. */
+export const MachineItemSchema = z.object({
+  key: z.string(),
+  /** task: a task's run; check: a reminder's daily look at its "until"; history: reading past conversations. */
+  kind: z.enum(["task", "check", "history"]),
+  id: z.string(),
+  text: z.string(),
+  /** Since when, as a time of day; null when not known. */
+  since: z.string().nullable(),
+  agentId: z.string().nullable().optional(),
+  progress: z.object({ done: z.number(), total: z.number() }).nullable().optional(),
+  scope: ScopeSchema.optional(),
+});
+export type MachineItem = z.infer<typeof MachineItemSchema>;
+
+/** A card coming on some day: a reminder (repeats included, one card per time) or a task. */
+export const PileCardSchema = z.object({
+  key: z.string(),
+  kind: z.enum(["reminder", "task"]),
+  id: z.string(),
+  text: z.string(),
+  at: z.number(),
+  time: z.string(),
+  /** "every day", for a repeat. */
+  repeat: z.string().nullable(),
+  /** A later time of a repeat (the reminder's own time is its next one). */
+  projected: z.boolean(),
+  important: z.boolean(),
+  /** A check-in: it asks each time. */
+  asks: z.boolean(),
+  scope: ScopeSchema,
+});
+export type PileCard = z.infer<typeof PileCardSchema>;
+
+/** One day in Week or Month: how much landed in the basket, is in the machine, and is coming. */
+export const DayCountSchema = z.object({
+  /** Local date, "2026-11-18". */
+  date: z.string(),
+  /** Done and answered. */
+  done: z.number(),
+  /** Dropped, stopped, failed or cancelled: finished, but not done. */
+  other: z.number(),
+  /** Still to come (today: after now). */
+  coming: z.number(),
+  /** Today only: in the machine, and waiting on you. */
+  running: z.number(),
+  waiting: z.number(),
+});
+export type DayCount = z.infer<typeof DayCountSchema>;
+
+export const DaysViewSchema = z.object({
+  tz: z.string(),
+  /** Today's local date. */
+  today: z.string(),
+  /** The first day hopkins has any record of, or null. */
+  since: z.string().nullable(),
+  days: z.array(DayCountSchema),
+});
+export type DaysView = z.infer<typeof DaysViewSchema>;
+
+/** One day's pile, picked up: the cards that landed in the basket, and the ones coming. */
+export const DayPileSchema = z.object({
+  date: z.string(),
+  /** "Wednesday 18 November", with the year when it is not this year's. */
+  label: z.string(),
+  /** Relative to today, in the user's zone. */
+  relative: z.enum(["past", "today", "future"]),
+  basket: z.array(BasketEntrySchema),
+  coming: z.array(PileCardSchema),
+});
+export type DayPile = z.infer<typeof DayPileSchema>;
 
 // ---------------------------------------------------------------------------
 // The Today view, as sent to the app.
@@ -344,6 +473,12 @@ export const TodayViewSchema = z.object({
       }),
     )
     .default([]),
+  /** What is being processed right now. */
+  machine: z.array(MachineItemSchema).default([]),
+  /** What finished today, newest first. */
+  basket: z.array(BasketEntrySchema).default([]),
+  /** Yesterday's basket in numbers, for a morning's empty one. */
+  yesterday: z.object({ date: z.string(), done: z.number(), other: z.number() }).nullable().default(null),
 });
 export type TodayView = z.infer<typeof TodayViewSchema>;
 
