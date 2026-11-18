@@ -19,6 +19,8 @@ export interface FinishResult {
   status: "idle" | "error" | "permission" | "timeout";
   lastMessage: string | null;
   error?: string;
+  /** What the run has cost so far, in US dollars, when the agent says (Claude: a running total). */
+  costUsd?: number;
 }
 
 /** The narrow slice of Paseo that delivery needs, so it can be tested without a daemon. */
@@ -210,6 +212,8 @@ export class DeliveryQueue {
       // Moved on since this was queued (answered, retried, cancelled): the newer outcome has its own message.
       // A "trying again at…" note stands while that retry is still the plan.
       if (!task || task.state !== d.task.state || (d.task.retryAt !== undefined && task.dueAt !== d.task.retryAt)) return null;
+      // A newer outcome for the same task is queued: it says what is true now, so this one would only repeat it.
+      if (this.store.deliveries().some((o) => o.id !== d.id && o.task?.id === task.id && o.createdAt > d.createdAt)) return null;
       return { reminderIds: [], cue: (delivery) => taskCueText(delivery, task, this.clock.now(), this.config()), onSent: () => undefined };
     }
     if (d.kind === "note") {

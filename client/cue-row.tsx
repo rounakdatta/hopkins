@@ -16,7 +16,7 @@ function iconFor(cue: ParsedCue): string {
   if (cue.kind === "hello") return "Sparkles";
   if (cue.kind === "morning") return "Sunrise";
   if (cue.kind === "evening") return "Sunset";
-  if (cue.kind === "task") return cue.status === "done" ? "CircleCheck" : cue.status === "needs-you" ? "CircleAlert" : cue.status === "missed" ? "Clock" : cue.status === "scheduled" ? "RotateCcw" : "TriangleAlert";
+  if (cue.kind === "task") return cue.status === "done" ? "CircleCheck" : cue.status === "needs-you" || cue.status === "stopped" ? "CircleAlert" : cue.status === "missed" ? "Clock" : cue.status === "scheduled" ? "RotateCcw" : "TriangleAlert";
   return "Bell";
 }
 

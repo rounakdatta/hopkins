@@ -2,12 +2,13 @@
 // a day at the chosen time. If hopkins was down at that time it still sends
 // within three hours; later than that, the day's recap is skipped, not stacked.
 
-import type { RecapKind, Reminder } from "../shared/model";
+import type { RecapKind, Reminder, Task } from "../shared/model";
 import { addDays, formatClock, formatLocalDate, localDateOf, zonedToInstant } from "../shared/time";
 import { parseTimeOfDay } from "../shared/when";
 import type { Config } from "./config";
 import type { Clock, Reminders, Result } from "./reminders";
 import type { Store } from "./store";
+import { waitingOnYou } from "./today";
 
 const CATCH_UP_MS = 3 * 3_600_000;
 
@@ -24,6 +25,8 @@ export interface RecapData {
   doneToday: Reminder[];
   /** Evening only: titles of conversations active today (may be empty). */
   workedOn: string[];
+  /** Tasks, as the Today screen has them: waiting on them, under way, and still to come today (and tomorrow, in the evening). */
+  tasks: { needYou: Task[]; running: Task[]; today: Task[]; tomorrow: Task[] };
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -108,14 +111,25 @@ export class Recaps {
     const endOfTomorrow = zonedToInstant({ ...addDays(today, 2), hour: 0, minute: 0 }, c.tz);
     const all = this.store.reminders();
     const byDue = (a: Reminder, b: Reminder) => (a.dueAt ?? 0) - (b.dueAt ?? 0);
+    // The same "waiting" as the Today screen, so a note never calls clear what Today says needs them.
+    const waiting = waitingOnYou(all, now);
+    const later = all.filter((r) => r.state === "scheduled" && r.dueAt !== null && !waiting.includes(r));
+    const tasks = this.store.tasks().filter((t) => t.kind !== "check");
+    const tasksDue = (to: number, from = 0) => tasks.filter((t) => t.state === "scheduled" && t.dueAt >= from && t.dueAt < to).sort((a, b) => a.dueAt - b.dueAt);
     return {
       kind,
       date: formatLocalDate(today),
-      waiting: all.filter((r) => r.state === "fired").sort((a, b) => (b.last?.firedAt ?? 0) - (a.last?.firedAt ?? 0)),
-      today: all.filter((r) => r.state === "scheduled" && r.dueAt !== null && r.dueAt >= now && r.dueAt < startOfTomorrow).sort(byDue),
-      tomorrow: kind === "evening" ? all.filter((r) => r.state === "scheduled" && r.dueAt !== null && r.dueAt >= startOfTomorrow && r.dueAt < endOfTomorrow).sort(byDue) : [],
+      waiting,
+      today: later.filter((r) => r.dueAt! >= now && r.dueAt! < startOfTomorrow).sort(byDue),
+      tomorrow: kind === "evening" ? later.filter((r) => r.dueAt! >= startOfTomorrow && r.dueAt! < endOfTomorrow).sort(byDue) : [],
       doneToday: kind === "evening" ? all.filter((r) => r.state === "done" && (r.closedAt ?? 0) >= startOfToday) : [],
       workedOn: kind === "evening" ? workedOn.slice(0, 5) : [],
+      tasks: {
+        needYou: tasks.filter((t) => t.state === "needs-you" || t.state === "missed"),
+        running: tasks.filter((t) => t.state === "running"),
+        today: tasksDue(startOfTomorrow),
+        tomorrow: kind === "evening" ? tasksDue(endOfTomorrow, startOfTomorrow) : [],
+      },
     };
   }
 }

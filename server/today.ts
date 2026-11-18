@@ -2,11 +2,12 @@
 
 import type { BackfillState, Reminder, TodayItem, TodayView } from "../shared/model";
 import type { Suggestions } from "./noticing";
-import { addDays, dayLabel, formatClock, localDateOf, longDate, timeLabel, weekdayOf, zonedToInstant, formatWhen } from "../shared/time";
+import { addDays, dayLabel, formatClock, formatLocalDate, localDateOf, longDate, timeLabel, weekdayOf, zonedToInstant, formatWhen } from "../shared/time";
 import type { Config } from "./config";
 import type { Store } from "./store";
 import type { Reminders } from "./reminders";
 import { brief } from "./checkins";
+import { basketToday, machineNow, waitingOnYou } from "./desk";
 import type { Tasks } from "./tasks";
 
 export interface Health {
@@ -38,6 +39,9 @@ export function snoozeOptions(cfg: Config, now: number): { label: string; until:
   }
   return options;
 }
+
+// What is waiting on them lives with the rest of the desk's questions; recaps read it from here too.
+export { waitingOnYou } from "./desk";
 
 export interface NoticingView {
   suggestions: Suggestions;
@@ -82,10 +86,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       : null,
   });
   const all = store.reminders();
-  const recentRepeat = (r: Reminder) =>
-    r.repeat !== null && r.state === "scheduled" && r.last !== undefined && !r.last.ackedAt && now - r.last.firedAt < 18 * 3_600_000;
-  const wentOut = (r: Reminder) => (overdue(r) ? r.dueAt! : (r.last?.firedAt ?? 0));
-  const waiting = all.filter((r) => r.state === "fired" || recentRepeat(r) || overdue(r)).sort((a, b) => wentOut(b) - wentOut(a));
+  const waiting = waitingOnYou(all, now);
   const waitingIds = new Set(waiting.map((r) => r.id));
   const scheduled = all.filter((r) => r.state === "scheduled" && r.dueAt !== null && !waitingIds.has(r.id)).sort((a, b) => a.dueAt! - b.dueAt!);
   const today = scheduled.filter((r) => r.dueAt! < endOfToday);
@@ -99,6 +100,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     generatedAt: now,
     tz: cfg.tz,
     dateLabel: longDate(now, cfg.tz),
+    date: formatLocalDate(localDateOf(now, cfg.tz)),
     waiting: waiting.map((r) => item(r, true)),
     today: today.map((r) => item(r)),
     upcoming: upcoming.map((r) => item(r)),
@@ -125,19 +127,28 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     })),
     noticing: { available: noticing?.available ?? false, backfill: noticing?.backfill ?? store.backfill() },
     // The brief stays on the host; the app gets what to show.
-    tasks: (tasks?.list(now) ?? []).slice(0, 30).map((t) => ({
+    // The list is capped, but never past what needs them or what is running: the badge, the hand
+    // and the machine are counted from it.
+    tasks: ((list) => {
+      const must = list.filter((t) => t.state === "running" || t.state === "needs-you" || t.state === "missed");
+      return [...must, ...list.filter((t) => !must.includes(t))].slice(0, Math.max(30, must.length));
+    })(tasks?.list(now) ?? []).map((t) => ({
       id: t.id,
       text: t.text,
       state: t.state,
       dueAt: t.dueAt,
       when: tasks!.describe(t, now),
-      day: dayLabel(t.dueAt, cfg.tz, now),
-      time: timeLabel(t.dueAt, cfg.tz, cfg.clock),
+      // Running: since when it has been working (an answer restarts that), not when it was due.
+      day: dayLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.dueAt, cfg.tz, now),
+      time: timeLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.dueAt, cfg.tz, cfg.clock),
       report: (t.report ?? t.error ?? null)?.slice(0, 400) ?? null,
+      ...(t.state === "needs-you" && t.unreported ? { unreported: true } : {}),
       agentId: t.agentId,
       scope: t.scope,
       retry: t.state === "scheduled" && t.retry ? { n: t.retry.n, of: t.retry.of, why: t.retry.why.slice(0, 300) } : null,
       ...(t.tries?.length ? { tries: t.tries.map((x) => ({ when: formatWhen(x.at, cfg.tz, now, cfg.clock), outcome: x.outcome, why: x.why.slice(0, 200) })) } : {}),
     })),
+    machine: machineNow(store, cfg, noticing?.backfill ?? store.backfill()),
+    ...basketToday(store, cfg, now),
   };
 }

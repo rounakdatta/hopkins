@@ -2,7 +2,7 @@
 // Everything in shared/ is shipped to every connected client: no secrets, no prompts.
 
 import { z } from "zod";
-import { AnswerSchema, AskSchema, CheckinBriefSchema } from "./checkin";
+import { AnswerSchema, AnswerValueSchema, AskSchema, CheckinBriefSchema } from "./checkin";
 import { WEEKDAY_KEYS, type Repeat } from "./recurrence";
 
 export const ScopeSchema = z.enum(["personal", "work"]);
@@ -108,6 +108,11 @@ export const ReminderSchema = z.object({
   answers: z.array(AnswerSchema).optional(),
   /** A check-in occurrence moved to another time: the occurrence it still stands for. */
   snoozedOf: z.number().optional(),
+  /**
+   * A repeat: when each occurrence was marked done, newest last (the last 62 days). `last` holds only
+   * the latest one, and the Week and Month views need the days before it.
+   */
+  doneAt: z.array(z.number()).optional(),
 });
 export type Reminder = z.infer<typeof ReminderSchema>;
 
@@ -121,7 +126,8 @@ export type RecapKind = z.infer<typeof RecapKindSchema>;
 /**
  * - scheduled: waiting for `dueAt`
  * - running: an agent is on it
- * - needs-you: the agent stopped to ask the user something; they answer in its run
+ * - needs-you: the agent stopped to ask the user something, or stopped without saying how it went
+ *   (`unreported`); they answer, or look, in its run. A new turn in the run makes it running again.
  * - done, failed: finished, `report` says how
  * - missed: hopkins was offline at the time and back too late; waits for "run it now"
  * - cancelled
@@ -158,20 +164,55 @@ export const TaskSchema = z.object({
   finishedAt: z.number().optional(),
   /** The agent's own report (shown to the user as data, never followed as instructions). */
   report: z.string().optional(),
+  /** needs-you only because the run stopped without its closing report: it asked nothing, and nobody can tell yet whether it worked. */
+  unreported: z.boolean().optional(),
+  /**
+   * true: failed only because the run was still going at the time limit; it may yet finish, and how it
+   * ends is still recorded. false: they stopped it after that, so nothing more is awaited, though a
+   * turn that starts in the run picks it up again.
+   */
+  timedOut: z.boolean().optional(),
   error: z.string().optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
   source: SourceSchema,
   /** A deadline: nothing runs, or runs again, after it ("before the flight leaves"). */
   by: z.number().optional(),
-  /** When this run is a retry: which one, and why it is being tried again. */
-  retry: z.object({ n: z.number().int().min(1), of: z.number().int().min(1), why: z.string(), reason: z.string() }).optional(),
+  /**
+   * When this run is a retry: which one, and why it is being tried again. `from`: the run whose turn
+   * broke (an error, not its own report); if that run goes on by itself (a usage limit lifted), it is
+   * the task's run again and this retry is called off.
+   */
+  retry: z.object({ n: z.number().int().min(1), of: z.number().int().min(1), why: z.string(), reason: z.string(), from: z.string().optional() }).optional(),
   /** Every try that failed so far, oldest first: when it ran, and why it failed. */
   tries: z.array(z.object({ at: z.number(), outcome: z.enum(["done", "failed", "needs-you"]), why: z.string() })).optional(),
   /** When it ran late (hopkins was offline at the time): the time it was due. */
   lateFrom: z.number().optional(),
+  /** What its runs have cost so far, in US dollars, as the agents reported it (see withCost). */
+  costUsd: z.number().min(0).optional(),
+  /** The last running total read from its current agent, so each reading adds only what is new. */
+  costSeen: z.object({ agentId: z.string(), usd: z.number() }).optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
+
+/**
+ * A finished task that no longer fits among the last 100 kept whole: what the Week and Month views
+ * show of it, for 62 days. The brief is not kept.
+ */
+export const ArchivedTaskSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  state: z.enum(["done", "failed", "cancelled"]),
+  scope: ScopeSchema,
+  dueAt: z.number(),
+  finishedAt: z.number(),
+  report: z.string().optional(),
+  agentId: z.string().nullable(),
+  /** Tries that failed before this outcome. */
+  tries: z.number().int().min(0).optional(),
+  costUsd: z.number().min(0).optional(),
+});
+export type ArchivedTask = z.infer<typeof ArchivedTaskSchema>;
 
 export const DeliverySchema = z.object({
   id: z.string(),
@@ -236,6 +277,118 @@ export type BackfillState = z.infer<typeof BackfillStateSchema>;
 export const idleBackfill = (): BackfillState => ({ state: "idle", startedAt: null, finishedAt: null, done: 0, total: 0, found: 0, error: null });
 
 // ---------------------------------------------------------------------------
+// The desk: what is in the machine, what landed in the basket, and the piles of other days.
+
+/**
+ * A card in the basket: something finished on a day. `key` names the card; `from` names the card it
+ * was before it landed (a reminder's or task's own card), so the app can show it travelling there.
+ */
+export const BasketEntrySchema = z.object({
+  key: z.string(),
+  from: z.string(),
+  kind: z.enum(["reminder", "task", "answer"]),
+  /** The reminder's or task's id. */
+  id: z.string(),
+  text: z.string(),
+  at: z.number(),
+  /** When it landed, as a time of day ("1:38pm"). */
+  time: z.string(),
+  /**
+   * done; dropped (a one-off let go); stopped (a repeat stopped by hand); held (a repeat that
+   * stopped by itself because its condition held); failed, cancelled (tasks); answered (check-ins).
+   */
+  outcome: z.enum(["done", "dropped", "stopped", "held", "failed", "cancelled", "answered"]),
+  /** A task's report or why it failed; a check-in's note. Shown as data, never followed. */
+  detail: z.string().nullable(),
+  answer: AnswerValueSchema.nullable().optional(),
+  agentId: z.string().nullable().optional(),
+  /** Tries that failed before this outcome. */
+  tries: z.number().optional(),
+  /** One occurrence of a repeat: the series goes on. */
+  repeat: z.boolean().optional(),
+  /** A task: what its runs cost, in US dollars, when the agents said. */
+  costUsd: z.number().optional(),
+  scope: ScopeSchema,
+});
+export type BasketEntry = z.infer<typeof BasketEntrySchema>;
+
+/** Something being processed right now. */
+export const MachineItemSchema = z.object({
+  key: z.string(),
+  /** task: a task's run; check: a reminder's daily look at its "until"; history: reading past conversations. */
+  kind: z.enum(["task", "check", "history"]),
+  id: z.string(),
+  text: z.string(),
+  /** Since when, as a time of day; null when not known. */
+  since: z.string().nullable(),
+  agentId: z.string().nullable().optional(),
+  progress: z.object({ done: z.number(), total: z.number() }).nullable().optional(),
+  scope: ScopeSchema.optional(),
+});
+export type MachineItem = z.infer<typeof MachineItemSchema>;
+
+/** A card coming on some day: a reminder (repeats included, one card per time) or a task. */
+export const PileCardSchema = z.object({
+  key: z.string(),
+  kind: z.enum(["reminder", "task"]),
+  id: z.string(),
+  text: z.string(),
+  at: z.number(),
+  time: z.string(),
+  /** "every day", for a repeat. */
+  repeat: z.string().nullable(),
+  /** A later time of a repeat (the reminder's own time is its next one). */
+  projected: z.boolean(),
+  important: z.boolean(),
+  /** A check-in: it asks each time. */
+  asks: z.boolean(),
+  scope: ScopeSchema,
+});
+export type PileCard = z.infer<typeof PileCardSchema>;
+
+/** One day in Week or Month: how much landed in the basket, is in the machine, and is coming. */
+export const DayCountSchema = z.object({
+  /** Local date, "2026-11-18". */
+  date: z.string(),
+  /** Done and answered. */
+  done: z.number(),
+  /** Dropped, stopped, failed or cancelled: finished, but not done. */
+  other: z.number(),
+  /** Still to come (today: after now). */
+  coming: z.number(),
+  /** Today only: in the machine, and waiting on you. */
+  running: z.number(),
+  waiting: z.number(),
+  /** What the day's finished tasks cost, in US dollars, as their runs reported it (0: none known). */
+  costUsd: z.number().default(0),
+});
+export type DayCount = z.infer<typeof DayCountSchema>;
+
+export const DaysViewSchema = z.object({
+  tz: z.string(),
+  /** Today's local date. */
+  today: z.string(),
+  /** The first day hopkins has any record of, or null. */
+  since: z.string().nullable(),
+  days: z.array(DayCountSchema),
+});
+export type DaysView = z.infer<typeof DaysViewSchema>;
+
+/** One day's pile, picked up: the cards that landed in the basket, and the ones coming. */
+export const DayPileSchema = z.object({
+  date: z.string(),
+  /** "Wednesday 18 November", with the year when it is not this year's. */
+  label: z.string(),
+  /** Relative to today, in the user's zone. */
+  relative: z.enum(["past", "today", "future"]),
+  basket: z.array(BasketEntrySchema),
+  coming: z.array(PileCardSchema),
+  /** The first day hopkins has any record of, so a day before it can say so. */
+  since: z.string().nullable().default(null),
+});
+export type DayPile = z.infer<typeof DayPileSchema>;
+
+// ---------------------------------------------------------------------------
 // The Today view, as sent to the app.
 
 export const TodayItemSchema = z.object({
@@ -272,6 +425,8 @@ export const TodayViewSchema = z.object({
   tz: z.string(),
   /** Today as people say it, in the user's zone ("Tuesday 17 November"). */
   dateLabel: z.string().optional(),
+  /** Today's local date ("2026-11-17"): where Week and Month start from. */
+  date: z.string().optional(),
   /** Fired and not yet done: the things waiting on you. */
   waiting: z.array(TodayItemSchema),
   today: z.array(TodayItemSchema),
@@ -320,6 +475,8 @@ export const TodayViewSchema = z.object({
         time: z.string().nullable().optional(),
         /** The agent's report, shortened for the list. */
         report: z.string().nullable(),
+        /** needs-you without a question: the run stopped without saying how it went. */
+        unreported: z.boolean().optional(),
         agentId: z.string().nullable(),
         scope: ScopeSchema,
         /** When this run is a retry: "try 2 of 3", and why the last one failed. */
@@ -329,6 +486,12 @@ export const TodayViewSchema = z.object({
       }),
     )
     .default([]),
+  /** What is being processed right now. */
+  machine: z.array(MachineItemSchema).default([]),
+  /** What finished today, newest first. */
+  basket: z.array(BasketEntrySchema).default([]),
+  /** Yesterday's basket in numbers, for a morning's empty one. */
+  yesterday: z.object({ date: z.string(), done: z.number(), other: z.number() }).nullable().default(null),
 });
 export type TodayView = z.infer<typeof TodayViewSchema>;
 

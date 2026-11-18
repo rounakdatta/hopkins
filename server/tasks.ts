@@ -48,16 +48,38 @@ const RECENT_MS = 3 * 86_400_000;
 const START_ATTEMPTS = 3;
 /** How often a run nobody is waiting on (the connection dropped mid-wait) is picked up again. */
 const REFOLLOW_MS = 60_000;
+/** How long a re-read looks: a run still busy after this has started a turn hopkins did not see. */
+const REREAD_LOOK_MS = 15_000;
+
+/**
+ * Adds what a reading of the run's cost says is new. Claude reports a running total for its
+ * process, so only the change since the last reading of the same agent counts; a lower figure from
+ * that agent means a new process (the run was picked up again after its runtime was freed), which
+ * counts from zero. A retry's new agent starts from zero too. Reading the same figure twice (a turn
+ * re-read) adds nothing.
+ */
+export function withCost(task: Task, usd: number): Task {
+  if (!task.agentId || !Number.isFinite(usd) || usd < 0) return task;
+  const seen = task.costSeen?.agentId === task.agentId ? task.costSeen.usd : 0;
+  const added = usd >= seen ? usd - seen : usd;
+  if (added === 0 && task.costSeen?.agentId === task.agentId) return task;
+  return { ...task, costUsd: (task.costUsd ?? 0) + added, costSeen: { agentId: task.agentId, usd } };
+}
 
 export function isOpen(task: Task): boolean {
   return OPEN.includes(task.state);
 }
 
+/** Stopped, but its run may have moved on: waiting on them, or failed only at the time limit. */
+function rereadable(task: Task): boolean {
+  return task.state === "needs-you" || (task.state === "failed" && task.timedOut === true);
+}
+
 /**
  * The agent's closing block. Without one, nobody can say whether it worked, so the
- * task asks for a look instead of claiming success or failure.
+ * task asks for a look instead of claiming success or failure (`unreported`: it asked nothing).
  */
-export function parseReport(text: string | null): { state: "done" | "needs-you" | "failed"; report: string; retry?: string } {
+export function parseReport(text: string | null): { state: "done" | "needs-you" | "failed"; report: string; retry?: string; unreported?: true } {
   const raw = (text ?? "").trim();
   // Attributes in any order, with either quote, and advice of any reasonable length.
   const attr = (attrs: string, name: string): string | undefined => {
@@ -74,8 +96,8 @@ export function parseReport(text: string | null): { state: "done" | "needs-you" 
     const retry = state === "failed" ? attr(last[1] ?? "", "retry")?.trim().slice(0, 200) : undefined;
     return { state, report: (report || "(no details)").slice(0, 1_500), ...(retry ? { retry } : {}) };
   }
-  if (!raw) return { state: "needs-you", report: "It stopped without a word. Open the run to see where it got to." };
-  return { state: "needs-you", report: `It stopped without saying whether it worked. Its last words: ${raw.slice(-600)}` };
+  if (!raw) return { state: "needs-you", report: "It stopped without a word. Open the run to see where it got to.", unreported: true };
+  return { state: "needs-you", report: `It stopped without saying whether it worked. Its last words: ${raw.slice(-600)}`, unreported: true };
 }
 
 export class Tasks {
@@ -250,6 +272,12 @@ export class TaskRunner {
   retries: Retries | null = null;
   /** Tasks whose next step is being decided (by a model): nothing else touches them meanwhile. */
   private readonly deciding = new Set<string>();
+  /** Tasks whose current turn the user stopped themselves: its outcome is recorded, not told. */
+  private readonly quiet = new Set<string>();
+  /** Stopped tasks whose run must be read again where they stand, until a reading succeeds. */
+  private readonly rereads = new Set<string>();
+  /** Runs whose turn broke (an error) while a retry is decided: true once they went on by themselves. */
+  private readonly broke = new Map<string, boolean>();
 
   constructor(
     private readonly store: Store,
@@ -286,6 +314,16 @@ export class TaskRunner {
       if (now - (this.lastFollowAt.get(task.id) ?? 0) < REFOLLOW_MS) continue;
       void this.follow(task.id);
     }
+    // So is a reading that could not be done when its turn ended (no connection yet, or it dropped).
+    for (const id of [...this.rereads]) {
+      const task = this.store.getTask(id);
+      if (!task?.agentId || !rereadable(task)) {
+        this.rereads.delete(id);
+        continue;
+      }
+      if (this.following.has(id) || now - (this.lastFollowAt.get(id) ?? 0) < REFOLLOW_MS) continue;
+      void this.follow(id, true);
+    }
   }
 
   /**
@@ -294,6 +332,12 @@ export class TaskRunner {
    */
   recover(): void {
     for (const task of this.store.tasks()) {
+      // Waiting on them, or failed at the time limit: its run may have moved on while hopkins was away.
+      if (rereadable(task) && task.agentId) {
+        this.rereads.add(task.id);
+        void this.follow(task.id, true);
+        continue;
+      }
       if (task.state !== "running" || this.following.has(task.id)) continue;
       if (task.agentId) {
         void this.follow(task.id);
@@ -306,16 +350,95 @@ export class TaskRunner {
     }
   }
 
-  /** The run finished another turn: the user answered it there, so record the new outcome. */
-  onTurnFinished(agentId: string): void {
+  /**
+   * The run is working again: a new turn started (the user answered it there, or it picked itself
+   * up), or the user settled its permission prompt. It shows as running from this moment, on every
+   * view; the turn's end is followed.
+   */
+  onResumed(agentId: string, retell = false): void {
     const task = this.store.tasks().find((t) => t.agentId === agentId);
-    if (!task || task.state !== "needs-you") return;
-    this.put({ ...task, state: "running", updatedAt: this.clock.now() });
+    // A settled permission prompt is never the first sign that a broken run went on (its turn started
+    // first): Paseo also settles one as denied when the turn it was in is aborted.
+    if (!task) return retell ? undefined : this.pickUp(agentId);
+    // Its turn broke and a retry is being decided, yet it went on: the decision is dropped when it comes.
+    if (this.broke.has(task.id) && !retell) this.broke.set(task.id, true);
+    // Any new turn ends the silence of one they stopped themselves.
+    this.quiet.delete(task.id);
+    // Its turn broke (an error, not its own report) and no retry was planned, yet it went on.
+    if (task.state === "failed" && task.error && !task.report && task.timedOut === undefined && !retell) return this.takeBack(task, agentId);
+    if (!rereadable(task) && !(task.state === "failed" && task.timedOut === false)) return;
+    this.rereads.delete(task.id);
+    const now = this.clock.now();
+    // Its time limit counts from now: an answer that comes hours later still gets the whole time.
+    // `retell` (they settled a permission prompt): the same prompt again is news. A turn the run
+    // started by itself (a background job woke it) repeating its question is not.
+    this.put({ ...task, state: "running", startedAt: now, updatedAt: now, report: undefined, error: undefined, unreported: undefined, timedOut: undefined, ...(retell ? { reported: undefined } : {}) });
+    this.store.event("task-resumed", { id: task.id });
     void this.follow(task.id);
   }
 
+  /**
+   * The run finished a turn: record its outcome, unless it is already being recorded. `canceled`:
+   * the user stopped that turn themselves, so its outcome is recorded but not told.
+   */
+  onTurnFinished(agentId: string, canceled = false): void {
+    const task = this.store.tasks().find((t) => t.agentId === agentId);
+    if (!task) return;
+    if (canceled) {
+      if (task.state === "running") this.quiet.add(task.id);
+      // Past its limit and now stopped by them: it will not finish by itself, so nothing more is awaited
+      // (no re-read reopens it), though a turn that starts in it (they typed) still picks it up.
+      if (task.state === "failed" && task.timedOut) this.put({ ...task, timedOut: false });
+      return;
+    }
+    // A turn completed in a run they had stopped after its limit: it moved on, so it is awaited again.
+    if (task.state === "failed" && task.timedOut === false) {
+      this.put({ ...task, timedOut: true });
+      return this.onTurnFinished(agentId);
+    }
+    // Waiting on them, or failed at the time limit: read the run where the task stands (its start was
+    // missed, the run went on past the limit, or this is a late hook for the turn already recorded).
+    if (rereadable(task)) {
+      this.rereads.add(task.id);
+      void this.follow(task.id, true);
+    } else if (task.state === "running") void this.follow(task.id);
+  }
+
   isTaskAgent(agentId: string): boolean {
-    return this.store.tasks().some((t) => t.agentId === agentId);
+    return this.store.tasks().some((t) => t.agentId === agentId || (t.state === "scheduled" && t.retry?.from === agentId));
+  }
+
+  /** A run whose turn broke was put up for another try, then went on by itself: see `takeBack`. */
+  private pickUp(agentId: string): void {
+    const task = this.store.tasks().find((t) => t.state === "scheduled" && t.retry?.from === agentId);
+    if (task) this.takeBack(task, agentId);
+  }
+
+  /**
+   * A run whose turn broke (it hit a usage limit, say) went on by itself: it is the task's run again,
+   * on the same try, and a run planned in its place never starts, so two runs never work on the same
+   * thing.
+   */
+  private takeBack(task: Task, agentId: string): void {
+    const last = task.tries?.at(-1);
+    // The try that broke is still going: it has not failed, and it keeps the time it was set for.
+    const dropped = last !== undefined && last.at === task.startedAt;
+    const tries = dropped ? task.tries!.slice(0, -1) : task.tries;
+    const now = this.clock.now();
+    // Its time limit counts from now, as for an answer: a limit can take hours to lift. After "trying
+    // again" was told, what it says next is news even if it said it before; after a settled failure,
+    // the same failure again (a late hook for the broken turn) is not.
+    this.put({ ...task, state: "running", agentId, startedAt: now, dueAt: Math.min(task.dueAt, dropped ? last.at : now), retry: undefined, tries: tries?.length ? tries : undefined, report: undefined, error: undefined, ...(task.state === "scheduled" ? { reported: undefined } : {}), updatedAt: now });
+    this.store.event("task-resumed", { id: task.id });
+    void this.follow(task.id);
+  }
+
+  /** It went on by itself while its retry was decided: no retry, and the turn it is in is followed. */
+  private wentOn(id: string): boolean {
+    if (this.broke.get(id) !== true) return false;
+    this.store.event("task-resumed", { id });
+    void this.follow(id);
+    return true;
   }
 
   async start(id: string): Promise<void> {
@@ -331,7 +454,8 @@ export class TaskRunner {
       return;
     }
     // Claimed before any await, so a second tick never starts it twice.
-    const task: Task = { ...claimed, state: "running", attempts: claimed.attempts + 1, startedAt: now, updatedAt: now, agentId: null, report: undefined, error: undefined };
+    this.quiet.delete(id);
+    const task: Task = { ...claimed, state: "running", attempts: claimed.attempts + 1, startedAt: now, updatedAt: now, agentId: null, report: undefined, error: undefined, unreported: undefined, timedOut: undefined };
     this.put(task);
     this.following.add(id);
     let created = false;
@@ -343,7 +467,9 @@ export class TaskRunner {
         (agentId) => {
           created = true;
           const current = this.store.getTask(id);
-          if (current) this.put({ ...current, agentId, failedStarts: 0, updatedAt: this.clock.now() });
+          // From here this new run is the task's: the run it replaces can no longer take it back (a start
+          // that fails before this keeps that way open).
+          if (current) this.put({ ...current, agentId, failedStarts: 0, retry: current.retry && { ...current.retry, from: undefined }, updatedAt: this.clock.now() });
           this.store.event("task-started", { id, attempt: task.attempts });
           this.log.info("task started", { task: id, agent: agentId.slice(0, 8) });
         },
@@ -373,30 +499,63 @@ export class TaskRunner {
     }
   }
 
-  /** Waits for the run's current turn to end and records how it ended. */
-  async follow(id: string): Promise<void> {
+  /**
+   * Waits for the run's current turn to end and records how it ended. `reread`: the turn has ended
+   * already; read it where the task stands (waiting on them, or failed at the time limit).
+   */
+  async follow(id: string, reread = false): Promise<void> {
     if (this.following.has(id)) return;
     const port = this.port();
     const task = this.store.getTask(id);
-    if (!port || !task?.agentId || task.state !== "running") return;
+    if (!port || !task?.agentId || !(task.state === "running" || (reread && rereadable(task)))) return;
     this.following.add(id);
     this.lastFollowAt.set(id, this.clock.now());
+    let busy = false;
+    let resumed = false;
     try {
       const cfg = this.config();
       const deadline = (task.startedAt ?? this.clock.now()) + cfg.taskTimeoutMs;
-      const result = await port.waitForFinish(task.agentId, Math.max(60_000, deadline - this.clock.now()));
-      this.finish(id, result);
+      // A re-read only looks: the turn has ended, so the answer comes at once unless another began.
+      const result = await port.waitForFinish(task.agentId, reread ? REREAD_LOOK_MS : Math.max(60_000, deadline - this.clock.now()));
+      // Answered while this wait ran: what came back belongs to the turn before, and the new one is followed.
+      if (this.store.getTask(id)?.startedAt !== task.startedAt) {
+        resumed = true;
+        return;
+      }
+      if (reread) {
+        this.rereads.delete(id);
+        // Still busy: it started a turn hopkins did not see, so it is working again.
+        if (result.status === "timeout") busy = true;
+        // The run cannot be read (it is gone, or not loaded since a restart, so it has no words to give):
+        // the task stays as it stands, never "failed" or "stopped without a word" for that. Any other
+        // error is the run's own (its turn failed): that is recorded like any outcome.
+        const gone = result.status === "error" && /^agent not found/i.test(result.error ?? "");
+        if (result.status === "timeout" || gone || (result.status === "idle" && !result.lastMessage?.trim())) return;
+      }
+      this.finish(id, result, reread);
     } catch (err) {
       // Lost track (the connection dropped): a later tick picks it up again.
       this.log.warn("lost track of a task's run for now", { task: id, error: errorText(err) });
     } finally {
       this.following.delete(id);
+      if (busy) this.onResumed(task.agentId);
+      if (busy || resumed) void this.follow(id);
     }
   }
 
-  private finish(id: string, result: FinishResult): void {
-    const task = this.store.getTask(id);
-    if (!task || task.state !== "running") return; // cancelled meanwhile: stay quiet
+  private finish(id: string, result: FinishResult, reread = false): void {
+    // What it cost is kept whatever became of it: a cancelled or failed run spent its tokens too.
+    const costed = this.store.getTask(id);
+    if (costed && result.costUsd !== undefined) {
+      const next = withCost(costed, result.costUsd);
+      if (next !== costed) this.put(next);
+    }
+    const current = this.store.getTask(id);
+    // Cancelled (or answered, or retried) meanwhile: stay quiet.
+    if (!current || !(current.state === "running" || (reread && rereadable(current)))) return;
+    // A re-read records from "running" like any turn, in this same step: nobody sees it in between.
+    if (current.state !== "running") this.put({ ...current, state: "running", updatedAt: this.clock.now() });
+    const task = this.store.getTask(id)!;
     if (task.kind === "check") {
       this.checks?.record(task, result);
       return;
@@ -404,7 +563,7 @@ export class TaskRunner {
     const now = this.clock.now();
     const minutes = Math.round(this.config().taskTimeoutMs / 60_000);
     if (result.status === "timeout") {
-      this.settle(id, { state: "failed", error: `still going after ${minutes} minutes; it may yet finish, so open the run to see` }, now);
+      this.settle(id, { state: "failed", error: `still going after ${minutes} minutes; it may yet finish, so open the run to see`, timedOut: true }, now);
     } else if (result.status === "error") {
       this.failed(id, { error: result.error || "the agent hit an error" }, undefined, now);
     } else if (result.status === "permission") {
@@ -412,7 +571,7 @@ export class TaskRunner {
     } else {
       const parsed = parseReport(result.lastMessage);
       if (parsed.state === "failed") this.failed(id, { report: parsed.report }, parsed.retry, now);
-      else this.settle(id, { state: parsed.state, report: parsed.report }, now);
+      else this.settle(id, { state: parsed.state, report: parsed.report, ...(parsed.unreported ? { unreported: true } : {}) }, now);
     }
   }
 
@@ -429,6 +588,9 @@ export class TaskRunner {
     }
     if (this.deciding.has(id)) return;
     this.deciding.add(id);
+    // Its turn broke rather than the run saying it failed: the run may yet go on by itself.
+    const broke = patch.report === undefined ? this.store.getTask(id)?.agentId : undefined;
+    if (broke) this.broke.set(id, false);
     void (async () => {
       try {
         const task = this.store.getTask(id);
@@ -437,11 +599,11 @@ export class TaskRunner {
         const decision = await retries.decide(task, why, advice);
         const current = this.store.getTask(id);
         // Cancelled, or answered and moved on, while deciding: stay quiet.
-        if (!current || current.state !== "running" || current.attempts !== task.attempts) return;
+        if (!current || current.state !== "running" || current.attempts !== task.attempts || this.wentOn(id)) return;
         const at = this.clock.now();
         const tries = [...(current.tries ?? []), { at: current.startedAt ?? at, outcome: "failed" as const, why: why.slice(0, 400) }];
         if (decision.retry) {
-          const next: Task = { ...current, ...patch, state: "scheduled", dueAt: decision.at, agentId: null, tries, retry: { n: tries.length + 1, of: MAX_TRIES, why: why.slice(0, 400), reason: decision.reason }, updatedAt: at };
+          const next: Task = { ...current, ...patch, state: "scheduled", dueAt: decision.at, agentId: null, tries, retry: { n: tries.length + 1, of: MAX_TRIES, why: why.slice(0, 400), reason: decision.reason, ...(broke ? { from: broke } : {}) }, updatedAt: at };
           this.put(next);
           this.store.event("task-retry", { id, n: tries.length + 1, by: decision.by });
           this.log.info("task will be tried again", { task: id, try: tries.length + 1, by: decision.by });
@@ -453,9 +615,10 @@ export class TaskRunner {
       } catch (err) {
         this.log.warn("could not decide about a retry", { task: id, error: errorText(err) });
         const current = this.store.getTask(id);
-        if (current?.state === "running") this.settle(id, { state: "failed", ...patch }, this.clock.now());
+        if (current?.state === "running" && !this.wentOn(id)) this.settle(id, { state: "failed", ...patch }, this.clock.now());
       } finally {
         this.deciding.delete(id);
+        this.broke.delete(id);
       }
     })();
   }
@@ -488,17 +651,20 @@ export class TaskRunner {
     if (run) void this.start(id);
   }
 
-  private settle(id: string, patch: Pick<Task, "state"> & Partial<Pick<Task, "report" | "error">>, now: number): void {
+  private settle(id: string, patch: Pick<Task, "state"> & Partial<Pick<Task, "report" | "error" | "unreported" | "timedOut">>, now: number): void {
     const task = this.store.getTask(id);
     if (!task) return;
     const closed = patch.state === "done" || patch.state === "failed";
     const outcome = `${patch.state}:${task.tries?.length ?? 0}:${patch.report ?? patch.error ?? ""}`;
     const fresh = task.reported !== outcome;
-    const next: Task = { ...task, ...patch, updatedAt: now, ...(closed ? { finishedAt: now } : {}), ...(fresh ? { reported: outcome } : {}) };
+    // The flags describe this outcome only: an earlier one's never carry over.
+    const next: Task = { ...task, unreported: undefined, timedOut: undefined, ...patch, updatedAt: now, ...(closed ? { finishedAt: now } : {}), ...(fresh ? { reported: outcome } : {}) };
     this.put(next);
     this.store.event("task-settled", { id, state: next.state });
     // A late hook for a turn already reported leads here with the same outcome: say nothing new.
-    if (fresh) this.reporter.report(next, now);
+    // Nor about a turn they stopped themselves: they were there.
+    const quiet = this.quiet.delete(id);
+    if (fresh && !quiet) this.reporter.report(next, now);
   }
 
   private put(task: Task): void {

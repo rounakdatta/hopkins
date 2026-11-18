@@ -315,6 +315,8 @@ export class Reminders {
       r.anchor = s.anchor;
       r.repeat = repeat;
       assumed = s.assumed;
+      // Opened again after it was done: the day it was done keeps its card in the basket.
+      if (current.state === "done" && current.closedAt !== undefined) r.doneAt = [...(r.doneAt ?? []).filter((t) => t >= now - DONE_DAYS * 86_400_000), current.closedAt];
       delete r.closedAt;
     } else if (patch.repeat !== undefined) {
       // New repeat, same time of day: re-anchor on the current schedule.
@@ -352,6 +354,7 @@ export class Reminders {
       if (r.last && !r.last.ackedAt) {
         // The last one that went out is now handled; the series carries on.
         r.last.ackedAt = now;
+        recordDone(r, now);
         confirmation = `Done for now: ${r.text} — next ${this.describeDue(r, now)}.`;
       } else {
         // Done ahead of time: skip the upcoming one.
@@ -361,6 +364,7 @@ export class Reminders {
         r.firedCount += 1;
         if (next && !exhausted) {
           r.dueAt = next.instant;
+          recordDone(r, now);
           confirmation = `Done early: ${r.text} — next ${this.describeDue(r, now)}.`;
         } else {
           r.state = "done";
@@ -485,4 +489,12 @@ export class Reminders {
   localDue(r: Reminder): string | null {
     return r.dueAt === null ? null : formatLocalIso(toLocal(r.dueAt, r.tz));
   }
+}
+
+/** How long a repeat remembers each time it was marked done (see Reminder.doneAt). */
+export const DONE_DAYS = 62;
+
+/** Notes that this occurrence of a repeat was done, for the days the Week and Month views look back on. */
+function recordDone(r: Reminder, now: number): void {
+  r.doneAt = [...(r.doneAt ?? []).filter((t) => t >= now - DONE_DAYS * 86_400_000), now];
 }

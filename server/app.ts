@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PluginServerContext, PluginSettingsState } from "@getpaseo/plugin/server";
 import type { TodayView } from "../shared/model";
-import { actRpc, answerRpc, backfillRpc, checkinWatch, recapsRpc, suggestionRpc, taskRpc, todayRpc, todayWatch } from "../shared/rpc";
+import { actRpc, answerRpc, backfillRpc, checkinWatch, dayRpc, daysRpc, recapsRpc, suggestionRpc, taskRpc, todayRpc, todayWatch } from "../shared/rpc";
 import { card as checkinCard, CheckIns } from "./checkins";
 import { localDateOf, zonedToInstant } from "../shared/time";
 import { hopkinsSettings, settingsSchema, type HopkinsSettings } from "../shared/settings";
@@ -27,6 +27,7 @@ import { TaskRunner, Tasks } from "./tasks";
 import { Conditions } from "./conditions";
 import { defaultDataDir, Store } from "./store";
 import { PaseoThreadPort, paseoTimelineReader, THREAD_LABEL } from "./thread-port";
+import { buildDay, buildDays, parseDate } from "./desk";
 import { buildToday } from "./today";
 import { createTools } from "./tools";
 
@@ -179,6 +180,9 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     void scheduler.tick().then(notifyWatchers);
     notifyWatchers();
   };
+  // Every saved change reaches open screens, whichever path made it: a task starting or being
+  // answered, a reminder going out, a message being read. One state, one way out to every view.
+  const unsubscribeStore = store.onChange(notifyWatchers);
 
   // --- Settings ------------------------------------------------------------------
 
@@ -274,12 +278,25 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     }
   });
 
+  // A task's run is working again, from now: it started a turn (the user answered it there), or the
+  // user settled its permission prompt (that carries on in the same turn, so no turn starts).
+  const resumed = (retell: boolean) => async ({ agent }: { agent: { id: string } }) => {
+    try {
+      if (runner.isTaskAgent(agent.id)) runner.onResumed(agent.id, retell);
+    } catch (err) {
+      log.warn("could not note a resumed run", { error: errorText(err) });
+    }
+  };
+  server.addHook("agent.turn.before", resumed(false));
+  // A second permission prompt reads the same as the first, yet it is news: tell it again.
+  server.addHook("agent.permission.after", resumed(true));
+
   // A conversation finished a turn: note it, so noticing reads it once it settles.
   server.addHook("agent.turn.after", async ({ agent, outcome }) => {
     try {
       // A task's run finished a turn (the user answered it there): its outcome may have changed.
       if (runner.isTaskAgent(agent.id)) {
-        if (outcome.kind !== "canceled") runner.onTurnFinished(agent.id);
+        runner.onTurnFinished(agent.id, outcome.kind === "canceled");
         return;
       }
       if (outcome.kind === "canceled" || agent.parentAgentId || agent.background || agent.id === store.threadAgentId()) return;
@@ -294,6 +311,20 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   server.handle(todayRpc, async (_input, context) => {
     link.adopt(context.paseo);
     return today();
+  });
+
+  server.handle(daysRpc, async (input, context) => {
+    link.adopt(context.paseo);
+    const from = parseDate(input.from);
+    if (!from) throw new Error(`not a date: ${input.from}`);
+    return buildDays(store, reminders, config, clock.now(), backfill.status(), from, input.days);
+  });
+
+  server.handle(dayRpc, async (input, context) => {
+    link.adopt(context.paseo);
+    const date = parseDate(input.date);
+    if (!date) throw new Error(`not a date: ${input.date}`);
+    return buildDay(store, reminders, config, clock.now(), date);
   });
 
   server.handle(actRpc, async (input, context) => {
@@ -408,6 +439,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     mcp.stop();
     clearInterval(refresh);
     if (notifyTimer) clearTimeout(notifyTimer);
+    unsubscribeStore();
     unsubscribeSettings();
     watchers.clear();
     void link.stop();
