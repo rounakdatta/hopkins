@@ -454,6 +454,19 @@ describe("what the reviewer found in the second fixes", () => {
     expect(w.told.map((x) => x.state)).toEqual(["failed", "done"]);
   });
 
+  it("records a turn in a stopped run past its limit, even when hopkins missed its start", async () => {
+    // The reviewer's round-five scenario: stopped (timedOut false), then a turn whose start hopkins missed.
+    const w = world();
+    w.port.first = { status: "timeout", lastMessage: null };
+    const t = await w.asking();
+    w.runner.onTurnFinished(t.agentId!, true); // they stop it
+    w.runner.onTurnFinished(t.agentId!); // a later turn completed; its start came while hopkins was restarting
+    w.port.end({ status: "idle", lastMessage: report("done", "PR opened: #412.") });
+    await settle();
+    expect(w.tasks.get(t.id)).toMatchObject({ state: "done", report: "PR opened: #412." });
+    expect(w.told.map((x) => x.state)).toEqual(["failed", "done"]);
+  });
+
   it("records a run past its limit whose turn then failed, rather than calling it gone", async () => {
     // The reviewer's S2: the run went on past its limit, and its turn then failed (the API was overloaded).
     const w = world();

@@ -368,6 +368,11 @@ export class TaskRunner {
       if (task.state === "failed" && task.timedOut) this.put({ ...task, timedOut: false });
       return;
     }
+    // A turn completed in a run they had stopped after its limit: it moved on, so it is awaited again.
+    if (task.state === "failed" && task.timedOut === false) {
+      this.put({ ...task, timedOut: true });
+      return this.onTurnFinished(agentId);
+    }
     // Waiting on them, or failed at the time limit: read the run where the task stands (its start was
     // missed, the run went on past the limit, or this is a late hook for the turn already recorded).
     if (rereadable(task)) {
