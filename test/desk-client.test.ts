@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { addDays, dayWords, mondayOf, monthGrid, monthLabel, pileShape, rangeHeadline, shiftMonth, weekLabel } from "../client/calendar";
-import { basketSummary, clip, deskOf, firstSentence, priceTag, machineLine, outcomeLine, placesOf, tableShown, travels, type Desk } from "../client/places";
+import { basketSummary, clip, deskOf, drumCards, firstSentence, MACHINE_HUES, machineHues, priceTag, machineLine, outcomeLine, placesOf, tableShown, travels, type Desk } from "../client/places";
 import { needsYou, upcoming } from "../client/words";
 import { idleBackfill, type BasketEntry, type DayCount, type TodayItem, type TodayView } from "../shared/model";
 
@@ -228,5 +228,24 @@ describe("a pile in its box", () => {
     // A few cards keep their size; a big day thins them and draws as many as fit.
     expect(pileShape(4, 116)).toEqual({ drawn: 4, h: 7, gap: 3 });
     expect(pileShape(60, 108).drawn).toBe(36);
+  });
+});
+
+describe("the cards in the machine", () => {
+  it("are as many as what runs, up to six, and a +N says the rest exactly", () => {
+    expect(drumCards(["a", "b"])).toEqual({ shown: ["a", "b"], more: 0 });
+    expect(drumCards(["a", "b", "c", "d", "e", "f", "g", "h", "i"])).toEqual({ shown: ["a", "b", "c", "d", "e", "f"], more: 3 });
+    expect(drumCards([])).toEqual({ shown: [], more: 0 });
+  });
+
+  it("each keep a colour of their own: the same key gets the same hue, and no two running together share one", () => {
+    const keys = ["t:t_a1", "t:t_b2", "c:r_c3", "history", "t:t_d4", "t:t_e5"];
+    const hues = machineHues(keys);
+    expect(new Set(hues.values()).size).toBe(6);
+    for (const h of hues.values()) expect(MACHINE_HUES).toContain(h);
+    // Order does not matter, and a key alone gets the hue its name picks.
+    expect(machineHues([...keys].reverse())).toEqual(hues);
+    const alone = machineHues(["t:t_a1"]).get("t:t_a1");
+    expect(machineHues(["t:t_a1"]).get("t:t_a1")).toBe(alone);
   });
 });

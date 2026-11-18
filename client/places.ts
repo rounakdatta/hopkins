@@ -183,6 +183,44 @@ export function machineLine(view: TodayView): { title: string; detail: string | 
   return { title: `Working on ${items.length} things`, detail: null };
 }
 
+/** At most this many cards tumble in the drum; past it, a "+N" says how many more. */
+export const DRUM_CARDS = 6;
+
+/** The cards the drum shows: the first six, in the machine's order, and how many more there are. */
+export function drumCards<T>(items: readonly T[]): { shown: T[]; more: number } {
+  return { shown: items.slice(0, DRUM_CARDS), more: Math.max(0, items.length - DRUM_CARDS) };
+}
+
+/** The hues the machine's cards are dyed in: soft, and far enough apart to tell at a glance. */
+export const MACHINE_HUES = [152, 212, 36, 330, 266, 186] as const;
+
+/**
+ * A colour for each item in the machine. Its key picks the hue, so an item keeps its colour while it
+ * runs; two items running together never share one (up to six), the later key moving to the next
+ * free hue.
+ */
+export function machineHues(keys: readonly string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  const taken = new Set<number>();
+  for (const key of [...keys].sort()) {
+    let i = hashOf(key) % MACHINE_HUES.length;
+    for (let probe = 0; probe < MACHINE_HUES.length && taken.has(i); probe++) i = (i + 1) % MACHINE_HUES.length;
+    taken.add(i);
+    out.set(key, MACHINE_HUES[i]!);
+  }
+  return out;
+}
+
+/** FNV-1a: a small, stable hash, the same on every device. */
+function hashOf(text: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
 /** "since 1:30pm", or "212 of 618" for a history scan. */
 export function machineSince(item: MachineItem): string | null {
   if (item.progress) return `${item.progress.done} of ${item.progress.total}`;
