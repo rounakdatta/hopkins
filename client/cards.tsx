@@ -11,7 +11,7 @@ import type { BasketEntry, MachineItem, PileCard, TodayItem, TodayView } from ".
 import { backfillRpc, taskRpc } from "../shared/rpc";
 import { Answer, lastMood, Record, useAnswer } from "./checkin";
 import { Button, ChoiceRow, CompleteRing, Spinner, Tag, type } from "./kit";
-import { clip, machineSince, outcomeLine, outcomeTitle } from "./places";
+import { clip, machineSince, outcomeLine, outcomeTitle, priceTag } from "./places";
 import { fade, space, tabular, type Colors } from "./theme";
 import { spokenAt, type TaskItem } from "./words";
 
@@ -325,6 +325,25 @@ function AnswerChip(props: { colors: Colors; value: AnswerValue }) {
   );
 }
 
+/**
+ * What processing it cost, stamped on the card like a price in a shop: small, slightly turned,
+ * in muted ink. Only on cards whose runs reported a cost.
+ */
+function Stamp(props: { colors: Colors; usd: number | undefined }) {
+  const tag = priceTag(props.usd);
+  if (!tag) return null;
+  const ink = fade(props.colors.foregroundMuted, 0.9);
+  return (
+    <View
+      accessible
+      accessibilityLabel={`Cost ${tag.exact} in tokens`}
+      style={{ alignSelf: "flex-end", marginTop: 2, transform: [{ rotate: "-5deg" }], borderWidth: 1.25, borderColor: fade(props.colors.foregroundMuted, 0.55), borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}
+    >
+      <Text style={[tabular, { fontSize: 11, lineHeight: 14, fontWeight: "700", letterSpacing: 0.4, color: ink }]}>{tag.label}</Text>
+    </View>
+  );
+}
+
 /** A card in the basket: its words, when it landed, and how it went in one line. */
 export function BasketFace(props: { entry: BasketEntry; colors: Colors; full?: boolean }) {
   const { entry, colors } = props;
@@ -341,7 +360,7 @@ export function BasketFace(props: { entry: BasketEntry; colors: Colors; full?: b
       {entry.kind === "answer" && entry.answer !== null && entry.answer !== undefined ? (
         <AnswerChip colors={colors} value={entry.answer} />
       ) : line ? (
-        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 5 }}>
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 5, paddingRight: priceTag(entry.costUsd) ? 4 : 0 }}>
           {exception ? (
             <View style={{ paddingTop: 2 }}>
               <Icon name={exception} size={12} color={entry.outcome === "failed" ? colors.statusWarning : colors.foregroundMuted} />
@@ -354,6 +373,7 @@ export function BasketFace(props: { entry: BasketEntry; colors: Colors; full?: b
           <Text style={[type.meta, { color: colors.foregroundMuted, flex: 1 }]}>{line}</Text>
         </View>
       ) : null}
+      <Stamp colors={colors} usd={entry.costUsd} />
     </View>
   );
 }
@@ -599,6 +619,14 @@ export function BasketDetails(props: { entry: BasketEntry; colors: Colors; openA
       ) : (
         <Text style={[type.meta, { color: colors.foregroundMuted }]}>{outcomeLine(entry) ?? "Done."}</Text>
       )}
+      {priceTag(entry.costUsd) ? (
+        <Fact colors={colors} icon="Coins">
+          <Text style={factText(colors)}>
+            {priceTag(entry.costUsd)!.label} in tokens
+            {priceTag(entry.costUsd)!.exact !== priceTag(entry.costUsd)!.label ? <Text style={{ color: colors.foregroundMuted }}>{` (${priceTag(entry.costUsd)!.exact} exactly)`}</Text> : null}
+          </Text>
+        </Fact>
+      ) : null}
       {openRun || failed ? (
         <ChoiceRow>
           {failed ? <Button colors={colors} tone="secondary" icon="RotateCcw" label="Try again" disabled={busy} onPress={() => void run("run-now").then(props.onDone)} /> : null}

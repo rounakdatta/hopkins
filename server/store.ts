@@ -282,6 +282,7 @@ export class Store {
           ...(t.report ?? t.error ? { report: (t.report ?? t.error)!.slice(0, 400) } : {}),
           agentId: t.agentId,
           ...(t.tries?.length ? { tries: t.tries.length } : {}),
+          ...(t.costUsd !== undefined ? { costUsd: t.costUsd } : {}),
         });
       }
       const cutoff = task.updatedAt - ARCHIVE_DAYS * 86_400_000;

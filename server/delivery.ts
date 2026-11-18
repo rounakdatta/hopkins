@@ -19,6 +19,8 @@ export interface FinishResult {
   status: "idle" | "error" | "permission" | "timeout";
   lastMessage: string | null;
   error?: string;
+  /** What the run has cost so far, in US dollars, when the agent says (Claude: a running total). */
+  costUsd?: number;
 }
 
 /** The narrow slice of Paseo that delivery needs, so it can be tested without a daemon. */

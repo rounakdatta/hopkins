@@ -51,6 +51,21 @@ const REFOLLOW_MS = 60_000;
 /** How long a re-read looks: a run still busy after this has started a turn hopkins did not see. */
 const REREAD_LOOK_MS = 15_000;
 
+/**
+ * Adds what a reading of the run's cost says is new. Claude reports a running total for its
+ * process, so only the change since the last reading of the same agent counts; a lower figure from
+ * that agent means a new process (the run was picked up again after its runtime was freed), which
+ * counts from zero. A retry's new agent starts from zero too. Reading the same figure twice (a turn
+ * re-read) adds nothing.
+ */
+export function withCost(task: Task, usd: number): Task {
+  if (!task.agentId || !Number.isFinite(usd) || usd < 0) return task;
+  const seen = task.costSeen?.agentId === task.agentId ? task.costSeen.usd : 0;
+  const added = usd >= seen ? usd - seen : usd;
+  if (added === 0 && task.costSeen?.agentId === task.agentId) return task;
+  return { ...task, costUsd: (task.costUsd ?? 0) + added, costSeen: { agentId: task.agentId, usd } };
+}
+
 export function isOpen(task: Task): boolean {
   return OPEN.includes(task.state);
 }
@@ -529,6 +544,12 @@ export class TaskRunner {
   }
 
   private finish(id: string, result: FinishResult, reread = false): void {
+    // What it cost is kept whatever became of it: a cancelled or failed run spent its tokens too.
+    const costed = this.store.getTask(id);
+    if (costed && result.costUsd !== undefined) {
+      const next = withCost(costed, result.costUsd);
+      if (next !== costed) this.put(next);
+    }
     const current = this.store.getTask(id);
     // Cancelled (or answered, or retried) meanwhile: stay quiet.
     if (!current || !(current.state === "running" || (reread && rereadable(current)))) return;

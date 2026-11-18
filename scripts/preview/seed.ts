@@ -149,6 +149,7 @@ store.putTask(
     finishedAt: realNow - 19 * 3_600_000,
     tries: [{ at: realNow - 20 * 3_600_000, outcome: "failed", why: "The library's login page timed out." }],
     report: "Renewed all three books; the new due date is 9 December. The receipt is in Documents/Library.",
+    costUsd: 0.2934,
   }),
 );
 
@@ -171,10 +172,10 @@ if (process.env.SEED_DESK === "1") {
     );
   }
   store.putTask(
-    task({ id: "t_plans", text: "compare the three electricity plans for the flat", state: "done", dueAt: at(190), startedAt: at(190), finishedAt: at(150), report: "The 'Green Saver' plan is cheapest for your usage: ₹1,840 a month against ₹2,115 and ₹2,260. The comparison is in Documents/Bills/plans.md." }),
+    task({ id: "t_plans", text: "compare the three electricity plans for the flat", state: "done", dueAt: at(190), startedAt: at(190), finishedAt: at(150), report: "The 'Green Saver' plan is cheapest for your usage: ₹1,840 a month against ₹2,115 and ₹2,260. The comparison is in Documents/Bills/plans.md.", costUsd: 0.4187 }),
   );
   store.putTask(
-    task({ id: "t_dentist", text: "book a dentist appointment for a cleaning, any weekday morning", state: "failed", dueAt: at(110), startedAt: at(110), finishedAt: at(95), error: "The clinic's booking page kept timing out after the date step, three times in a row." }),
+    task({ id: "t_dentist", text: "book a dentist appointment for a cleaning, any weekday morning", state: "failed", dueAt: at(110), startedAt: at(110), finishedAt: at(95), error: "The clinic's booking page kept timing out after the date step, three times in a row.", costUsd: 1.0371 }),
   );
   clock.t = at(80);
   const bank = set({ text: "call the bank about the card replacement", when: "in 5m" }, "errands");

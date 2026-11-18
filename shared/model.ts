@@ -188,6 +188,10 @@ export const TaskSchema = z.object({
   tries: z.array(z.object({ at: z.number(), outcome: z.enum(["done", "failed", "needs-you"]), why: z.string() })).optional(),
   /** When it ran late (hopkins was offline at the time): the time it was due. */
   lateFrom: z.number().optional(),
+  /** What its runs have cost so far, in US dollars, as the agents reported it (see withCost). */
+  costUsd: z.number().min(0).optional(),
+  /** The last running total read from its current agent, so each reading adds only what is new. */
+  costSeen: z.object({ agentId: z.string(), usd: z.number() }).optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
@@ -206,6 +210,7 @@ export const ArchivedTaskSchema = z.object({
   agentId: z.string().nullable(),
   /** Tries that failed before this outcome. */
   tries: z.number().int().min(0).optional(),
+  costUsd: z.number().min(0).optional(),
 });
 export type ArchivedTask = z.infer<typeof ArchivedTaskSchema>;
 
@@ -301,6 +306,8 @@ export const BasketEntrySchema = z.object({
   tries: z.number().optional(),
   /** One occurrence of a repeat: the series goes on. */
   repeat: z.boolean().optional(),
+  /** A task: what its runs cost, in US dollars, when the agents said. */
+  costUsd: z.number().optional(),
   scope: ScopeSchema,
 });
 export type BasketEntry = z.infer<typeof BasketEntrySchema>;

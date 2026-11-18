@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { addDays, dayWords, mondayOf, monthGrid, monthLabel, rangeHeadline, shiftMonth, weekLabel } from "../client/calendar";
-import { basketSummary, clip, deskOf, firstSentence, machineLine, outcomeLine, placesOf, tableShown, travels, type Desk } from "../client/places";
+import { basketSummary, clip, deskOf, firstSentence, priceTag, machineLine, outcomeLine, placesOf, tableShown, travels, type Desk } from "../client/places";
 import { needsYou, upcoming } from "../client/words";
 import { idleBackfill, type BasketEntry, type DayCount, type TodayItem, type TodayView } from "../shared/model";
 
@@ -123,6 +123,19 @@ describe("the basket's words", () => {
   it("keeps a whole amount in the first sentence", () => {
     expect(firstSentence("Paid ₹7,345.50 for December. Receipt saved.")).toBe("Paid ₹7,345.50 for December.");
     expect(firstSentence("No full stop at all")).toBe("No full stop at all");
+  });
+});
+
+describe("the price stamp", () => {
+  it("rounds cents down, never up, and shows the exact figure beside it", () => {
+    expect(priceTag(0.4199)).toEqual({ label: "$0.41", exact: "$0.4199" });
+    expect(priceTag(26.25)).toEqual({ label: "$26.25", exact: "$26.25" });
+    expect(priceTag(0.1 + 0.2)).toEqual({ label: "$0.30", exact: "$0.30" });
+    expect(priceTag(0.004)).toEqual({ label: "<$0.01", exact: "$0.004" });
+  });
+
+  it("stamps nothing when the cost is unknown or nothing: never \"$0.00\"", () => {
+    for (const none of [undefined, null, 0, Number.NaN, -1]) expect(priceTag(none)).toBeNull();
   });
 });
 

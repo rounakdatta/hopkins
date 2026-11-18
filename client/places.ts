@@ -153,6 +153,20 @@ export function outcomeTitle(entry: BasketEntry): string {
   }
 }
 
+/**
+ * A run's cost as a price tag: cents rounded down, never up ("$0.41" for $0.4199), "<$0.01" under
+ * a cent, and the exact figure for the picked-up card and screen readers. Nothing when the cost is
+ * unknown or nothing: a stamp of "$0.00" would say nothing.
+ */
+export function priceTag(usd: number | null | undefined): { label: string; exact: string } | null {
+  if (usd === null || usd === undefined || !Number.isFinite(usd) || usd <= 0) return null;
+  // The epsilon keeps a sum like 0.1 + 0.2 (0.30000000000000004, or 0.2999…) on the cent it is.
+  const cents = Math.floor(usd * 100 + 1e-7);
+  const label = cents === 0 ? "<$0.01" : `$${(cents / 100).toFixed(2)}`;
+  const exact = `$${usd >= 0.01 ? usd.toFixed(4).replace(/0+$/, "").replace(/\.$/, ".00").replace(/\.(\d)$/, ".$10") : usd.toPrecision(2).replace(/0+$/, "")}`;
+  return { label, exact };
+}
+
 // --- the machine's words ------------------------------------------------------------------
 
 /** What the machine says under its drum: what is in it, or, idle, what it will run next. */

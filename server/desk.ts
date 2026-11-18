@@ -62,11 +62,39 @@ export function basketBetween(store: Store, cfg: Config, start: number, end: num
     if (!within(at)) continue;
     seen.add(t.id);
     const detail = (t.report ?? t.error ?? null)?.slice(0, REPORT_CHARS) ?? null;
-    out.push({ key: `t:${t.id}`, from: `t:${t.id}`, kind: "task", id: t.id, text: t.text, at, time: time(at), outcome: t.state, detail, agentId: t.agentId, ...(t.tries?.length ? { tries: t.tries.length } : {}), scope: t.scope });
+    out.push({
+      key: `t:${t.id}`,
+      from: `t:${t.id}`,
+      kind: "task",
+      id: t.id,
+      text: t.text,
+      at,
+      time: time(at),
+      outcome: t.state,
+      detail,
+      agentId: t.agentId,
+      ...(t.tries?.length ? { tries: t.tries.length } : {}),
+      ...(t.costUsd !== undefined ? { costUsd: t.costUsd } : {}),
+      scope: t.scope,
+    });
   }
   for (const a of store.archive()) {
     if (seen.has(a.id) || !within(a.finishedAt)) continue;
-    out.push({ key: `t:${a.id}`, from: `t:${a.id}`, kind: "task", id: a.id, text: a.text, at: a.finishedAt, time: time(a.finishedAt), outcome: a.state, detail: a.report ?? null, agentId: a.agentId, ...(a.tries ? { tries: a.tries } : {}), scope: a.scope });
+    out.push({
+      key: `t:${a.id}`,
+      from: `t:${a.id}`,
+      kind: "task",
+      id: a.id,
+      text: a.text,
+      at: a.finishedAt,
+      time: time(a.finishedAt),
+      outcome: a.state,
+      detail: a.report ?? null,
+      agentId: a.agentId,
+      ...(a.tries ? { tries: a.tries } : {}),
+      ...(a.costUsd !== undefined ? { costUsd: a.costUsd } : {}),
+      scope: a.scope,
+    });
   }
   return out.sort((a, b) => b.at - a.at || a.key.localeCompare(b.key));
 }

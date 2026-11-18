@@ -42,11 +42,21 @@ export class PaseoTaskPort implements TaskPort {
     );
     created(handle.id);
     const result = await withTimeout(handle.run(prompt, { timeoutMs }), timeoutMs + 60_000, "waiting for the task");
-    return { status: result.status, lastMessage: result.lastMessage, ...(result.error ? { error: result.error } : {}) };
+    return { status: result.status, lastMessage: result.lastMessage, ...(result.error ? { error: result.error } : {}), ...costOf(handle) };
   }
 
   async waitForFinish(agentId: string, timeoutMs: number): Promise<FinishResult> {
-    const result = await withTimeout(this.api().agents.ref(agentId).waitForFinish(timeoutMs), timeoutMs + 60_000, "waiting for the task");
-    return { status: result.status, lastMessage: result.lastMessage, ...(result.error ? { error: result.error } : {}) };
+    const ref = this.api().agents.ref(agentId);
+    const result = await withTimeout(ref.waitForFinish(timeoutMs), timeoutMs + 60_000, "waiting for the task");
+    return { status: result.status, lastMessage: result.lastMessage, ...(result.error ? { error: result.error } : {}), ...costOf(ref) };
   }
+}
+
+/**
+ * What the run has cost, from the agent's last snapshot (Paseo keeps it in memory, set when a turn
+ * ends; for Claude it is the process's running total). Nothing when the provider does not say.
+ */
+function costOf(handle: unknown): { costUsd?: number } {
+  const usd = (handle as { lastUsage?: { totalCostUsd?: unknown } | null }).lastUsage?.totalCostUsd;
+  return typeof usd === "number" && Number.isFinite(usd) && usd >= 0 ? { costUsd: usd } : {};
 }
