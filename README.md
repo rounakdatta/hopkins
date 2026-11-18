@@ -13,7 +13,7 @@ hopkins is built around a few rules:
 - **It asks once instead of guessing.** *"remind me to renew the passport"* gets *"Saturday at 11, or Monday at 9?"*. A date and a time make a reminder far more likely to work than a vague "later".
 - **It never loses a reminder.** Reminders that fall due while Paseo is down arrive when it's back, marked late. A busy conversation is never interrupted. Two reminders in a row both buzz.
 - **It speaks briefly, and rarely.** Each message leads with the point and fits in a phone notification. Important reminders ping once more if you haven't seen them; nothing else nags.
-- **You can always see what it has scheduled.** A **Today** screen shows what's waiting on you, what's coming, and what was delivered and whether you saw it.
+- **You can always see what it has scheduled, and what got done.** The **Today** screen is a desk: what's waiting on you and what's coming lie on the table, what hopkins is working on turns in the machine, and what got done lands in the basket. Week and Month show the same across more days.
 
 ## How it works
 
@@ -28,8 +28,9 @@ hopkins plugin (inside the Paseo daemon)
   └─ delivery    writes the reminder into the hopkins conversation → Paseo pushes it
 hopkins conversation   one agent that turns due reminders into short messages
                        and handles your replies
-Today screen           one headline · what needs you · one timeline of reminders and tasks
-                       · Noticed, reviewed one at a time; the sidebar badge counts what needs you
+Today screen           a desk: the table (what needs you, what's coming, Noticed) · the machine
+                       (what's running) · the basket (what got done) · Day, Week and Month;
+                       the sidebar badge counts what needs you
 ```
 
 - **Every agent gets four tools:** `hopkins_remind`, `hopkins_reminders`, `hopkins_change_reminder` and `hopkins_close_reminder`. They work from personal and work agents alike. A folder you mark as work tags its reminders `work`.
@@ -89,7 +90,7 @@ Then open **Settings → Plugins → hopkins** to set your time zone and work fo
 
 When a reminder arrives, reply in the hopkins conversation with "done", "snooze 1h", "tomorrow 9" or "drop it". You can also use the buttons on the Today screen.
 
-**Tasks.** The agent you ask writes a complete brief (it is the only thing the task's agent sees), and asks you first for anything it cannot find. At the time, a background agent works from that brief. It ends with a short report; without one, hopkins says "have a look" rather than "done". When it needs something only you have (a one-time code, a mismatch to decide), its question reaches you through hopkins, and you answer inside the task's run (Today → Tasks → Answer in the run). A task due while hopkins was offline for longer than the grace period runs late only when that still makes sense (see below).
+**Tasks.** The agent you ask writes a complete brief (it is the only thing the task's agent sees), and asks you first for anything it cannot find. At the time, a background agent works from that brief. It ends with a short report; without one, hopkins says "have a look" rather than "done". When it needs something only you have (a one-time code, a mismatch to decide), its question reaches you through hopkins, and you answer inside the task's run (Today → Needs you → Answer in the run). A task due while hopkins was offline for longer than the grace period runs late only when that still makes sense (see below).
 
 **Check-ins.** A repeating reminder can ask: whether you did it (a habit), or how you feel (a mood). The question arrives in the hopkins conversation with a card under it: one tap for Yes or Not today, or a drag on the mood slider, and it is recorded. You can also just say it. hopkins keeps one answer per day it was due. Answer early (you had the fruit at 11), and today's is skipped. Today shows every check-in under **Rhythms**: the last two weeks as dots (filled for yes, a ring for not today, faint for no answer) or as mood bars, with an honest count of only the days it was due. Not today is never shown as a fault.
 

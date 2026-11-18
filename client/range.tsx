@@ -110,7 +110,7 @@ export function RangeView(props: {
       ) : (
         <Waiting colors={colors} />
       )}
-      {shown ? <Legend colors={colors} /> : null}
+      {shown ? <Legend colors={colors} others={!(phone && scale === "month")} /> : null}
     </View>
   );
 }
@@ -133,7 +133,7 @@ function ArrowButton(props: { colors: Colors; icon: string; label: string; onPre
 }
 
 /** What the marks mean, once, quietly, under the picture. */
-function Legend(props: { colors: Colors }) {
+function Legend(props: { colors: Colors; others: boolean }) {
   const { colors } = props;
   const item = (swatch: ReactNode, label: string) => (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -144,7 +144,8 @@ function Legend(props: { colors: Colors }) {
   return (
     <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: space.l, rowGap: 4 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
       {item(<Bar colors={colors} kind="done" w={14} h={6} />, "done")}
-      {item(<Bar colors={colors} kind="other" w={14} h={6} />, "dropped or didn't work")}
+      {/* A phone's month shows done and coming only: no key for a mark it never draws. */}
+      {props.others ? item(<Bar colors={colors} kind="other" w={14} h={6} />, "dropped or didn't work") : null}
       {item(<Bar colors={colors} kind="coming" w={14} h={6} />, "coming")}
     </View>
   );

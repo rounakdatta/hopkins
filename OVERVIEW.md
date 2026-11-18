@@ -16,15 +16,15 @@ hopkins is a reminders companion for Paseo. Tell any agent "remind me to call th
 
 ## The Today screen
 
-A sidebar item opens Today. It shows:
+A sidebar item opens Today, laid out as a desk:
 
-- a headline that says what needs you;
-- the reminders and check-ins waiting on you;
-- one timeline of reminders and tasks;
-- your Rhythms;
-- Noticed, which you review one item at a time with undo.
+- a headline that says what needs you and what comes next;
+- the table: what's waiting on you, answerable right on its card, what's coming, and the Noticed pile, which you review one item at a time with undo;
+- the machine: what hopkins is working on right now;
+- the basket: what got done today, each card with how it went;
+- your Rhythms.
 
-The sidebar badge counts what needs you.
+Tap a card to pick it up and see everything about it. Week and Month show how much got done, is running and is coming across more days. The sidebar badge counts what needs you.
 
 ## Setup
 

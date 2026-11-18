@@ -11,7 +11,7 @@ import type { BasketEntry, MachineItem, PileCard, TodayItem, TodayView } from ".
 import { backfillRpc, taskRpc } from "../shared/rpc";
 import { Answer, lastMood, Record, useAnswer } from "./checkin";
 import { Button, ChoiceRow, CompleteRing, Spinner, Tag, type } from "./kit";
-import { machineSince, outcomeLine, outcomeTitle } from "./places";
+import { clip, machineSince, outcomeLine, outcomeTitle } from "./places";
 import { fade, space, tabular, type Colors } from "./theme";
 import { spokenAt, type TaskItem } from "./words";
 
@@ -25,9 +25,11 @@ const TOUCH = Platform.OS === "web" ? 36 : 44;
 /** A muted line with an icon: how a card says what kind of thing it is. */
 function Mark(props: { colors: Colors; icon: string; text: string; tint?: string; strong?: boolean }) {
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 5, minWidth: 0 }}>
-      <Icon name={props.icon} size={12} color={props.tint ?? props.colors.foregroundMuted} />
-      <Text style={[type.meta, { color: props.colors.foregroundMuted, flexShrink: 1, fontWeight: props.strong ? "600" : "400" }]} numberOfLines={1}>
+    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 5, minWidth: 0 }}>
+      <View style={{ paddingTop: 3 }}>
+        <Icon name={props.icon} size={12} color={props.tint ?? props.colors.foregroundMuted} />
+      </View>
+      <Text style={[type.meta, { color: props.colors.foregroundMuted, flexShrink: 1, fontWeight: props.strong ? "600" : "400" }]}>
         {props.text}
       </Text>
     </View>
@@ -120,10 +122,8 @@ export function WaitingFace(props: { item: TodayItem; colors: Colors; busy: bool
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}>
         <CompleteRing colors={colors} label={`Done: ${item.text}`} disabled={props.busy} onPress={() => props.act(item.id, "done")} />
         <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-          <Text style={[type.title, { color: colors.foreground, fontWeight: "500" }]} numberOfLines={3}>
-            {item.text}
-          </Text>
-          <Text style={[type.meta, { color: colors.foregroundMuted }]} numberOfLines={2}>
+          <Text style={[type.title, { color: colors.foreground, fontWeight: "500" }]}>{item.text}</Text>
+          <Text style={[type.meta, { color: colors.foregroundMuted }]}>
             {meta}
             {item.important && item.seen === false ? " · not opened yet" : ""}
           </Text>
@@ -172,9 +172,7 @@ export function AskFace(props: { item: TodayItem; ask: CheckinBrief; colors: Col
         </View>
         <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
           <Text style={[type.title, { color: colors.foreground, fontWeight: "600" }]}>{ask.question}</Text>
-          <Text style={[type.meta, { color: colors.foregroundMuted }]} numberOfLines={2}>
-            {meta}
-          </Text>
+          <Text style={[type.meta, { color: colors.foregroundMuted }]}>{meta}</Text>
         </View>
         <Exceptions colors={colors} scope={item.scope} />
         {props.compact ? null : (
@@ -238,15 +236,9 @@ export function TaskHandFace(props: { task: TaskItem; colors: Colors; openAgent:
         <Icon name={task.state === "missed" ? "Clock" : "CircleAlert"} size={19} color={colors.statusWarning} />
       </View>
       <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-        <Text style={[type.title, { color: colors.foreground, fontWeight: "500" }]} numberOfLines={3}>
-          {task.text}
-        </Text>
+        <Text style={[type.title, { color: colors.foreground, fontWeight: "500" }]}>{task.text}</Text>
         <Text style={[type.meta, { color: colors.statusWarning, fontWeight: "600" }]}>{taskStatus(task)}</Text>
-        {task.report ? (
-          <Text style={[type.meta, { color: colors.foreground }]} numberOfLines={4}>
-            {task.report}
-          </Text>
-        ) : null}
+        {task.report ? <Text style={[type.meta, { color: colors.foreground }]}>{clip(task.report, 280)}</Text> : null}
         <View style={{ paddingTop: 4 }}>
           <ChoiceRow>
             {task.state === "missed" ? (
@@ -278,9 +270,7 @@ export function ComingFace(props: { colors: Colors } & ({ kind: "reminder"; item
         </Text>
         {props.kind === "reminder" ? <Exceptions colors={colors} important={props.item.important} scope={props.item.scope} /> : <Exceptions colors={colors} scope={props.task.scope} />}
       </View>
-      <Text style={[type.title, { color: colors.foreground }]} numberOfLines={3}>
-        {text}
-      </Text>
+      <Text style={[type.title, { color: colors.foreground }]}>{text}</Text>
       {props.kind === "task" ? (
         props.task.retry ? (
           <Mark colors={colors} icon="RotateCcw" tint={colors.accent} text={`Trying again · try ${props.task.retry.n} of ${props.task.retry.of}`} />
@@ -312,9 +302,7 @@ export function MachineFace(props: { item: MachineItem; colors: Colors }) {
       <Text style={[type.meta, { color: colors.foregroundMuted, fontWeight: "600" }]} numberOfLines={1}>
         {item.kind === "check" ? "Checking whether it can stop" : item.kind === "history" ? "Reading history" : "Working on it"}
       </Text>
-      <Text style={[type.title, { color: colors.foreground }]} numberOfLines={3}>
-        {item.kind === "history" ? "Your past conversations" : item.text}
-      </Text>
+      <Text style={[type.title, { color: colors.foreground }]}>{item.kind === "history" ? "Your past conversations" : item.text}</Text>
       {item.progress ? (
         <View accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: item.progress.total, now: item.progress.done }} style={{ height: 3, borderRadius: 2, backgroundColor: colors.surface2, overflow: "hidden", marginTop: 4 }}>
           <View style={{ width: `${Math.floor((item.progress.done / Math.max(1, item.progress.total)) * 100)}%`, height: 3, backgroundColor: colors.accent }} />
@@ -347,9 +335,7 @@ export function BasketFace(props: { entry: BasketEntry; colors: Colors; full?: b
   return (
     <View style={{ gap: 4 }}>
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.s }}>
-        <Text style={[type.title, { color: colors.foreground, flex: 1, minWidth: 0 }]} numberOfLines={props.full ? undefined : 2}>
-          {entry.text}
-        </Text>
+        <Text style={[type.title, { color: colors.foreground, flex: 1, minWidth: 0 }]}>{entry.text}</Text>
         <Text style={[type.small, tabular, { color: colors.foregroundMuted, paddingTop: 2 }]}>{entry.time}</Text>
       </View>
       {entry.kind === "answer" && entry.answer !== null && entry.answer !== undefined ? (
@@ -365,9 +351,7 @@ export function BasketFace(props: { entry: BasketEntry; colors: Colors; full?: b
               <Icon name="PartyPopper" size={12} color={colors.accent} />
             </View>
           ) : null}
-          <Text style={[type.meta, { color: colors.foregroundMuted, flex: 1 }]} numberOfLines={props.full ? undefined : 2}>
-            {line}
-          </Text>
+          <Text style={[type.meta, { color: colors.foregroundMuted, flex: 1 }]}>{line}</Text>
         </View>
       ) : null}
     </View>

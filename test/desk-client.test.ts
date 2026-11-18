@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { addDays, dayWords, mondayOf, monthGrid, monthLabel, rangeHeadline, shiftMonth, weekLabel } from "../client/calendar";
-import { basketSummary, deskOf, firstSentence, machineLine, outcomeLine, placesOf, tableShown, travels, type Desk } from "../client/places";
+import { basketSummary, clip, deskOf, firstSentence, machineLine, outcomeLine, placesOf, tableShown, travels, type Desk } from "../client/places";
 import { needsYou, upcoming } from "../client/words";
 import { idleBackfill, type BasketEntry, type DayCount, type TodayItem, type TodayView } from "../shared/model";
 
@@ -104,6 +104,20 @@ describe("the basket's words", () => {
     expect(outcomeLine(entry({ key: "t", from: "t", outcome: "failed", detail: "The site was down. Tried twice." }))).toBe("Didn't work: The site was down.");
     expect(outcomeLine(entry({ key: "a", from: "r", kind: "answer", outcome: "answered", answer: 72 }))).toBe("Good");
     expect(outcomeLine(entry({ key: "r", from: "r", kind: "reminder", outcome: "stopped" }))).toBe("Stopped repeating");
+  });
+
+  it("cuts a long line only between words, so no word is ever cut in half", () => {
+    const long = "New list without a car saved to Nextcloud: https://nextcloud.example/f/39208 and the old list stays as it was in the same folder";
+    for (const max of [30, 50, 64, 90]) {
+      const short = clip(long, max);
+      const kept = short.slice(0, -1);
+      expect(short.endsWith("…")).toBe(true);
+      expect(long.startsWith(kept)).toBe(true);
+      expect(kept.length).toBeLessThanOrEqual(max);
+      // What follows the kept part in the original starts a new word.
+      expect(long.slice(kept.length)).toMatch(/^[\s,;:.–-]/);
+    }
+    expect(clip("short enough", 40)).toBe("short enough");
   });
 
   it("keeps a whole amount in the first sentence", () => {

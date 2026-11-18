@@ -96,6 +96,18 @@ export function firstSentence(text: string): string {
 }
 
 /**
+ * A long line made short in whole words, never mid-word: the face shows this, the picked-up card
+ * the whole of it.
+ */
+export function clip(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max + 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut.slice(0, max)).replace(/[\s,;:.–-]+$/, "")}…`;
+}
+
+/**
  * The line under a basket card's words: how it went, said once. Done needs no word (the basket
  * says it); the exceptions say what happened.
  */
@@ -104,7 +116,7 @@ export function outcomeLine(entry: BasketEntry): string | null {
     case "answered":
       return entry.answer !== null && entry.answer !== undefined ? answerLabel(entry.answer) : null;
     case "done":
-      if (entry.kind === "task") return entry.detail ? firstSentence(entry.detail) : null;
+      if (entry.kind === "task") return entry.detail ? clip(firstSentence(entry.detail), 160) : null;
       return entry.repeat ? "Done for this time" : null;
     case "held":
       return "It held, so it stopped by itself";
@@ -115,7 +127,7 @@ export function outcomeLine(entry: BasketEntry): string | null {
     case "cancelled":
       return "Cancelled";
     case "failed":
-      return entry.detail ? `Didn't work: ${firstSentence(entry.detail)}` : "Didn't work";
+      return entry.detail ? `Didn't work: ${clip(firstSentence(entry.detail), 140)}` : "Didn't work";
   }
 }
 

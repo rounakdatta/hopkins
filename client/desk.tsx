@@ -218,9 +218,7 @@ function NoticedDeck(props: DeskProps) {
           />
         ))}
         <View style={{ borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: hover ? mix(colors.surface1, colors.foreground, 0.02) : colors.surface1, padding: 14, gap: 6, ...shadow(hover ? 2 : 1, dark) }}>
-          <Text style={[type.title, { color: colors.foreground }]} numberOfLines={2}>
-            {top.text}
-          </Text>
+          <Text style={[type.title, { color: colors.foreground }]}>{top.text}</Text>
           <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.s }}>
             <Text style={[type.meta, { color: colors.foregroundMuted, flex: 1 }]}>{top.whenLabel ? `Suggested ${top.whenLabel}` : "From your conversations and notes"}</Text>
             <Text style={[type.meta, tabular, { color: colors.accent, fontWeight: "500" }]}>{n === 1 ? "Review" : `1 of ${n}`}</Text>
@@ -280,7 +278,7 @@ function MachineColumn(props: DeskProps) {
           <View style={{ alignItems: "center", gap: 2, paddingHorizontal: space.s }}>
             <Text style={[type.meta, { color: colors.foregroundMuted, fontWeight: "600" }]}>{line.title}</Text>
             {line.detail ? (
-              <Text style={[type.small, { color: colors.foregroundMuted, textAlign: "center" }]} numberOfLines={3}>
+              <Text style={[type.small, { color: colors.foregroundMuted, textAlign: "center" }]}>
                 {line.detail}
               </Text>
             ) : null}
@@ -301,7 +299,7 @@ function MachineStrip(props: DeskProps) {
     return (
       <View accessible accessibilityLabel={`The machine is idle.${line.detail ? ` ${line.detail}` : ""}`} style={{ flexDirection: "row", alignItems: "center", gap: space.m, paddingHorizontal: 2 }}>
         <Porthole colors={colors} size={34} running={false} reduced={props.reduced} />
-        <Text style={[type.meta, { color: colors.foregroundMuted, flex: 1 }]} numberOfLines={2}>
+        <Text style={[type.meta, { color: colors.foregroundMuted, flex: 1 }]}>
           <Text style={{ fontWeight: "600" }}>Idle</Text>
           {line.detail ? ` · ${line.detail}` : ""}
         </Text>
