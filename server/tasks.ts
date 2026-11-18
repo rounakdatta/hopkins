@@ -410,9 +410,10 @@ export class TaskRunner {
     const dropped = last !== undefined && last.at === task.startedAt;
     const tries = dropped ? task.tries!.slice(0, -1) : task.tries;
     const now = this.clock.now();
-    // Its time limit counts from now, as for an answer: a limit can take hours to lift. What it says
-    // next is news, even if it said the same before it broke: they last heard that it broke.
-    this.put({ ...task, state: "running", agentId, startedAt: now, dueAt: Math.min(task.dueAt, dropped ? last.at : now), retry: undefined, tries: tries?.length ? tries : undefined, report: undefined, error: undefined, reported: undefined, updatedAt: now });
+    // Its time limit counts from now, as for an answer: a limit can take hours to lift. After "trying
+    // again" was told, what it says next is news even if it said it before; after a settled failure,
+    // the same failure again (a late hook for the broken turn) is not.
+    this.put({ ...task, state: "running", agentId, startedAt: now, dueAt: Math.min(task.dueAt, dropped ? last.at : now), retry: undefined, tries: tries?.length ? tries : undefined, report: undefined, error: undefined, ...(task.state === "scheduled" ? { reported: undefined } : {}), updatedAt: now });
     this.store.event("task-resumed", { id: task.id });
     void this.follow(task.id);
   }
@@ -439,9 +440,7 @@ export class TaskRunner {
     }
     // Claimed before any await, so a second tick never starts it twice.
     this.quiet.delete(id);
-    // From here this new run is the task's: the run it was planned to replace can no longer take it back.
-    const retry = claimed.retry && { ...claimed.retry, from: undefined };
-    const task: Task = { ...claimed, state: "running", attempts: claimed.attempts + 1, startedAt: now, updatedAt: now, agentId: null, retry, report: undefined, error: undefined, unreported: undefined, timedOut: undefined };
+    const task: Task = { ...claimed, state: "running", attempts: claimed.attempts + 1, startedAt: now, updatedAt: now, agentId: null, report: undefined, error: undefined, unreported: undefined, timedOut: undefined };
     this.put(task);
     this.following.add(id);
     let created = false;
@@ -453,7 +452,9 @@ export class TaskRunner {
         (agentId) => {
           created = true;
           const current = this.store.getTask(id);
-          if (current) this.put({ ...current, agentId, failedStarts: 0, updatedAt: this.clock.now() });
+          // From here this new run is the task's: the run it replaces can no longer take it back (a start
+          // that fails before this keeps that way open).
+          if (current) this.put({ ...current, agentId, failedStarts: 0, retry: current.retry && { ...current.retry, from: undefined }, updatedAt: this.clock.now() });
           this.store.event("task-started", { id, attempt: task.attempts });
           this.log.info("task started", { task: id, agent: agentId.slice(0, 8) });
         },

@@ -843,6 +843,39 @@ describe("a run that hit a usage limit, then went on by itself", () => {
     expect(w.told.map((x) => x.state)).toEqual(["failed", "done"]);
   });
 
+  it("says a failure once when the hook for the broken turn's start comes late", async () => {
+    const w = world();
+    w.runner.retries = new Retries(null, w.env.reminders, w.env.clock, w.env.config, silentLogger);
+    w.port.first = { status: "error", lastMessage: null, error: LIMIT };
+    const r = w.tasks.create({ text: "web check-in", instructions: brief, when: "in 1m" }, w.source, "personal");
+    if (!r.ok) throw new Error(r.error);
+    w.env.store.putTask({ ...r.task, tries: [{ at: 1, outcome: "failed", why: "a" }, { at: 2, outcome: "failed", why: "b" }], attempts: 2 });
+    w.env.clock.advance(2 * 60_000);
+    w.runner.tick(w.env.clock.now());
+    await settle();
+    await settle();
+    expect(w.told.map((x) => x.state)).toEqual(["failed"]);
+    w.runner.onResumed(w.tasks.get(r.task.id)!.agentId!); // the hook for that turn's start, after its end
+    w.port.end({ status: "error", lastMessage: null, error: LIMIT }); // the run is idle: the same error at once
+    await settle();
+    await settle();
+    expect(w.tasks.get(r.task.id)!.state).toBe("failed");
+    expect(w.told.map((x) => x.state)).toEqual(["failed"]);
+  });
+
+  it("keeps the way back open when the retry's start fails before its run exists", async () => {
+    const { w, id, agent } = await broken(null);
+    w.port.run = async () => {
+      throw new Error("the daemon went away");
+    };
+    w.env.clock.advance(16 * 60_000);
+    w.runner.tick(w.env.clock.now());
+    await settle();
+    expect(w.tasks.get(id)).toMatchObject({ state: "scheduled", failedStarts: 1, retry: { from: agent } });
+    w.runner.onResumed(agent); // "continue" in the first run
+    expect(w.tasks.get(id)).toMatchObject({ state: "running", agentId: agent });
+  });
+
   it("never takes a run back on a settled permission prompt alone", async () => {
     // Paseo settles a pending prompt as denied when the turn it was in is aborted: no sign it went on.
     const planned = await broken(null);
