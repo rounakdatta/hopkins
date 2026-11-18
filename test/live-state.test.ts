@@ -42,7 +42,7 @@ class ManualPort implements TaskPort {
   private ends: ((r: FinishResult) => void)[] = [];
   async run(task: Task, _prompt: string, _cfg: Config, created: (agentId: string) => void): Promise<FinishResult> {
     this.runs++;
-    created(`run-${task.id}`);
+    created(task.attempts > 1 ? `run-${task.id}-${task.attempts}` : `run-${task.id}`); // a retry is a new run
     return this.first;
   }
   waitForFinish(agentId: string, timeoutMs: number): Promise<FinishResult> {
@@ -768,6 +768,94 @@ describe("a run that hit a usage limit, then went on by itself", () => {
     expect(w.tasks.get(id)).toMatchObject({ state: "running", startedAt: w.env.clock.now() });
     // Not a one-minute wait that then says "still going after 90 minutes" while it works.
     expect(w.port.waits.at(-1)).toEqual({ agentId: agent, timeoutMs: 90 * 60_000 });
+  });
+
+  it("dates a run it took back by when it was set for, not by the retry it called off", async () => {
+    const { w, id, agent } = await broken(null);
+    const setFor = w.tasks.get(id)!.tries![0]!.at; // when the try that broke started
+    w.env.clock.advance(2 * 60_000);
+    w.runner.onResumed(agent);
+    w.env.clock.advance(5 * 60_000);
+    w.port.end({ status: "idle", lastMessage: DONE });
+    await settle();
+    const t = w.tasks.get(id)!;
+    expect(t).toMatchObject({ state: "done", dueAt: setFor }); // not "Done · 12:49pm" at 12:39pm
+    expect(t.dueAt).toBeLessThanOrEqual(w.env.clock.now());
+  });
+
+  it("tells a question again when the run asks it after it was taken back", async () => {
+    const w = world();
+    w.runner.retries = new Retries(null, w.env.reminders, w.env.clock, w.env.config, silentLogger);
+    const t = await w.asking();
+    const agent = t.agentId!;
+    w.runner.onResumed(agent); // they answer in the run
+    w.env.clock.advance(60_000);
+    w.port.end({ status: "error", lastMessage: null, error: LIMIT }); // then it hits its limit
+    await settle();
+    await settle();
+    expect(w.tasks.get(t.id)).toMatchObject({ state: "scheduled", retry: { from: agent } });
+    w.env.clock.advance(60_000);
+    w.runner.onResumed(agent); // "continue", on another account
+    w.port.end({ status: "idle", lastMessage: report("needs-you", QUESTION) }); // it asks the same thing again
+    await settle();
+    expect(w.tasks.get(t.id)!.state).toBe("needs-you");
+    // The last thing they heard was "trying again": the question is news.
+    expect(w.told.map((x) => x.state)).toEqual(["needs-you", "scheduled", "needs-you"]);
+  });
+
+  it("lets go of the first run once the retry has started", async () => {
+    const { w, id, agent } = await broken(null);
+    w.port.first = { status: "idle", lastMessage: `Looked.\n<hopkins-report status="failed" retry="no">\nThe site is gone.\n</hopkins-report>` };
+    w.env.clock.advance(16 * 60_000);
+    w.runner.tick(w.env.clock.now()); // the retry runs, and fails for good
+    await settle();
+    await settle();
+    expect(w.tasks.get(id)).toMatchObject({ state: "failed", agentId: `${agent}-2` });
+    w.tasks.runNow(id); // "Try again"
+    expect(w.runner.isTaskAgent(agent)).toBe(false);
+    w.runner.onResumed(agent); // a stray turn in the first run does not take the new try over
+    expect(w.tasks.get(id)).toMatchObject({ state: "scheduled", agentId: null });
+  });
+
+  it("takes back a run that broke on its last try, when it goes on", async () => {
+    const w = world();
+    w.runner.retries = new Retries(null, w.env.reminders, w.env.clock, w.env.config, silentLogger);
+    w.port.first = { status: "error", lastMessage: null, error: LIMIT };
+    const r = w.tasks.create({ text: "web check-in", instructions: brief, when: "in 1m" }, w.source, "personal");
+    if (!r.ok) throw new Error(r.error);
+    const earlier = [{ at: 1, outcome: "failed" as const, why: "a" }, { at: 2, outcome: "failed" as const, why: "b" }];
+    w.env.store.putTask({ ...r.task, tries: earlier, attempts: 2 }); // its third and last try is next
+    w.env.clock.advance(2 * 60_000);
+    w.runner.tick(w.env.clock.now());
+    await settle();
+    await settle();
+    const agent = w.tasks.get(r.task.id)!.agentId!;
+    expect(w.tasks.get(r.task.id)).toMatchObject({ state: "failed", error: LIMIT });
+    w.env.clock.advance(3 * 3_600_000); // the limit lifts
+    w.runner.onResumed(agent); // "continue"
+    expect(w.tasks.get(r.task.id)).toMatchObject({ state: "running", agentId: agent, startedAt: w.env.clock.now(), tries: earlier });
+    expect(w.tasks.get(r.task.id)!.error).toBeUndefined();
+    expect(w.view().tasks.find((x) => x.id === r.task.id)).toMatchObject({ state: "running" });
+    expect(w.port.waits.at(-1)).toEqual({ agentId: agent, timeoutMs: 90 * 60_000 });
+    w.port.end({ status: "idle", lastMessage: DONE });
+    await settle();
+    expect(w.tasks.get(r.task.id)).toMatchObject({ state: "done" });
+    expect(w.told.map((x) => x.state)).toEqual(["failed", "done"]);
+  });
+
+  it("never takes a run back on a settled permission prompt alone", async () => {
+    // Paseo settles a pending prompt as denied when the turn it was in is aborted: no sign it went on.
+    const planned = await broken(null);
+    planned.w.runner.onResumed(planned.agent, true);
+    expect(planned.w.tasks.get(planned.id)).toMatchObject({ state: "scheduled", agentId: null, retry: { from: planned.agent } });
+
+    const llm = new HeldLlm();
+    const deciding = await broken(llm);
+    deciding.w.runner.onResumed(deciding.agent, true); // while its retry is decided
+    llm.answer('{"retry": true, "in_minutes": 30, "reason": "the limit resets later"}');
+    await settle();
+    await settle();
+    expect(deciding.w.tasks.get(deciding.id)).toMatchObject({ state: "scheduled", agentId: null });
   });
 
   it("leaves the retry alone when the run itself reported the failure", async () => {

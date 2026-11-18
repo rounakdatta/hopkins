@@ -342,11 +342,15 @@ export class TaskRunner {
    */
   onResumed(agentId: string, retell = false): void {
     const task = this.store.tasks().find((t) => t.agentId === agentId);
-    if (!task) return this.pickUp(agentId);
+    // A settled permission prompt is never the first sign that a broken run went on (its turn started
+    // first): Paseo also settles one as denied when the turn it was in is aborted.
+    if (!task) return retell ? undefined : this.pickUp(agentId);
     // Its turn broke and a retry is being decided, yet it went on: the decision is dropped when it comes.
-    if (this.broke.has(task.id)) this.broke.set(task.id, true);
+    if (this.broke.has(task.id) && !retell) this.broke.set(task.id, true);
     // Any new turn ends the silence of one they stopped themselves.
     this.quiet.delete(task.id);
+    // Its turn broke (an error, not its own report) and no retry was planned, yet it went on.
+    if (task.state === "failed" && task.error && !task.report && task.timedOut === undefined && !retell) return this.takeBack(task, agentId);
     if (!rereadable(task) && !(task.state === "failed" && task.timedOut === false)) return;
     this.rereads.delete(task.id);
     const now = this.clock.now();
@@ -389,19 +393,26 @@ export class TaskRunner {
     return this.store.tasks().some((t) => t.agentId === agentId || (t.state === "scheduled" && t.retry?.from === agentId));
   }
 
-  /**
-   * A run whose turn broke (it hit a usage limit, say) was put up for another try, then went on by
-   * itself: it is the task's run again, on the same try, and the run planned in its place never
-   * starts, so two runs never work on the same thing.
-   */
+  /** A run whose turn broke was put up for another try, then went on by itself: see `takeBack`. */
   private pickUp(agentId: string): void {
     const task = this.store.tasks().find((t) => t.state === "scheduled" && t.retry?.from === agentId);
-    if (!task) return;
+    if (task) this.takeBack(task, agentId);
+  }
+
+  /**
+   * A run whose turn broke (it hit a usage limit, say) went on by itself: it is the task's run again,
+   * on the same try, and a run planned in its place never starts, so two runs never work on the same
+   * thing.
+   */
+  private takeBack(task: Task, agentId: string): void {
     const last = task.tries?.at(-1);
-    const tries = last && last.at === task.startedAt ? task.tries!.slice(0, -1) : task.tries;
-    // Its time limit counts from now, as for an answer: a limit can take hours to lift.
+    // The try that broke is still going: it has not failed, and it keeps the time it was set for.
+    const dropped = last !== undefined && last.at === task.startedAt;
+    const tries = dropped ? task.tries!.slice(0, -1) : task.tries;
     const now = this.clock.now();
-    this.put({ ...task, state: "running", agentId, startedAt: now, retry: undefined, tries: tries?.length ? tries : undefined, report: undefined, error: undefined, updatedAt: now });
+    // Its time limit counts from now, as for an answer: a limit can take hours to lift. What it says
+    // next is news, even if it said the same before it broke: they last heard that it broke.
+    this.put({ ...task, state: "running", agentId, startedAt: now, dueAt: Math.min(task.dueAt, dropped ? last.at : now), retry: undefined, tries: tries?.length ? tries : undefined, report: undefined, error: undefined, reported: undefined, updatedAt: now });
     this.store.event("task-resumed", { id: task.id });
     void this.follow(task.id);
   }
@@ -428,7 +439,9 @@ export class TaskRunner {
     }
     // Claimed before any await, so a second tick never starts it twice.
     this.quiet.delete(id);
-    const task: Task = { ...claimed, state: "running", attempts: claimed.attempts + 1, startedAt: now, updatedAt: now, agentId: null, report: undefined, error: undefined, unreported: undefined, timedOut: undefined };
+    // From here this new run is the task's: the run it was planned to replace can no longer take it back.
+    const retry = claimed.retry && { ...claimed.retry, from: undefined };
+    const task: Task = { ...claimed, state: "running", attempts: claimed.attempts + 1, startedAt: now, updatedAt: now, agentId: null, retry, report: undefined, error: undefined, unreported: undefined, timedOut: undefined };
     this.put(task);
     this.following.add(id);
     let created = false;
