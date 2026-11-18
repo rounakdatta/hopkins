@@ -20,11 +20,11 @@ A sidebar item opens Today, laid out as a desk:
 
 - a headline that says what needs you and what comes next;
 - the table: what's waiting on you, answerable right on its card, what's coming, and the Noticed pile, which you review one item at a time with undo;
-- the machine: what hopkins is working on right now;
-- the basket: what got done today, each card with how it went;
+- the machine: what hopkins is working on right now, each task on its own coloured card;
+- the basket: what got done today, each card with how it went and, for a task, what its run cost in tokens;
 - your Rhythms.
 
-Tap a card to pick it up and see everything about it. Week and Month show how much got done, is running and is coming across more days. The sidebar badge counts what needs you.
+Tap a card to pick it up and see everything about it. Week and Month show how much got done, is running and is coming across more days, and what each day's tasks cost. Today follows a task as it changes: answer a task in its run and it leaves Needs you at once. The sidebar badge counts what needs you.
 
 ## Setup
 

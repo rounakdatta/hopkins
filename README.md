@@ -2,7 +2,7 @@
 
 **A Paseo plugin that remembers what you asked to be reminded of, and brings it back at the right moment, in one conversation you can reply to.**
 
-![The Today screen: check-ins waiting with Yes / Not today and a mood slider, and a timeline of what comes next](assets/01-today.png)
+![The Today screen as a desk: check-ins waiting on the table, three tasks in the machine, and what got done today in the basket](assets/01-desk.png)
 
 Say *"remind me to call Ma on Sunday at 10"* to any agent in [Paseo](https://paseo.sh). On Sunday at 10 a conversation called **hopkins** says *"Call Ma. You'd said Sunday morning."*, and your phone buzzes. Answer right there: *"done"*, *"snooze an hour"*, *"move it to 6"*.
 

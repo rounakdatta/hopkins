@@ -9,11 +9,13 @@
   },
   "icon": "assets/icon.png",
   "media": [
-    "assets/01-today.png",
-    "assets/02-conversation.png",
-    "assets/03-phone.png",
-    "assets/04-today-dark.png",
-    "assets/05-noticed.png"
+    "assets/01-desk.png",
+    "assets/02-desk-dark.png",
+    "assets/03-week.png",
+    "assets/04-picked-up.png",
+    "assets/05-conversation.png",
+    "assets/06-phone.png",
+    "assets/07-noticed.png"
   ],
   "requirements": {
     "paseo": "^0.16.1"
