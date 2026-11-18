@@ -179,6 +179,9 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     void scheduler.tick().then(notifyWatchers);
     notifyWatchers();
   };
+  // Every saved change reaches open screens, whichever path made it: a task starting or being
+  // answered, a reminder going out, a message being read. One state, one way out to every view.
+  const unsubscribeStore = store.onChange(notifyWatchers);
 
   // --- Settings ------------------------------------------------------------------
 
@@ -271,6 +274,15 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     } catch (err) {
       log.error("could not attach the hopkins tools", { error: errorText(err) });
       return undefined;
+    }
+  });
+
+  // A task's run started a turn: the user answered it there, so it is working again, from now.
+  server.addHook("agent.turn.before", async ({ agent }) => {
+    try {
+      if (runner.isTaskAgent(agent.id)) runner.onTurnStarted(agent.id);
+    } catch (err) {
+      log.warn("could not note a started turn", { error: errorText(err) });
     }
   });
 
@@ -408,6 +420,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     mcp.stop();
     clearInterval(refresh);
     if (notifyTimer) clearTimeout(notifyTimer);
+    unsubscribeStore();
     unsubscribeSettings();
     watchers.clear();
     void link.stop();

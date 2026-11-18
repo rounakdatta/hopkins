@@ -55,9 +55,9 @@ export function isOpen(task: Task): boolean {
 
 /**
  * The agent's closing block. Without one, nobody can say whether it worked, so the
- * task asks for a look instead of claiming success or failure.
+ * task asks for a look instead of claiming success or failure (`unreported`: it asked nothing).
  */
-export function parseReport(text: string | null): { state: "done" | "needs-you" | "failed"; report: string; retry?: string } {
+export function parseReport(text: string | null): { state: "done" | "needs-you" | "failed"; report: string; retry?: string; unreported?: true } {
   const raw = (text ?? "").trim();
   // Attributes in any order, with either quote, and advice of any reasonable length.
   const attr = (attrs: string, name: string): string | undefined => {
@@ -74,8 +74,8 @@ export function parseReport(text: string | null): { state: "done" | "needs-you" 
     const retry = state === "failed" ? attr(last[1] ?? "", "retry")?.trim().slice(0, 200) : undefined;
     return { state, report: (report || "(no details)").slice(0, 1_500), ...(retry ? { retry } : {}) };
   }
-  if (!raw) return { state: "needs-you", report: "It stopped without a word. Open the run to see where it got to." };
-  return { state: "needs-you", report: `It stopped without saying whether it worked. Its last words: ${raw.slice(-600)}` };
+  if (!raw) return { state: "needs-you", report: "It stopped without a word. Open the run to see where it got to.", unreported: true };
+  return { state: "needs-you", report: `It stopped without saying whether it worked. Its last words: ${raw.slice(-600)}`, unreported: true };
 }
 
 export class Tasks {
@@ -306,11 +306,28 @@ export class TaskRunner {
     }
   }
 
-  /** The run finished another turn: the user answered it there, so record the new outcome. */
-  onTurnFinished(agentId: string): void {
+  /**
+   * The run started another turn: the user answered it there (or it picked itself up), so it is
+   * working again, from this moment. Every view shows that at once; the turn's end is followed.
+   */
+  onTurnStarted(agentId: string): void {
     const task = this.store.tasks().find((t) => t.agentId === agentId);
     if (!task || task.state !== "needs-you") return;
-    this.put({ ...task, state: "running", updatedAt: this.clock.now() });
+    const now = this.clock.now();
+    // Its time limit counts from now: an answer that comes hours later still gets the whole time.
+    this.put({ ...task, state: "running", startedAt: now, updatedAt: now, report: undefined, unreported: undefined });
+    this.store.event("task-resumed", { id: task.id });
+    void this.follow(task.id);
+  }
+
+  /** The run finished a turn: record its outcome, unless it is already being recorded. */
+  onTurnFinished(agentId: string): void {
+    const task = this.store.tasks().find((t) => t.agentId === agentId);
+    if (!task) return;
+    // needs-you here: its start was missed (hopkins was away), or this is a late hook for the turn already recorded.
+    // Failed at the time limit: the run went on, and has ended now; how it ended is the truth.
+    if (task.state === "needs-you" || (task.state === "failed" && task.timedOut)) this.put({ ...task, state: "running", updatedAt: this.clock.now() });
+    else if (task.state !== "running") return;
     void this.follow(task.id);
   }
 
@@ -331,7 +348,7 @@ export class TaskRunner {
       return;
     }
     // Claimed before any await, so a second tick never starts it twice.
-    const task: Task = { ...claimed, state: "running", attempts: claimed.attempts + 1, startedAt: now, updatedAt: now, agentId: null, report: undefined, error: undefined };
+    const task: Task = { ...claimed, state: "running", attempts: claimed.attempts + 1, startedAt: now, updatedAt: now, agentId: null, report: undefined, error: undefined, unreported: undefined, timedOut: undefined };
     this.put(task);
     this.following.add(id);
     let created = false;
@@ -404,7 +421,7 @@ export class TaskRunner {
     const now = this.clock.now();
     const minutes = Math.round(this.config().taskTimeoutMs / 60_000);
     if (result.status === "timeout") {
-      this.settle(id, { state: "failed", error: `still going after ${minutes} minutes; it may yet finish, so open the run to see` }, now);
+      this.settle(id, { state: "failed", error: `still going after ${minutes} minutes; it may yet finish, so open the run to see`, timedOut: true }, now);
     } else if (result.status === "error") {
       this.failed(id, { error: result.error || "the agent hit an error" }, undefined, now);
     } else if (result.status === "permission") {
@@ -412,7 +429,7 @@ export class TaskRunner {
     } else {
       const parsed = parseReport(result.lastMessage);
       if (parsed.state === "failed") this.failed(id, { report: parsed.report }, parsed.retry, now);
-      else this.settle(id, { state: parsed.state, report: parsed.report }, now);
+      else this.settle(id, { state: parsed.state, report: parsed.report, ...(parsed.unreported ? { unreported: true } : {}) }, now);
     }
   }
 
@@ -488,13 +505,14 @@ export class TaskRunner {
     if (run) void this.start(id);
   }
 
-  private settle(id: string, patch: Pick<Task, "state"> & Partial<Pick<Task, "report" | "error">>, now: number): void {
+  private settle(id: string, patch: Pick<Task, "state"> & Partial<Pick<Task, "report" | "error" | "unreported" | "timedOut">>, now: number): void {
     const task = this.store.getTask(id);
     if (!task) return;
     const closed = patch.state === "done" || patch.state === "failed";
     const outcome = `${patch.state}:${task.tries?.length ?? 0}:${patch.report ?? patch.error ?? ""}`;
     const fresh = task.reported !== outcome;
-    const next: Task = { ...task, ...patch, updatedAt: now, ...(closed ? { finishedAt: now } : {}), ...(fresh ? { reported: outcome } : {}) };
+    // The flags describe this outcome only: an earlier one's never carry over.
+    const next: Task = { ...task, unreported: undefined, timedOut: undefined, ...patch, updatedAt: now, ...(closed ? { finishedAt: now } : {}), ...(fresh ? { reported: outcome } : {}) };
     this.put(next);
     this.store.event("task-settled", { id, state: next.state });
     // A late hook for a turn already reported leads here with the same outcome: say nothing new.

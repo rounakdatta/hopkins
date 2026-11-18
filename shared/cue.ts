@@ -17,7 +17,7 @@ export interface ParsedCue {
   kind: CueKind;
   /** The reminder texts the cue is about. */
   items: string[];
-  /** For a task: how it went ("done", "needs-you", "failed", "missed"). */
+  /** For a task: how it went ("done", "needs-you", "stopped", "failed", "missed"). */
   status?: string;
   /** For a due cue: the check-ins it carries. */
   asks?: CueAsk[];
@@ -64,7 +64,7 @@ export function cueSummary(cue: ParsedCue): string {
   if (cue.kind === "note") return "A note from hopkins";
   if (cue.kind === "task") {
     const what = cue.items[0] ?? "a task";
-    const lead: Record<string, string> = { done: "Done", "needs-you": "Needs you", failed: "Didn't work", missed: "Didn't start", scheduled: "Trying again" };
+    const lead: Record<string, string> = { done: "Done", "needs-you": "Needs you", stopped: "Stopped without saying how it went", failed: "Didn't work", missed: "Didn't start", scheduled: "Trying again" };
     return `${lead[cue.status ?? "done"] ?? "Task"}: ${what}`;
   }
   const list = cue.items.length === 0 ? "" : cue.items.length <= 3 ? cue.items.join(", ") : `${cue.items.slice(0, 3).join(", ")} and ${cue.items.length - 3} more`;

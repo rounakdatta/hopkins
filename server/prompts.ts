@@ -105,6 +105,13 @@ export function recapCueText(delivery: Delivery, data: RecapData, now: number, c
   if (data.tomorrow.length) lines.push("Tomorrow:", ...list(data.tomorrow.slice(0, 5), true));
   if (data.doneToday.length) lines.push(`Done today: ${data.doneToday.slice(0, 6).map((r) => quote(r.text)).join(", ")}`);
   if (data.workedOn.length) lines.push(`Conversations active today: ${data.workedOn.map(quote).join(", ")}`);
+  // Tasks as the Today screen shows them, so the note and the screen never disagree about what is open.
+  const why = (t: Task) => (t.state === "missed" ? "did not start, hopkins was offline" : t.unreported ? "stopped without saying how it went" : "asks them something in its run");
+  const at = (t: Task) => ` at ${formatWhen(t.dueAt, cfg.tz, now, cfg.clock)}`;
+  if (data.tasks.needYou.length) lines.push("Tasks waiting on them:", ...data.tasks.needYou.slice(0, 5).map((t, i) => `${i + 1}. ${quote(t.text)}: ${why(t)}`));
+  if (data.tasks.running.length) lines.push(`Tasks under way: ${data.tasks.running.slice(0, 5).map((t) => quote(t.text)).join(", ")}`);
+  if (data.tasks.today.length) lines.push("Tasks hopkins will do today:", ...data.tasks.today.slice(0, 5).map((t, i) => `${i + 1}. ${quote(t.text)}${at(t)}`));
+  if (data.tasks.tomorrow.length) lines.push("Tasks hopkins will do tomorrow:", ...data.tasks.tomorrow.slice(0, 5).map((t, i) => `${i + 1}. ${quote(t.text)}${at(t)}`));
   if (lines.length === 1) lines.push("(The list is empty.)");
   lines.push(`</hopkins:recap>`);
   lines.push(
@@ -146,7 +153,7 @@ export function taskPrompt(task: Task, cfg: Config, now: number): string {
     `<hopkins-report status="done">`,
     `What happened, point first, in at most three short lines for a phone: the outcome, the evidence (what you checked, where things are saved). With status "needs-you": the one question they must answer.`,
     `</hopkins-report>`,
-    `Use status "needs-you" when you are waiting for them (they will answer here), and "failed" when it cannot be done.`,
+    `Use status "needs-you" when you are waiting for them (they will answer here), and "failed" when it cannot be done. After they answer, carry on, and end with the block again whenever you stop.`,
     `With "failed", add retry="…" when you can tell whether trying again could work: a site or service that was down, "in 20m"; a window that opens later, the local time just after it opens ("10:46"); something only they can fix, or that must not be repeated, "no". hopkins tries again at most a few times.`,
     ...(task.tries?.length ? [``, `Earlier tries failed: ${task.tries.map((t) => quote(t.why.slice(0, 200))).join("; ")}. Check what state things were left in before acting again.`] : []),
   ].join("\n");
@@ -154,7 +161,9 @@ export function taskPrompt(task: Task, cfg: Config, now: number): string {
 
 /** How a task went, for the hopkins conversation to tell the user. The report is the task agent's, so it is quoted. */
 export function taskCueText(delivery: Delivery, task: Task, now: number, cfg: Config): string {
-  const state = delivery.task?.state ?? task.state;
+  const queued = delivery.task?.state ?? task.state;
+  // Stopped without its closing report: it asked nothing, so it is told (and shown) as a stop, not a question.
+  const state = queued === "needs-you" && task.unreported ? "stopped" : queued;
   const when = formatWhen(task.lateFrom ?? task.dueAt, cfg.tz, now, cfg.clock);
   const failures = task.tries?.length ?? 0;
   const retryAt = delivery.task?.retryAt;
@@ -169,6 +178,7 @@ export function taskCueText(delivery: Delivery, task: Task, now: number, cfg: Co
       ? `Tell them it is done, on the ${nth} try, in one or two short lines, point first: the outcome and where things are, from the report.${lateLine}`
       : `Tell them it is done, in one or two short lines, point first: the outcome and where things are, from the report.${lateLine}`,
     "needs-you": `Tell them, point first, the one thing it needs from them, from the report, and that they answer it in the task's run (hopkins's Today screen, under Tasks).`,
+    stopped: `It stopped without its closing report, so nobody can tell yet whether it worked. Tell them, point first, where it got to, from its last words, and that they can look at the run from hopkins's Today screen (under Tasks). Say it needs an answer only if its last words ask them something.`,
     failed: failures > 1
       ? `Tell them, point first, that it did not work after ${failures} tries and why, from the report, in one or two short lines; they can try again or open the run from hopkins's Today screen.`
       : `Tell them, point first, that it did not work and why, from the report, in one or two short lines; they can open the run from hopkins's Today screen.`,

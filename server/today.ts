@@ -39,6 +39,19 @@ export function snoozeOptions(cfg: Config, now: number): { label: string; until:
   return options;
 }
 
+/**
+ * What is waiting on them, newest first: delivered and not handled yet (a repeat stays a while after
+ * it went out, though its dueAt is already the next one), or due and not delivered (paused, or the
+ * model is slow or down). The Today screen and the daily notes both list exactly these.
+ */
+export function waitingOnYou(all: readonly Reminder[], now: number): Reminder[] {
+  const overdue = (r: Reminder) => r.state === "scheduled" && r.dueAt !== null && r.dueAt <= now;
+  const recentRepeat = (r: Reminder) =>
+    r.repeat !== null && r.state === "scheduled" && r.last !== undefined && !r.last.ackedAt && now - r.last.firedAt < 18 * 3_600_000;
+  const wentOut = (r: Reminder) => (overdue(r) ? r.dueAt! : (r.last?.firedAt ?? 0));
+  return all.filter((r) => r.state === "fired" || recentRepeat(r) || overdue(r)).sort((a, b) => wentOut(b) - wentOut(a));
+}
+
 export interface NoticingView {
   suggestions: Suggestions;
   available: boolean;
@@ -82,10 +95,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       : null,
   });
   const all = store.reminders();
-  const recentRepeat = (r: Reminder) =>
-    r.repeat !== null && r.state === "scheduled" && r.last !== undefined && !r.last.ackedAt && now - r.last.firedAt < 18 * 3_600_000;
-  const wentOut = (r: Reminder) => (overdue(r) ? r.dueAt! : (r.last?.firedAt ?? 0));
-  const waiting = all.filter((r) => r.state === "fired" || recentRepeat(r) || overdue(r)).sort((a, b) => wentOut(b) - wentOut(a));
+  const waiting = waitingOnYou(all, now);
   const waitingIds = new Set(waiting.map((r) => r.id));
   const scheduled = all.filter((r) => r.state === "scheduled" && r.dueAt !== null && !waitingIds.has(r.id)).sort((a, b) => a.dueAt! - b.dueAt!);
   const today = scheduled.filter((r) => r.dueAt! < endOfToday);
@@ -134,6 +144,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       day: dayLabel(t.dueAt, cfg.tz, now),
       time: timeLabel(t.dueAt, cfg.tz, cfg.clock),
       report: (t.report ?? t.error ?? null)?.slice(0, 400) ?? null,
+      ...(t.state === "needs-you" && t.unreported ? { unreported: true } : {}),
       agentId: t.agentId,
       scope: t.scope,
       retry: t.state === "scheduled" && t.retry ? { n: t.retry.n, of: t.retry.of, why: t.retry.why.slice(0, 300) } : null,

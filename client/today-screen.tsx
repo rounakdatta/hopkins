@@ -655,7 +655,8 @@ function TaskRow(props: { task: TaskItem; colors: Colors; openAgent: ((agentId: 
   const look: Record<TaskItem["state"], { icon: string | null; tint: string; status: string }> = {
     scheduled: { icon: "Clock", tint: colors.foregroundMuted, status: task.when },
     running: { icon: null, tint: colors.foregroundMuted, status: task.time && task.day === "Today" ? `Working on it since ${task.time}` : "Working on it now" },
-    "needs-you": { icon: "CircleAlert", tint: colors.statusWarning, status: "Needs your answer" },
+    // Only a question is something to answer; a run that stopped without a word just needs a look.
+    "needs-you": { icon: "CircleAlert", tint: colors.statusWarning, status: task.unreported ? "Stopped without saying how it went" : "Needs your answer" },
     missed: { icon: "Clock", tint: colors.statusWarning, status: `Didn't start ${spokenAt(task.day, task.time, task.when)}: hopkins was offline` },
     done: { icon: "CircleCheck", tint: colors.foregroundMuted, status: task.tries?.length ? `Done on try ${task.tries.length + 1} · ${task.when}` : `Done · ${task.when}` },
     failed: { icon: "TriangleAlert", tint: colors.foregroundMuted, status: (task.tries?.length ?? 0) > 1 ? `Didn't work after ${task.tries!.length} tries · ${task.when}` : `Didn't work · ${task.when}` },
@@ -666,7 +667,7 @@ function TaskRow(props: { task: TaskItem; colors: Colors; openAgent: ((agentId: 
   const buttons =
     task.state === "needs-you" ? (
       <>
-        {openRun ? <Button colors={colors} tone="primary" compact icon="MessageCircle" label="Answer in the run" disabled={busy} onPress={openRun} /> : null}
+        {openRun ? <Button colors={colors} tone="primary" compact icon="MessageCircle" label={task.unreported ? "Open the run" : "Answer in the run"} disabled={busy} onPress={openRun} /> : null}
         <Button colors={colors} tone="quiet" compact label="Cancel" a11y={`Cancel ${task.text}`} disabled={busy} onPress={() => void run("cancel")} />
       </>
     ) : task.state === "missed" ? (

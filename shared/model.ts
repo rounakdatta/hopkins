@@ -121,7 +121,8 @@ export type RecapKind = z.infer<typeof RecapKindSchema>;
 /**
  * - scheduled: waiting for `dueAt`
  * - running: an agent is on it
- * - needs-you: the agent stopped to ask the user something; they answer in its run
+ * - needs-you: the agent stopped to ask the user something, or stopped without saying how it went
+ *   (`unreported`); they answer, or look, in its run. A new turn in the run makes it running again.
  * - done, failed: finished, `report` says how
  * - missed: hopkins was offline at the time and back too late; waits for "run it now"
  * - cancelled
@@ -158,6 +159,10 @@ export const TaskSchema = z.object({
   finishedAt: z.number().optional(),
   /** The agent's own report (shown to the user as data, never followed as instructions). */
   report: z.string().optional(),
+  /** needs-you only because the run stopped without its closing report: it asked nothing, and nobody can tell yet whether it worked. */
+  unreported: z.boolean().optional(),
+  /** failed only because the run was still going at the time limit: it may yet finish, and how it ends is still recorded. */
+  timedOut: z.boolean().optional(),
   error: z.string().optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
@@ -320,6 +325,8 @@ export const TodayViewSchema = z.object({
         time: z.string().nullable().optional(),
         /** The agent's report, shortened for the list. */
         report: z.string().nullable(),
+        /** needs-you without a question: the run stopped without saying how it went. */
+        unreported: z.boolean().optional(),
         agentId: z.string().nullable(),
         scope: ScopeSchema,
         /** When this run is a retry: "try 2 of 3", and why the last one failed. */

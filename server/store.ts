@@ -49,6 +49,7 @@ export class Store {
   private readonly file: string;
   private readonly backup: string;
   private readonly journal: string;
+  private readonly listeners = new Set<() => void>();
 
   constructor(
     readonly dir: string,
@@ -86,6 +87,15 @@ export class Store {
     this.state = emptyState();
   }
 
+  /**
+   * Called after every save. Every change is saved, so this is the one place no change can slip
+   * past: whatever shows the state (the Today screen, the badge, the cards) refreshes from here.
+   */
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
   save(): void {
     const json = `${JSON.stringify(this.state)}\n`;
     const tmp = `${this.file}.tmp-${process.pid}`;
@@ -107,6 +117,13 @@ export class Store {
       fs.closeSync(dfd);
     } catch {
       // Directory fsync is not supported everywhere; the rename is still atomic.
+    }
+    for (const listener of this.listeners) {
+      try {
+        listener();
+      } catch (err) {
+        this.log.warn("a change listener failed", { error: errorText(err) });
+      }
     }
   }
 
