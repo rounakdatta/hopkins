@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addDays, dayWords, mondayOf, monthGrid, monthLabel, rangeHeadline, shiftMonth, weekLabel } from "../client/calendar";
+import { addDays, dayWords, mondayOf, monthGrid, monthLabel, pileShape, rangeHeadline, shiftMonth, weekLabel } from "../client/calendar";
 import { basketSummary, clip, deskOf, firstSentence, priceTag, machineLine, outcomeLine, placesOf, tableShown, travels, type Desk } from "../client/places";
 import { needsYou, upcoming } from "../client/words";
 import { idleBackfill, type BasketEntry, type DayCount, type TodayItem, type TodayView } from "../shared/model";
@@ -76,6 +76,28 @@ describe("the desk's places", () => {
     // The done card is what travelled; the repeat's next time simply appears.
     expect(moves.filter((m) => m.from === "r:r1")).toHaveLength(1);
     expect(moves).toHaveLength(3);
+  });
+
+  it("flies a card that keeps its name into the basket: a task out of the machine, a reminder out of your hand", () => {
+    const before = deskOf(
+      view({
+        waiting: [reminder("r9", "call the bank", now - 600_000)],
+        tasks: [task("t1", "running")],
+        machine: [{ key: "t:t1", kind: "task", id: "t1", text: "x", since: "1pm" }],
+      }),
+    );
+    const after = deskOf(
+      view({
+        tasks: [task("t1", "done")],
+        basket: [entry({ key: "t:t1", from: "t:t1", outcome: "done" }), entry({ key: "r:r9", from: "r:r9", kind: "reminder", outcome: "done" })],
+      }),
+    );
+    expect(travels(placesOf(before), after)).toEqual([
+      { key: "t:t1", from: "t:t1", to: "basket" },
+      { key: "r:r9", from: "r:r9", to: "basket" },
+    ]);
+    // Already in the basket: it stays put.
+    expect(travels(placesOf(after), after)).toEqual([]);
   });
 
   it("moves nothing when nothing changed place", () => {
@@ -191,5 +213,20 @@ describe("the calendar", () => {
     expect(rangeHeadline(week, today, "2026-11-17", "week")).toBe("This week: 7 done so far, 1 in the machine and 9 still to come.");
     expect(rangeHeadline([day("2026-10-26"), day("2026-11-01")], today, "2026-11-17", "month")).toBe("Before hopkins started.");
     expect(rangeHeadline([day("2026-11-23", { coming: 4 })], today, "2026-11-17", "week")).toBe("4 coming.");
+  });
+});
+
+describe("a pile in its box", () => {
+  it("never grows taller than its box, however many cards a day holds", () => {
+    for (const height of [108, 116, 14]) {
+      for (let n = 1; n <= 200; n++) {
+        const { drawn, h, gap } = pileShape(n, height);
+        expect(drawn * h + (drawn - 1) * gap).toBeLessThanOrEqual(height);
+        expect(h).toBeGreaterThanOrEqual(2);
+      }
+    }
+    // A few cards keep their size; a big day thins them and draws as many as fit.
+    expect(pileShape(4, 116)).toEqual({ drawn: 4, h: 7, gap: 3 });
+    expect(pileShape(60, 108).drawn).toBe(36);
   });
 });

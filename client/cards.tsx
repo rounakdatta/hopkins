@@ -460,7 +460,7 @@ export function ReminderDetails(props: { item: TodayItem; colors: Colors; busy: 
           </Fact>
         ) : null}
       </View>
-      {item.ask ? <DetailAnswer item={item} ask={item.ask} colors={colors} waiting={props.waiting} /> : null}
+      {item.ask ? <DetailAnswer item={item} ask={item.ask} colors={colors} waiting={props.waiting} onDone={props.onDone} /> : null}
       <View style={{ gap: space.s, paddingTop: 4 }}>
         <ChoiceRow>
           {/* A check-in is answered above: no separate "done". */}
@@ -479,7 +479,7 @@ export function ReminderDetails(props: { item: TodayItem; colors: Colors; busy: 
 }
 
 /** Answering from a picked-up check-in: the one that went out, or today's ahead of time. */
-function DetailAnswer(props: { item: TodayItem; ask: CheckinBrief; colors: Colors; waiting: boolean }) {
+function DetailAnswer(props: { item: TodayItem; ask: CheckinBrief; colors: Colors; waiting: boolean; onDone: () => void }) {
   const { ask, colors } = props;
   const { busy, send } = useAnswer();
   const target = props.waiting ? (ask.delivered ?? ask.open ?? undefined) : (ask.open ?? undefined);
@@ -494,7 +494,7 @@ function DetailAnswer(props: { item: TodayItem; ask: CheckinBrief; colors: Color
         start={lastMood(ask.history)}
         busy={busy}
         label={ask.question}
-        onAnswer={(v) => void send(props.item.id, v, "today", target)}
+        onAnswer={(v) => void send(props.item.id, v, "today", target).then((ok) => ok && props.onDone())}
       />
     </View>
   );
@@ -564,6 +564,19 @@ export function MachineDetails(props: { item: MachineItem; task: TaskItem | null
   const backfill = useRpc(backfillRpc);
   const toast = useToast();
   if (item.kind === "task" && props.task) return <TaskDetails task={props.task} colors={colors} openAgent={props.openAgent} onDone={props.onDone} />;
+  if (item.kind === "task") {
+    const openRun = item.agentId && props.openAgent ? () => props.openAgent!(item.agentId!) : null;
+    return (
+      <>
+        <DetailHead colors={colors} kicker={item.since ? `Working on it since ${item.since}` : "Working on it"} title={item.text} />
+        {openRun ? (
+          <ChoiceRow>
+            <Button colors={colors} tone="secondary" icon="MessageCircle" label="Open the run" onPress={openRun} />
+          </ChoiceRow>
+        ) : null}
+      </>
+    );
+  }
   if (item.kind === "history") {
     return (
       <>

@@ -57,8 +57,11 @@ export function travels(before: Map<string, Place>, desk: Desk): { key: string; 
   const out: { key: string; from: string; to: Place }[] = [];
   const claimed = new Set<string>();
   for (const card of desk.basket) {
+    // Already lying in the basket: it stays put. Otherwise it came from its own card, whether that
+    // card had the same name (a task out of the machine) or another (a repeat's done time).
+    if (before.get(card.key) === "basket") continue;
     const was = before.get(card.from);
-    if (was && was !== "basket" && !before.has(card.key) && !claimed.has(card.from)) {
+    if (was && was !== "basket" && !claimed.has(card.from)) {
       out.push({ key: card.key, from: card.from, to: "basket" });
       claimed.add(card.from);
     }

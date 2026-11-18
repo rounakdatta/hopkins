@@ -88,7 +88,7 @@ function Hand(props: DeskProps) {
     <Section colors={colors} title="Needs you" count={desk.hand.length}>
       <View style={{ gap: space.s }}>
         {desk.hand.map((card) => (
-          <Paper key={card.key} cardKey={card.key} label={cardLabel(card)} colors={colors} tone="front">
+          <Paper key={card.key} cardKey={card.key} label={cardLabel(card)} colors={colors} tone="front" controls>
             {card.kind === "task" ? (
               <TaskHandFace task={card.task} colors={colors} openAgent={props.openAgent} />
             ) : card.item.ask ? (

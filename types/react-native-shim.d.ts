@@ -57,7 +57,9 @@ export const Easing: {
   quad: (t: number) => number;
   bezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number;
 };
+export function findNodeHandle(node: unknown): number | null;
 export const AccessibilityInfo: {
+  setAccessibilityFocus?(tag: number): void;
   isReduceMotionEnabled(): Promise<boolean>;
   addEventListener(event: "reduceMotionChanged", handler: (enabled: boolean) => void): { remove(): void };
 };

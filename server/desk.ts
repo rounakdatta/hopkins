@@ -38,21 +38,23 @@ export function basketBetween(store: Store, cfg: Config, start: number, end: num
   const time = (t: number) => timeLabel(t, cfg.tz, cfg.clock);
   const out: BasketEntry[] = [];
   for (const r of store.reminders()) {
-    if ((r.state === "done" || r.state === "dropped") && within(r.closedAt)) {
+    // A check-in series that ended on an answer is that answer's card alone: the answer closed it.
+    const endedOnAnswer = r.state === "done" && (r.answers ?? []).some((a) => a.at === r.closedAt);
+    if ((r.state === "done" || r.state === "dropped") && within(r.closedAt) && !endedOnAnswer) {
       const outcome = r.state === "done" ? "done" : r.until?.metAt ? "held" : r.repeat ? "stopped" : "dropped";
       out.push({ key: `r:${r.id}`, from: `r:${r.id}`, kind: "reminder", id: r.id, text: r.text, at: r.closedAt, time: time(r.closedAt), outcome, detail: null, repeat: false, scope: r.scope });
     }
     for (const at of r.doneAt ?? []) {
       // The closing one is the reminder's own card above.
       if (!within(at) || at === r.closedAt) continue;
-      out.push({ key: `r:${r.id}@${at}`, from: `r:${r.id}`, kind: "reminder", id: r.id, text: r.text, at, time: time(at), outcome: "done", detail: null, repeat: true, scope: r.scope });
+      out.push({ key: `r:${r.id}@${at}`, from: `r:${r.id}`, kind: "reminder", id: r.id, text: r.text, at, time: time(at), outcome: "done", detail: null, repeat: Boolean(r.repeat), scope: r.scope });
     }
-    if (r.ask) {
-      const question = r.ask.question ?? defaultQuestion(r.ask.kind, r.text);
-      for (const a of r.answers ?? []) {
-        if (!within(a.at)) continue;
-        out.push({ key: `a:${r.id}@${a.occurrence}`, from: `r:${r.id}`, kind: "answer", id: r.id, text: question, at: a.at, time: time(a.at), outcome: "answered", detail: a.note ?? null, answer: a.value, repeat: true, scope: r.scope });
-      }
+    // Answers stay what was done on their day, even after the reminder stops asking.
+    for (const a of r.answers ?? []) {
+      if (!within(a.at)) continue;
+      const kind = r.ask?.kind ?? (typeof a.value === "number" ? "mood" : "yesno");
+      const question = r.ask?.question ?? defaultQuestion(kind, r.text);
+      out.push({ key: `a:${r.id}@${a.occurrence}`, from: `r:${r.id}`, kind: "answer", id: r.id, text: question, at: a.at, time: time(a.at), outcome: "answered", detail: a.note ?? null, answer: a.value, repeat: true, scope: r.scope });
     }
   }
   const seen = new Set<string>();
@@ -254,6 +256,7 @@ export function buildDay(store: Store, reminders: Reminders, cfg: Config, now: n
     relative: order < 0 ? "past" : order === 0 ? "today" : "future",
     basket: order > 0 ? [] : basketBetween(store, cfg, start, Math.min(end, now + 1)),
     coming: order < 0 ? [] : comingBetween(store, reminders, cfg, now, start, end),
+    since: firstDay(store, cfg.tz),
   };
 }
 

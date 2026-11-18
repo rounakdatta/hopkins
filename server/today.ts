@@ -127,7 +127,12 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     })),
     noticing: { available: noticing?.available ?? false, backfill: noticing?.backfill ?? store.backfill() },
     // The brief stays on the host; the app gets what to show.
-    tasks: (tasks?.list(now) ?? []).slice(0, 30).map((t) => ({
+    // The list is capped, but never past what needs them or what is running: the badge, the hand
+    // and the machine are counted from it.
+    tasks: ((list) => {
+      const must = list.filter((t) => t.state === "running" || t.state === "needs-you" || t.state === "missed");
+      return [...must, ...list.filter((t) => !must.includes(t))].slice(0, Math.max(30, must.length));
+    })(tasks?.list(now) ?? []).map((t) => ({
       id: t.id,
       text: t.text,
       state: t.state,

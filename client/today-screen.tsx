@@ -27,7 +27,24 @@ export function TodayScreen(props: PluginScreenProps) {
   const stage = useStageState(colors);
   // Before a new view lands, note where every card is, so a card that moved can travel.
   const snapshot = stage.snapshot;
-  const onView = useCallback((next: TodayView) => void snapshot().then(() => setView(next)), [snapshot]);
+  // Views that arrive while one is being measured wait, and only the newest is shown: applied in
+  // the order their measurements finished, an older view could overwrite a newer one.
+  const pending = useRef<TodayView | null>(null);
+  const measuring = useRef(false);
+  const onView = useCallback(
+    (next: TodayView) => {
+      pending.current = next;
+      if (measuring.current) return;
+      measuring.current = true;
+      void snapshot().then(() => {
+        measuring.current = false;
+        const newest = pending.current;
+        pending.current = null;
+        if (newest) setView(newest);
+      });
+    },
+    [snapshot],
+  );
   const subscription = useSubscription(todayWatch, {}, onView);
   const [reviewing, setReviewing] = useState<{ startAt: string | null } | null>(null);
   const [scale, setScale] = useState<Scale>("day");
@@ -201,7 +218,7 @@ function liftTitle(key: string, desk: Desk): string {
 function Lifted(props: { liftKey: string; view: TodayView; desk: Desk; colors: Colors; busy: string | null; act: Act; openAgent: ((agentId: string) => void) | null; onDone: () => void }) {
   const { liftKey: key, view, desk, colors } = props;
   if (key.startsWith("day:")) {
-    return <DayPileDetails date={key.slice(4)} today={view.date ?? ""} colors={colors} version={view.generatedAt} since={null} />;
+    return <DayPileDetails date={key.slice(4)} today={view.date ?? ""} colors={colors} version={view.generatedAt} />;
   }
   const card = allCards(desk).find((c) => c.key === key);
   // Finished while you held it: what you are holding is now its basket card.

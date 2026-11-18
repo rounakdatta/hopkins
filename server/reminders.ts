@@ -315,6 +315,8 @@ export class Reminders {
       r.anchor = s.anchor;
       r.repeat = repeat;
       assumed = s.assumed;
+      // Opened again after it was done: the day it was done keeps its card in the basket.
+      if (current.state === "done" && current.closedAt !== undefined) r.doneAt = [...(r.doneAt ?? []).filter((t) => t >= now - DONE_DAYS * 86_400_000), current.closedAt];
       delete r.closedAt;
     } else if (patch.repeat !== undefined) {
       // New repeat, same time of day: re-anchor on the current schedule.

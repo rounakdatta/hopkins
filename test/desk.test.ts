@@ -3,9 +3,10 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { CheckIns } from "../server/checkins";
-import { basketBetween, basketCounts, basketToday, buildDay, buildDays, comingBetween, dayBounds, firstDay, machineNow, parseDate } from "../server/desk";
+import { basketBetween, basketCounts, basketToday, buildDay, buildDays, comingBetween, dayBounds, firstDay, machineNow, parseDate, waitingCount } from "../server/desk";
+import { Tasks } from "../server/tasks";
 import { buildToday } from "../server/today";
-import { ReminderSchema, idleBackfill, type Task } from "../shared/model";
+import { DeliverySchema, ReminderSchema, ReminderStateSchema, SuggestionSchema, TaskStateSchema, idleBackfill, type Task } from "../shared/model";
 import { agentSource, setup } from "./helpers";
 
 const HOUR = 3_600_000;
@@ -272,5 +273,128 @@ describe("the machine", () => {
     expect(view.machine.map((m) => m.key)).toEqual(["t:t_run"]);
     expect(view.basket).toEqual([]);
     expect(view.yesterday).toEqual({ date: "2026-11-17", done: 0, other: 1 });
+  });
+});
+
+// --- fixes from the independent review (18 Nov) ---------------------------------------------------
+
+const fire = (t: ReturnType<typeof rig>) => {
+  const due = t.reminders.dueNow(t.clock.now());
+  t.reminders.markFired(due.map((r) => r.id), { id: `d_${t.clock.now()}`, reminderIds: due.map((r) => r.id), kind: "due", createdAt: t.clock.now(), state: "sent", attempts: 1, sentAt: t.clock.now() }, t.clock.now());
+  return due;
+};
+
+describe("the basket after the independent review", () => {
+  it("counts a check-in series that ends on its answer once, not twice", () => {
+    const t = rig("2026-11-18T02:00:00Z"); // Wed 7:30am
+    const fruit = t.remind({ text: "have some fruit", when: "8am", repeat: { every: "day", count: 1 }, ask: { kind: "yesno", question: "Had some fruit today?" } });
+    t.clock.advance(HOUR);
+    expect(fire(t).map((r) => r.id)).toEqual([fruit.id]);
+    expect(new CheckIns(t.store, t.clock).answer(fruit.id, "yes", { via: "today" }).ok).toBe(true);
+    // The answer ended the series (the precondition the bug needs).
+    expect(t.store.get(fruit.id)).toMatchObject({ state: "done" });
+    const { basket } = basketToday(t.store, t.cfg, t.clock.now());
+    expect(basket.map((e) => [e.kind, e.text])).toEqual([["answer", "Had some fruit today?"]]);
+    expect(basketCounts(basket)).toEqual({ done: 1, other: 0 });
+  });
+
+  it("keeps a day's answers when the reminder stops asking", () => {
+    const t = rig("2026-11-18T02:00:00Z");
+    const mood = t.remind({ text: "mood check-in", when: "8am", repeat: "daily", ask: { kind: "mood" } });
+    t.clock.advance(HOUR);
+    fire(t);
+    new CheckIns(t.store, t.clock).answer(mood.id, 72, { via: "today" });
+    expect(t.reminders.change(mood.id, { ask: null }).ok).toBe(true);
+    expect(t.store.get(mood.id)!.ask).toBeUndefined();
+    const { basket } = basketToday(t.store, t.cfg, t.clock.now());
+    expect(basket.map((e) => [e.kind, e.answer, e.text])).toEqual([["answer", 72, "How are you feeling?"]]);
+  });
+
+  it("keeps a day's done card when a done reminder is opened again later", () => {
+    const t = rig("2026-11-17T08:30:00Z"); // Tue 2pm
+    const bank = t.remind({ text: "call the bank", when: "in 1h" });
+    t.reminders.close(bank.id, "done");
+    t.clock.advance(DAY);
+    expect(t.reminders.change(bank.id, { when: "tomorrow 10am" }).ok).toBe(true);
+    const [start, end] = t.bounds("2026-11-17");
+    const yesterday = basketBetween(t.store, t.cfg, start, end);
+    expect(yesterday.map((e) => [e.id, e.outcome, e.repeat])).toEqual([[bank.id, "done", false]]);
+  });
+});
+
+describe("what is coming, after the independent review", () => {
+  it("counts a repeat's remaining times from how many already went out", () => {
+    const t = rig("2026-11-18T02:00:00Z"); // Wed 7:30am
+    t.remind({ text: "take the antibiotic", when: "8am", repeat: { every: "day", count: 3 } });
+    t.clock.advance(HOUR);
+    fire(t); // the first of three went out
+    const [start] = t.bounds("2026-11-18");
+    const [, end] = t.bounds("2026-11-30");
+    expect(comingBetween(t.store, t.reminders, t.cfg, t.clock.now(), start, end).map((c) => c.time)).toEqual(["8am", "8am"]);
+  });
+
+  it("ends a repeat on its last date", () => {
+    const t = rig();
+    t.remind({ text: "stretch", when: "9pm", repeat: { every: "day", until: "2026-11-20" } });
+    const [start] = t.bounds("2026-11-18");
+    const [, end] = t.bounds("2026-11-30");
+    const days = comingBetween(t.store, t.reminders, t.cfg, t.clock.now(), start, end).map((c) => new Date(c.at).toISOString().slice(0, 10));
+    expect(days).toEqual(["2026-11-18", "2026-11-19", "2026-11-20"]);
+  });
+});
+
+describe("Week and Month across a change of clocks", () => {
+  it("puts each finished task on its own local day, counted by hand", () => {
+    // New York leaves daylight saving at 2am on Sunday 1 November 2026: that day has 25 hours.
+    const env = setup("2026-11-02T15:00:00Z", { tz: "America/New_York" });
+    const cfg = env.config();
+    const at = (iso: string) => Date.parse(iso);
+    const done = (id: string, iso: string): Task => ({
+      id, text: id, instructions: "x", scope: "personal", state: "done", tz: cfg.tz, dueAt: at(iso), cwd: "/tmp", agentId: null, attempts: 1,
+      createdAt: at(iso) - HOUR, updatedAt: at(iso), finishedAt: at(iso), source: { via: "agent", at: at(iso) },
+    });
+    env.store.putTask(done("sat-late", "2026-11-01T03:30:00Z")); // Sat 31 Oct, 11:30pm EDT
+    env.store.putTask(done("sun-early", "2026-11-01T04:30:00Z")); // Sun 1 Nov, 12:30am EDT
+    env.store.putTask(done("sun-twice", "2026-11-01T06:30:00Z")); // Sun 1 Nov, 1:30am EST (the hour that happens twice)
+    env.store.putTask(done("sun-late", "2026-11-02T04:30:00Z")); // Sun 1 Nov, 11:30pm EST
+    env.store.putTask(done("mon-early", "2026-11-02T05:30:00Z")); // Mon 2 Nov, 12:30am EST
+    const reminders = env.reminders;
+    const week = buildDays(env.store, reminders, cfg, env.clock.now(), idleBackfill(), parseDate("2026-10-31")!, 3);
+    expect(week.days.map((d) => [d.date, d.done])).toEqual([
+      ["2026-10-31", 1],
+      ["2026-11-01", 3],
+      ["2026-11-02", 1],
+    ]);
+  });
+});
+
+describe("rollback", () => {
+  it("adds no value to any list an older hopkins already checks, which would make it refuse the file", () => {
+    // The 0.3 loader rejects the whole file on an unknown value in a known field; new fields are fine.
+    expect(TaskStateSchema.options).toEqual(["scheduled", "running", "needs-you", "done", "failed", "missed", "cancelled"]);
+    expect(ReminderStateSchema.options).toEqual(["scheduled", "someday", "fired", "done", "dropped"]);
+    expect(DeliverySchema.shape.kind.options).toEqual(["due", "nudge", "recap", "note"]);
+    expect(SuggestionSchema.shape.state.options).toEqual(["open", "kept", "done", "dismissed"]);
+  });
+});
+
+describe("what the Today view always carries", () => {
+  it("keeps every task that needs you or runs, past the cap of 30, so the badge and the hand agree", () => {
+    const t = rig();
+    const now = t.clock.now();
+    for (let i = 0; i < 32; i++) t.store.putTask(t.task({ id: `t_soon${i}`, text: `soon ${i}`, state: "scheduled", dueAt: now + (i + 1) * 60_000 }));
+    t.store.putTask(t.task({ id: "t_ask", text: "asks", state: "needs-you", dueAt: now + 10 * DAY }));
+    t.store.putTask(t.task({ id: "t_run", text: "runs", state: "running", dueAt: now + 11 * DAY, startedAt: now - 60_000 }));
+    const tasks = new Tasks(t.store, t.reminders, t.clock, t.config);
+    const view = buildToday(t.store, t.reminders, t.cfg, now, health, undefined, tasks);
+    expect(view.tasks.map((x) => x.id)).toEqual(expect.arrayContaining(["t_ask", "t_run"]));
+    expect(view.tasks.length).toBe(30);
+    expect(view.tasks.filter((x) => x.state === "needs-you" || x.state === "missed")).toHaveLength(waitingCount(t.store, now));
+  });
+
+  it("tells a picked-up day before hopkins started that it is one", () => {
+    const t = rig();
+    t.remind({ text: "call the bank", when: "tomorrow 9am" });
+    expect(buildDay(t.store, t.reminders, t.cfg, t.clock.now(), parseDate("2026-11-10")!).since).toBe("2026-11-18");
   });
 });

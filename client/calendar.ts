@@ -134,3 +134,19 @@ export function rangeHeadline(days: readonly DayCount[], today: string, since: s
   const lead = current ? `This ${unit}: ` : "";
   return `${lead}${current ? sentence : sentence.charAt(0).toUpperCase() + sentence.slice(1)}.`;
 }
+
+/**
+ * How an upright pile of `n` cards fits a box `height` points tall: cards thin as the pile grows,
+ * down to 2 points with a point between; past what fits that way the pile is drawn full and the
+ * number beside it says how many exactly. Never taller than its box.
+ */
+export function pileShape(n: number, height: number): { drawn: number; h: number; gap: number } {
+  const drawn = Math.min(n, Math.max(1, Math.floor((height + 1) / 3)));
+  let gap = 3;
+  let h = Math.min(7, Math.floor((height - (drawn - 1) * gap) / drawn));
+  if (h < 3) {
+    gap = 1;
+    h = Math.max(2, Math.floor((height - (drawn - 1) * gap) / drawn));
+  }
+  return { drawn, h, gap };
+}

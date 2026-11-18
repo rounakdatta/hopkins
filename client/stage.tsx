@@ -4,7 +4,7 @@
 // nothing moves: a card is simply there, and one that arrived is briefly outlined instead.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AccessibilityInfo, Animated, BackHandler, Easing, Platform, Pressable, ScrollView as NativeScrollView, Text, View } from "react-native";
+import { AccessibilityInfo, Animated, BackHandler, Easing, findNodeHandle, Platform, Pressable, ScrollView as NativeScrollView, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { fade, isDark, shadow, space, type Colors } from "./theme";
 import type { Place } from "./places";
@@ -150,8 +150,19 @@ export function useStageState(colors: Colors) {
   const putBack = useCallback(() => {
     setLifted((current) => {
       const node = current ? (nodes.current.get(current.key) as Measurable | undefined) : undefined;
-      // Focus goes back to the card that was picked up, as a dialog returns it to its opener.
-      setTimeout(() => node?.focus?.(), 0);
+      // Focus goes back to the card that was picked up, as a dialog returns it to its opener: the
+      // browser's focus, or a screen reader's on a phone.
+      setTimeout(() => {
+        if (Platform.OS === "web") node?.focus?.();
+        else {
+          try {
+            const tag = node ? findNodeHandle(node as never) : null;
+            if (tag) AccessibilityInfo.setAccessibilityFocus?.(tag);
+          } catch {
+            // Nothing to return to: the card has left the desk.
+          }
+        }
+      }, 0);
       return null;
     });
   }, []);
@@ -195,6 +206,12 @@ export function Paper(props: {
   tone?: "plain" | "front";
   padding?: number;
   style?: object;
+  /**
+   * The card holds controls of its own (the ring, Yes / Not today, Later). On a phone the card is
+   * then not one accessible element, so a screen reader reaches each control; a sighted tap on the
+   * card still picks it up.
+   */
+  controls?: boolean;
 }) {
   const stage = useStage();
   const { colors } = props;
@@ -225,6 +242,7 @@ export function Paper(props: {
     <Pressable
       ref={ref as never}
       testID={`card-${props.cardKey}`}
+      {...(props.controls && Platform.OS !== "web" ? { accessible: false } : {})}
       accessibilityRole="button"
       accessibilityLabel={props.label}
       accessibilityHint="Picks the card up to show everything about it"
@@ -247,9 +265,8 @@ export function Paper(props: {
           opacity: hidden ? 0 : 1,
           ...shadow(hover && !pressed ? 2 : 1, dark),
           transform: [{ translateY: hover && !pressed ? -1 : 0 }, { scale: pressed ? 0.985 : 1 }],
-          cursor: "pointer",
         },
-        Platform.OS === "web" ? { transitionProperty: "transform, box-shadow, border-color", transitionDuration: "160ms", transitionTimingFunction: "ease-out" } : null,
+        Platform.OS === "web" ? { cursor: "pointer", transitionProperty: "transform, box-shadow, border-color", transitionDuration: "160ms", transitionTimingFunction: "ease-out" } : null,
         props.style,
       ]}
     >
@@ -406,15 +423,20 @@ export function LiftLayer(props: {
       onLayout={(e: { nativeEvent: { layout: { width: number; height: number } } }) => setSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
     >
       <Animated.View style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, opacity: t, backgroundColor: dark ? "rgba(0,0,0,0.55)" : "rgba(15,15,20,0.28)" }}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Put the card back" onPress={close} style={{ flex: 1, cursor: "default" }} />
+        <Pressable accessibilityRole="button" accessibilityLabel="Put the card back" onPress={close} style={[{ flex: 1 }, Platform.OS === "web" ? { cursor: "default" } : null]} />
       </Animated.View>
       {size ? (
         <Animated.View
           testID="lifted-card"
           accessibilityViewIsModal
-          accessibilityRole="dialog"
+          // "dialog" is a web role only; native would refuse it.
+          {...(Platform.OS === "web" ? { accessibilityRole: "dialog" } : {})}
           accessibilityLabel={props.title}
-          onLayout={(e: { nativeEvent: { layout: { width: number; height: number } } }) => !card && setCard({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
+          // Measured again whenever it grows (a day's pile arrives after a spinner), so it stays on screen.
+          onLayout={(e: { nativeEvent: { layout: { width: number; height: number } } }) => {
+            const { width: w, height: h } = e.nativeEvent.layout;
+            setCard((c) => (c && Math.abs(c.h - h) < 1 ? c : { w, h }));
+          }}
           style={{
             position: "absolute",
             left,

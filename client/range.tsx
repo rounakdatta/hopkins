@@ -3,13 +3,13 @@
 // Each thing is one small card in a pile, so a pile's height is its count; the number beside it
 // is exact. A day with nothing shows nothing. Tapping a day picks its pile up.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import type { DayCount, DayPile, DaysView, TodayView } from "../shared/model";
 import { dayRpc, daysRpc } from "../shared/rpc";
-import { addDays, dayNumber, dayWords, monthGrid, monthLabel, mondayOf, rangeHeadline, relative, sameMonth, shiftMonth, shortDay, spokenDate, weekLabel } from "./calendar";
+import { addDays, dayNumber, dayWords, monthGrid, monthLabel, mondayOf, pileShape, rangeHeadline, relative, sameMonth, shiftMonth, shortDay, spokenDate, weekLabel } from "./calendar";
 import { BasketFace, PileFace, Waiting } from "./cards";
 import { type } from "./kit";
 import { Porthole } from "./machine";
@@ -177,22 +177,26 @@ function Pile(props: { colors: Colors; done: number; other: number; coming: numb
   const kinds: BarKind[] = [...Array(props.coming).fill("coming"), ...Array(props.other).fill("other"), ...Array(props.done).fill("done")];
   const n = kinds.length;
   if (n === 0) return null;
-  const MAX = 40;
-  const drawn = kinds.slice(-MAX);
   if (props.horizontal) {
-    const w = n > 18 ? 4 : 6;
+    // Sideways, a pile draws at most twenty cards: past that it is a full row, and the number beside
+    // it says how many exactly.
+    const drawn = kinds.slice(-20);
+    const w = n > 12 ? 4 : 6;
     return (
-      <View style={{ flexDirection: "row", alignItems: "flex-end", gap: n > 18 ? 1.5 : 2, height: props.height, flexWrap: "nowrap", overflow: "hidden" }}>
+      <View style={{ flexDirection: "row", alignItems: "flex-end", gap: n > 12 ? 1.5 : 2, height: props.height, flexWrap: "nowrap", overflow: "hidden" }}>
         {[...drawn].reverse().map((k, i) => (
           <Bar key={i} colors={props.colors} kind={k} w={w} h={props.height} />
         ))}
       </View>
     );
   }
-  const gap = n > 12 ? 2 : 3;
-  const h = Math.max(2, Math.min(7, Math.floor((props.height - (drawn.length - 1) * gap) / drawn.length)));
+  // Upright, cards thin as the pile grows, down to 2 points with a point between; past what fits
+  // that way the pile is full, and the number says how many exactly. It never spills out of its box.
+  const shape = pileShape(n, props.height);
+  const drawn = kinds.slice(-shape.drawn);
+  const { gap, h } = shape;
   return (
-    <View style={{ gap, width: "100%" }}>
+    <View style={{ gap, width: "100%", maxHeight: props.height, overflow: "hidden" }}>
       {drawn.map((k, i) => (
         <Bar key={i} colors={props.colors} kind={k} w="100%" h={h} />
       ))}
@@ -470,20 +474,20 @@ function PhoneCell(props: { day: DayCount; anchor: string; today: string; since:
 
 // --- a day's pile, picked up ---------------------------------------------------------------------------
 
-export function DayPileDetails(props: { date: string; today: string; colors: Colors; version: number; since: string | null }) {
+export function DayPileDetails(props: { date: string; today: string; colors: Colors; version: number }) {
   const { colors } = props;
   const fetchDay = useRpc(dayRpc);
   const [pile, setPile] = useState<DayPile | null>(null);
   const [failed, setFailed] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
-  const alive = useRef(true);
   useEffect(() => {
-    alive.current = true;
+    // One flag per fetch: an older answer that arrives after a newer request is dropped.
+    let alive = true;
     fetchDay({ date: props.date })
-      .then((p) => alive.current && setPile(p))
-      .catch(() => alive.current && setFailed(true));
+      .then((p) => alive && setPile(p))
+      .catch(() => alive && setFailed(true));
     return () => {
-      alive.current = false;
+      alive = false;
     };
   }, [props.date, props.version]);
   const label = pile?.label ?? spokenDate(props.date, props.today);
@@ -499,7 +503,7 @@ export function DayPileDetails(props: { date: string; today: string; colors: Col
   }
   const summary = basketSummary(pile.basket);
   const kicker = [summary.done ? `${summary.done} done` : null, summary.others, pile.coming.length ? `${pile.coming.length} coming` : null].filter(Boolean).join(" · ");
-  const before = props.since !== null && props.date < props.since;
+  const before = pile.since !== null && props.date < pile.since;
   return (
     <>
       <View style={{ gap: 6, paddingRight: 28 }}>

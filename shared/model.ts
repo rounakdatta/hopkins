@@ -381,6 +381,8 @@ export const DayPileSchema = z.object({
   relative: z.enum(["past", "today", "future"]),
   basket: z.array(BasketEntrySchema),
   coming: z.array(PileCardSchema),
+  /** The first day hopkins has any record of, so a day before it can say so. */
+  since: z.string().nullable().default(null),
 });
 export type DayPile = z.infer<typeof DayPileSchema>;
 
