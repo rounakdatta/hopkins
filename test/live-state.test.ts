@@ -437,6 +437,23 @@ describe("what the reviewer found in the second fixes", () => {
     expect(w.told.map((x) => x.state)).toEqual(["failed"]);
   });
 
+  it("follows a run past its limit when they type into it (the turn it replaces is cancelled)", async () => {
+    // The reviewer's round-four scenario: they open the run, as the message says, and type guidance.
+    const w = world();
+    w.port.first = { status: "timeout", lastMessage: null };
+    const t = await w.asking(); // "still going after 90 minutes", told
+    const agent = t.agentId!;
+    w.runner.onTurnFinished(agent, true); // Paseo cancels T1…
+    w.runner.onResumed(agent); // …and starts T2 in its place
+    expect(w.tasks.get(t.id)!.state).toBe("running");
+    w.env.clock.advance(10 * 60_000);
+    w.port.end({ status: "idle", lastMessage: report("done", "PR opened: #412.") });
+    w.runner.onTurnFinished(agent); // T2's end
+    await settle();
+    expect(w.tasks.get(t.id)).toMatchObject({ state: "done", report: "PR opened: #412." });
+    expect(w.told.map((x) => x.state)).toEqual(["failed", "done"]);
+  });
+
   it("records a run past its limit whose turn then failed, rather than calling it gone", async () => {
     // The reviewer's S2: the run went on past its limit, and its turn then failed (the API was overloaded).
     const w = world();

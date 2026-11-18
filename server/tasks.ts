@@ -343,7 +343,7 @@ export class TaskRunner {
     if (!task) return;
     // Any new turn ends the silence of one they stopped themselves.
     this.quiet.delete(task.id);
-    if (!rereadable(task)) return;
+    if (!rereadable(task) && !(task.state === "failed" && task.timedOut === false)) return;
     this.rereads.delete(task.id);
     const now = this.clock.now();
     // Its time limit counts from now: an answer that comes hours later still gets the whole time.
@@ -363,8 +363,9 @@ export class TaskRunner {
     if (!task) return;
     if (canceled) {
       if (task.state === "running") this.quiet.add(task.id);
-      // Past its limit and now stopped by them: it will not finish by itself, so nothing more is awaited.
-      if (task.state === "failed" && task.timedOut) this.put({ ...task, timedOut: undefined });
+      // Past its limit and now stopped by them: it will not finish by itself, so nothing more is awaited
+      // (no re-read reopens it), though a turn that starts in it (they typed) still picks it up.
+      if (task.state === "failed" && task.timedOut) this.put({ ...task, timedOut: false });
       return;
     }
     // Waiting on them, or failed at the time limit: read the run where the task stands (its start was

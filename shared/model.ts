@@ -161,7 +161,11 @@ export const TaskSchema = z.object({
   report: z.string().optional(),
   /** needs-you only because the run stopped without its closing report: it asked nothing, and nobody can tell yet whether it worked. */
   unreported: z.boolean().optional(),
-  /** failed only because the run was still going at the time limit: it may yet finish, and how it ends is still recorded. */
+  /**
+   * true: failed only because the run was still going at the time limit; it may yet finish, and how it
+   * ends is still recorded. false: they stopped it after that, so nothing more is awaited, though a
+   * turn that starts in the run picks it up again.
+   */
   timedOut: z.boolean().optional(),
   error: z.string().optional(),
   createdAt: z.number(),
