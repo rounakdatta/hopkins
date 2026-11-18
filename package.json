@@ -1,6 +1,6 @@
 {
   "name": "paseo-hopkins",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Reminders, check-ins and timed tasks that come back at the right moment in one Paseo conversation you can reply to.",
   "license": "MIT",
   "type": "module",
