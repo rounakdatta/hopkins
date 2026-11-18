@@ -202,10 +202,22 @@ describe("Week and Month", () => {
     const week = buildDays(t.store, t.reminders, t.cfg, now, idleBackfill(), parseDate("2026-11-16")!, 7);
     const by = Object.fromEntries(week.days.map((d) => [d.date, d]));
     expect(week.today).toBe("2026-11-18");
-    expect(by["2026-11-17"]).toEqual({ date: "2026-11-17", done: 1, other: 0, coming: 0, running: 0, waiting: 0 });
-    expect(by["2026-11-18"]).toEqual({ date: "2026-11-18", done: 0, other: 0, coming: 1, running: 1, waiting: 1 });
-    expect(by["2026-11-20"]).toEqual({ date: "2026-11-20", done: 0, other: 0, coming: 2, running: 0, waiting: 0 });
-    expect(by["2026-11-16"]).toEqual({ date: "2026-11-16", done: 0, other: 0, coming: 0, running: 0, waiting: 0 });
+    expect(by["2026-11-17"]).toEqual({ date: "2026-11-17", done: 1, other: 0, coming: 0, running: 0, waiting: 0, costUsd: 0 });
+    expect(by["2026-11-18"]).toEqual({ date: "2026-11-18", done: 0, other: 0, coming: 1, running: 1, waiting: 1, costUsd: 0 });
+    expect(by["2026-11-20"]).toEqual({ date: "2026-11-20", done: 0, other: 0, coming: 2, running: 0, waiting: 0, costUsd: 0 });
+    expect(by["2026-11-16"]).toEqual({ date: "2026-11-16", done: 0, other: 0, coming: 0, running: 0, waiting: 0, costUsd: 0 });
+  });
+
+  it("add up what each day's finished tasks cost, and only theirs", () => {
+    const t = rig();
+    const now = t.clock.now();
+    t.store.putTask(t.task({ id: "t_a", text: "a", state: "done", dueAt: now - 26 * HOUR, finishedAt: now - 25 * HOUR, costUsd: 0.4187 }));
+    t.store.putTask(t.task({ id: "t_b", text: "b", state: "failed", dueAt: now - 25 * HOUR, finishedAt: now - 24.5 * HOUR, costUsd: 1.0371 }));
+    t.store.putTask(t.task({ id: "t_c", text: "c", state: "done", dueAt: now - 2 * HOUR, finishedAt: now - HOUR }));
+    const week = buildDays(t.store, t.reminders, t.cfg, now, idleBackfill(), parseDate("2026-11-16")!, 7);
+    const by = Object.fromEntries(week.days.map((d) => [d.date, d.costUsd]));
+    expect(by["2026-11-17"]).toBeCloseTo(1.4558, 6);
+    expect(by["2026-11-18"]).toBe(0);
   });
 
   it("count exactly the cards a day's pile shows, on every day", () => {

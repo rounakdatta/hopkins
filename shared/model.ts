@@ -359,6 +359,8 @@ export const DayCountSchema = z.object({
   /** Today only: in the machine, and waiting on you. */
   running: z.number(),
   waiting: z.number(),
+  /** What the day's finished tasks cost, in US dollars, as their runs reported it (0: none known). */
+  costUsd: z.number().default(0),
 });
 export type DayCount = z.infer<typeof DayCountSchema>;
 

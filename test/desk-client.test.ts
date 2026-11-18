@@ -197,7 +197,7 @@ describe("the calendar", () => {
     expect(monthLabel("2027-01-01", "2026-11-18")).toBe("January 2027");
   });
 
-  const day = (date: string, over: Partial<DayCount> = {}): DayCount => ({ date, done: 0, other: 0, coming: 0, running: 0, waiting: 0, ...over });
+  const day = (date: string, over: Partial<DayCount> = {}): DayCount => ({ date, done: 0, other: 0, coming: 0, running: 0, waiting: 0, costUsd: 0, ...over });
 
   it("reads a day like the desk: a past day its basket, a future day its table, never a zero", () => {
     const today = "2026-11-18";

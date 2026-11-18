@@ -13,7 +13,7 @@ import { addDays, dayNumber, dayWords, monthGrid, monthLabel, mondayOf, pileShap
 import { BasketFace, PileFace, Waiting } from "./cards";
 import { type } from "./kit";
 import { Porthole } from "./machine";
-import { basketSummary } from "./places";
+import { basketSummary, priceTag } from "./places";
 import { useStage } from "./stage";
 import { fade, isDark, mix, space, tabular, type Colors } from "./theme";
 import type { DeskMode } from "./desk";
@@ -71,6 +71,7 @@ export function RangeView(props: {
   const isCurrent = scale === "week" ? from === mondayOf(today) : sameMonth(anchor, today);
   const step = (n: number) => props.onAnchor(scale === "week" ? addDays(from, 7 * n) : shiftMonth(anchor, n));
   const shown = data && data.days[0]?.date === from && data.days.length === days ? data : null;
+  const rangeCost = shown ? (scale === "month" ? shown.days.filter((d) => sameMonth(d.date, anchor)) : shown.days).reduce((sum, d) => sum + d.costUsd, 0) : 0;
   const headline = shown ? rangeHeadline(scale === "month" ? shown.days.filter((d) => sameMonth(d.date, anchor)) : shown.days, today, shown.since, scale) : "";
 
   return (
@@ -95,6 +96,11 @@ export function RangeView(props: {
         <Text accessibilityLiveRegion="polite" style={[type.headline, { color: colors.foreground, minHeight: 28 }]}>
           {headline || (failed ? "Couldn't load these days. They come back on their own." : " ")}
         </Text>
+        {shown && priceTag(rangeCost) ? (
+          <Text style={[type.title, tabular, { color: colors.foregroundMuted }]} accessibilityLabel={`${priceTag(rangeCost)!.exact} in tokens ${scale === "week" ? "this week" : "this month"}`}>
+            {priceTag(rangeCost)!.label} in tokens
+          </Text>
+        ) : null}
       </View>
 
       {shown ? (
@@ -207,7 +213,15 @@ function Pile(props: { colors: Colors; done: number; other: number; coming: numb
 /** A day's numbers said out loud, for a screen reader: the same words the eye reads. */
 function dayA11y(day: DayCount, today: string): string {
   const words = dayWords(day, today);
-  return `${spokenDate(day.date, today)}${day.date === today ? ", today" : ""}: ${words.length ? words.join(", ") : "nothing"}. Open the day's pile`;
+  const cost = priceTag(day.costUsd);
+  return `${spokenDate(day.date, today)}${day.date === today ? ", today" : ""}: ${words.length ? words.join(", ") : "nothing"}${cost ? `, ${cost.exact} in tokens` : ""}. Open the day's pile`;
+}
+
+/** A day's cost, quiet beneath its numbers: rounded down to the cent, nothing when none is known. */
+function DayCost(props: { colors: Colors; usd: number }) {
+  const tag = priceTag(props.usd);
+  if (!tag) return null;
+  return <Text style={[type.small, tabular, { color: fade(props.colors.foregroundMuted, 0.85), fontSize: 11 }]}>{tag.label}</Text>;
 }
 
 /** The day's mark: the number, ringed in the accent when it is today. */
@@ -304,6 +318,7 @@ function WeekColumn(props: { day: DayCount; today: string; since: string | null;
             {w}
           </Text>
         ))}
+        <DayCost colors={colors} usd={day.costUsd} />
       </View>
     </Pressable>
   );
@@ -363,6 +378,7 @@ function WeekRow(props: { day: DayCount; today: string; since: string | null; co
               </Text>
             ) : null}
             {props.since === day.date ? <StartedMark colors={colors} /> : null}
+            <DayCost colors={colors} usd={day.costUsd} />
           </View>
         ) : null}
       </View>
@@ -432,10 +448,9 @@ function WideCell(props: { day: DayCount; anchor: string; today: string; since: 
         {when !== "future" && day.done + day.other > 0 ? <Pile colors={colors} done={day.done} other={day.other} coming={0} height={14} horizontal /> : null}
         {when !== "past" && day.coming > 0 ? <Pile colors={colors} done={0} other={0} coming={day.coming} height={14} horizontal /> : null}
         {words.length ? (
-          <Text style={[type.small, tabular, { color: colors.foregroundMuted, fontSize: 11, lineHeight: 14 }]} numberOfLines={2}>
-            {words.join(" · ")}
-          </Text>
+          <Text style={[type.small, tabular, { color: colors.foregroundMuted, fontSize: 11, lineHeight: 14 }]}>{words.join(" · ")}</Text>
         ) : null}
+        <DayCost colors={colors} usd={day.costUsd} />
       </View>
     </Pressable>
   );
@@ -502,7 +517,8 @@ export function DayPileDetails(props: { date: string; today: string; colors: Col
     );
   }
   const summary = basketSummary(pile.basket);
-  const kicker = [summary.done ? `${summary.done} done` : null, summary.others, pile.coming.length ? `${pile.coming.length} coming` : null].filter(Boolean).join(" · ");
+  const cost = priceTag(pile.basket.reduce((sum, e) => sum + (e.costUsd ?? 0), 0));
+  const kicker = [summary.done ? `${summary.done} done` : null, summary.others, pile.coming.length ? `${pile.coming.length} coming` : null, cost ? `${cost.label} in tokens` : null].filter(Boolean).join(" · ");
   const before = pile.since !== null && props.date < pile.since;
   return (
     <>

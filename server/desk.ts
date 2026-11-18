@@ -236,6 +236,7 @@ export function buildDays(store: Store, reminders: Reminders, cfg: Config, now: 
       date: key,
       done,
       other,
+      costUsd: (basket.get(key) ?? []).reduce((sum, e) => sum + (e.costUsd ?? 0), 0),
       coming: compareDates(d, today) >= 0 ? (coming.get(key)?.length ?? 0) : 0,
       running: isToday ? machineNow(store, cfg, backfill).length : 0,
       waiting: isToday ? waitingCount(store, now) : 0,
