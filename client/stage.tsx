@@ -209,7 +209,18 @@ export function Paper(props: {
     node.current = n;
     stage?.register(props.cardKey, n);
   };
-  const pick = props.onPick ?? (stage ? () => stage.lift(props.cardKey) : undefined);
+  const lift = props.onPick ?? (stage ? () => stage.lift(props.cardKey) : undefined);
+  // A card is picked up only by a press that began on it. Answering a check-in with the keyboard
+  // puts the series' next card where the answered one was, and the browser then delivered a stray
+  // click to it, which picked it up uninvited.
+  const began = useRef(0);
+  const pick = lift
+    ? () => {
+        const fresh = Date.now() - began.current < 2_000;
+        began.current = 0;
+        if (fresh) lift();
+      }
+    : undefined;
   return (
     <Pressable
       ref={ref as never}
@@ -221,7 +232,10 @@ export function Paper(props: {
       onLayout={() => stage?.laidOut(props.cardKey)}
       onHoverIn={() => setHover(true)}
       onHoverOut={() => setHover(false)}
-      onPressIn={() => setPressed(true)}
+      onPressIn={() => {
+        began.current = Date.now();
+        setPressed(true);
+      }}
       onPressOut={() => setPressed(false)}
       style={[
         {
