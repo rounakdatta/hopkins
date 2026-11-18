@@ -191,8 +191,11 @@ export function drumCards<T>(items: readonly T[]): { shown: T[]; more: number } 
   return { shown: items.slice(0, DRUM_CARDS), more: Math.max(0, items.length - DRUM_CARDS) };
 }
 
-/** The hues the machine's cards are dyed in: soft, and far enough apart to tell at a glance. */
-export const MACHINE_HUES = [152, 212, 36, 330, 266, 186] as const;
+/**
+ * The colours of the machine's cards: index cards, not a rainbow. Canary, rose, sky, mint, lavender
+ * and apricot, as the hue of each (dye() makes the paper from it).
+ */
+export const MACHINE_HUES = [48, 350, 205, 150, 265, 25] as const;
 
 /**
  * A colour for each item in the machine. Its key picks the hue, so an item keeps its colour while it

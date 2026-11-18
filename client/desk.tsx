@@ -274,8 +274,14 @@ function useDrum(machine: MachineCard[], colors: Colors, pickable: boolean) {
     label: cardLabel(card),
     ...(pickable && stage ? { onPress: () => stage.lift(card.key, `drum:${card.key}`), register: (n: unknown) => stage.register(`drum:${card.key}`, n) } : {}),
   }));
-  const edge = (key: string) => ({ borderLeftWidth: 4, borderLeftColor: dye(hues.get(key)!, colors).edge });
-  return { cards, more, edge };
+  // The card beneath the machine is the same index card as the one in the drum: its whole paper
+  // is the colour, so the eye matches them at once.
+  const paper = (key: string) => {
+    const { fill, edge } = dye(hues.get(key)!, colors);
+    return { backgroundColor: fill, borderColor: edge };
+  };
+  const ink = (key: string) => dye(hues.get(key)!, colors).ink;
+  return { cards, more, paper, ink };
 }
 
 /** On a wide desk: the machine drawn whole, what is in it beneath. */
@@ -290,8 +296,8 @@ function MachineColumn(props: DeskProps) {
         <MachineBody colors={colors} running={running} reduced={props.reduced} size={124} cards={drum.cards} more={drum.more} />
         {running ? (
           desk.machine.map((card) => (
-            <Paper key={card.key} cardKey={card.key} label={cardLabel(card)} colors={colors} padding={12} style={drum.edge(card.key)}>
-              <MachineFace item={card.item} colors={colors} />
+            <Paper key={card.key} cardKey={card.key} label={cardLabel(card)} colors={colors} padding={12} style={drum.paper(card.key)}>
+              <MachineFace item={card.item} colors={colors} ink={drum.ink(card.key)} />
             </Paper>
           ))
         ) : (
@@ -333,8 +339,8 @@ function MachineStrip(props: DeskProps) {
         <Porthole colors={colors} size={64} running reduced={props.reduced} cards={drum.cards} more={drum.more} />
         <View style={{ flex: 1, minWidth: 0, gap: space.s }}>
           {desk.machine.map((card) => (
-            <Paper key={card.key} cardKey={card.key} label={cardLabel(card)} colors={colors} padding={10} style={drum.edge(card.key)}>
-              <MachineFace item={card.item} colors={colors} />
+            <Paper key={card.key} cardKey={card.key} label={cardLabel(card)} colors={colors} padding={10} style={drum.paper(card.key)}>
+              <MachineFace item={card.item} colors={colors} ink={drum.ink(card.key)} />
             </Paper>
           ))}
         </View>

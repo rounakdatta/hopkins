@@ -170,7 +170,7 @@ if (process.env.SEED_DESK === "1") {
       task({
         id: id!,
         text: text!,
-        instructions: "This is an automated preview of hopkins's desk: nothing is really done. Run the shell command `sleep 110` once, then end with the report block, status done, saying 'Done in the preview.'. Do not use any other tool, and do not read or change any file.",
+        instructions: "This is an automated preview of hopkins's desk: nothing is really done. Run the shell command `ping -c 75 -i 1 127.0.0.1 > /dev/null` once, in the foreground, and wait for it, then end with the report block, status done, saying 'Done in the preview.'. Do not use any other tool, and do not read or change any file.",
         state: "scheduled",
         attempts: 0,
         dueAt: realNow + MIN,

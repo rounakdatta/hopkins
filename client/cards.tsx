@@ -294,12 +294,16 @@ export function ComingFace(props: { colors: Colors } & ({ kind: "reminder"; item
 }
 
 /** A card in the machine: what is being done, and since when. The drum above is its spinner. */
-export function MachineFace(props: { item: MachineItem; colors: Colors }) {
+export function MachineFace(props: { item: MachineItem; colors: Colors; ink?: string }) {
   const { item, colors } = props;
   const since = machineSince(item);
   return (
     <View style={{ gap: 4 }}>
-      <Text style={[type.meta, { color: colors.foregroundMuted, fontWeight: "600" }]} numberOfLines={1}>
+      {/* Its heading in the card's own ink, under a faint rule, as an index card has. */}
+      <Text
+        style={[type.meta, { color: props.ink ?? colors.foregroundMuted, fontWeight: "600", paddingBottom: 5, marginBottom: 2, borderBottomWidth: 1, borderColor: fade(props.ink ?? colors.foregroundMuted, 0.18) }]}
+        numberOfLines={1}
+      >
         {item.kind === "check" ? "Checking whether it can stop" : item.kind === "history" ? "Reading history" : "Working on it"}
       </Text>
       <Text style={[type.title, { color: colors.foreground }]}>{item.kind === "history" ? "Your past conversations" : item.text}</Text>
