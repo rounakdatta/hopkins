@@ -757,6 +757,19 @@ describe("a run that hit a usage limit, then went on by itself", () => {
     expect(w.told.map((x) => x.state)).toEqual(["scheduled", "done"]);
   });
 
+  it("gives a run that goes on hours later, when its limit lifts, the whole time limit", async () => {
+    const llm = new HeldLlm();
+    const { w, id, agent } = await broken(llm);
+    w.env.clock.advance(2 * 3_600_000); // the model is slow; the 90-minute limit counted from the start has passed
+    llm.answer('{"retry": true, "in_minutes": 240, "reason": "the limit resets at 5:30pm"}');
+    await settle();
+    expect(w.tasks.get(id)).toMatchObject({ state: "scheduled", retry: { from: agent } });
+    w.runner.onResumed(agent); // they type "continue" once another account is free
+    expect(w.tasks.get(id)).toMatchObject({ state: "running", startedAt: w.env.clock.now() });
+    // Not a one-minute wait that then says "still going after 90 minutes" while it works.
+    expect(w.port.waits.at(-1)).toEqual({ agentId: agent, timeoutMs: 90 * 60_000 });
+  });
+
   it("leaves the retry alone when the run itself reported the failure", async () => {
     const { w, id, agent } = await broken(null, { status: "idle", lastMessage: report("failed", "The airline's site returned 503.") });
     expect(w.tasks.get(id)).toMatchObject({ state: "scheduled", retry: { n: 2 } });

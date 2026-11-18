@@ -399,7 +399,9 @@ export class TaskRunner {
     if (!task) return;
     const last = task.tries?.at(-1);
     const tries = last && last.at === task.startedAt ? task.tries!.slice(0, -1) : task.tries;
-    this.put({ ...task, state: "running", agentId, retry: undefined, tries: tries?.length ? tries : undefined, report: undefined, error: undefined, updatedAt: this.clock.now() });
+    // Its time limit counts from now, as for an answer: a limit can take hours to lift.
+    const now = this.clock.now();
+    this.put({ ...task, state: "running", agentId, startedAt: now, retry: undefined, tries: tries?.length ? tries : undefined, report: undefined, error: undefined, updatedAt: now });
     this.store.event("task-resumed", { id: task.id });
     void this.follow(task.id);
   }
