@@ -261,6 +261,8 @@ export class TaskRunner {
   private readonly quiet = new Set<string>();
   /** Stopped tasks whose run must be read again where they stand, until a reading succeeds. */
   private readonly rereads = new Set<string>();
+  /** Runs whose turn broke (an error) while a retry is decided: true once they went on by themselves. */
+  private readonly broke = new Map<string, boolean>();
 
   constructor(
     private readonly store: Store,
@@ -340,7 +342,9 @@ export class TaskRunner {
    */
   onResumed(agentId: string, retell = false): void {
     const task = this.store.tasks().find((t) => t.agentId === agentId);
-    if (!task) return;
+    if (!task) return this.pickUp(agentId);
+    // Its turn broke and a retry is being decided, yet it went on: the decision is dropped when it comes.
+    if (this.broke.has(task.id)) this.broke.set(task.id, true);
     // Any new turn ends the silence of one they stopped themselves.
     this.quiet.delete(task.id);
     if (!rereadable(task) && !(task.state === "failed" && task.timedOut === false)) return;
@@ -382,7 +386,30 @@ export class TaskRunner {
   }
 
   isTaskAgent(agentId: string): boolean {
-    return this.store.tasks().some((t) => t.agentId === agentId);
+    return this.store.tasks().some((t) => t.agentId === agentId || (t.state === "scheduled" && t.retry?.from === agentId));
+  }
+
+  /**
+   * A run whose turn broke (it hit a usage limit, say) was put up for another try, then went on by
+   * itself: it is the task's run again, on the same try, and the run planned in its place never
+   * starts, so two runs never work on the same thing.
+   */
+  private pickUp(agentId: string): void {
+    const task = this.store.tasks().find((t) => t.state === "scheduled" && t.retry?.from === agentId);
+    if (!task) return;
+    const last = task.tries?.at(-1);
+    const tries = last && last.at === task.startedAt ? task.tries!.slice(0, -1) : task.tries;
+    this.put({ ...task, state: "running", agentId, retry: undefined, tries: tries?.length ? tries : undefined, report: undefined, error: undefined, updatedAt: this.clock.now() });
+    this.store.event("task-resumed", { id: task.id });
+    void this.follow(task.id);
+  }
+
+  /** It went on by itself while its retry was decided: no retry, and the turn it is in is followed. */
+  private wentOn(id: string): boolean {
+    if (this.broke.get(id) !== true) return false;
+    this.store.event("task-resumed", { id });
+    void this.follow(id);
+    return true;
   }
 
   async start(id: string): Promise<void> {
@@ -524,6 +551,9 @@ export class TaskRunner {
     }
     if (this.deciding.has(id)) return;
     this.deciding.add(id);
+    // Its turn broke rather than the run saying it failed: the run may yet go on by itself.
+    const broke = patch.report === undefined ? this.store.getTask(id)?.agentId : undefined;
+    if (broke) this.broke.set(id, false);
     void (async () => {
       try {
         const task = this.store.getTask(id);
@@ -532,11 +562,11 @@ export class TaskRunner {
         const decision = await retries.decide(task, why, advice);
         const current = this.store.getTask(id);
         // Cancelled, or answered and moved on, while deciding: stay quiet.
-        if (!current || current.state !== "running" || current.attempts !== task.attempts) return;
+        if (!current || current.state !== "running" || current.attempts !== task.attempts || this.wentOn(id)) return;
         const at = this.clock.now();
         const tries = [...(current.tries ?? []), { at: current.startedAt ?? at, outcome: "failed" as const, why: why.slice(0, 400) }];
         if (decision.retry) {
-          const next: Task = { ...current, ...patch, state: "scheduled", dueAt: decision.at, agentId: null, tries, retry: { n: tries.length + 1, of: MAX_TRIES, why: why.slice(0, 400), reason: decision.reason }, updatedAt: at };
+          const next: Task = { ...current, ...patch, state: "scheduled", dueAt: decision.at, agentId: null, tries, retry: { n: tries.length + 1, of: MAX_TRIES, why: why.slice(0, 400), reason: decision.reason, ...(broke ? { from: broke } : {}) }, updatedAt: at };
           this.put(next);
           this.store.event("task-retry", { id, n: tries.length + 1, by: decision.by });
           this.log.info("task will be tried again", { task: id, try: tries.length + 1, by: decision.by });
@@ -548,9 +578,10 @@ export class TaskRunner {
       } catch (err) {
         this.log.warn("could not decide about a retry", { task: id, error: errorText(err) });
         const current = this.store.getTask(id);
-        if (current?.state === "running") this.settle(id, { state: "failed", ...patch }, this.clock.now());
+        if (current?.state === "running" && !this.wentOn(id)) this.settle(id, { state: "failed", ...patch }, this.clock.now());
       } finally {
         this.deciding.delete(id);
+        this.broke.delete(id);
       }
     })();
   }

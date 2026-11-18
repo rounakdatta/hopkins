@@ -16,10 +16,12 @@ import { settingsSchema } from "../shared/settings";
 import { startHopkins } from "../server/app";
 import type { Config } from "../server/config";
 import { DeliveryQueue, type FinishResult } from "../server/delivery";
+import type { Llm } from "../server/llm";
 import { silentLogger } from "../server/log";
 import { recapCueText, taskCueText, taskPrompt } from "../server/prompts";
 import { Recaps } from "../server/recaps";
 import { Reminders } from "../server/reminders";
+import { Retries } from "../server/retry";
 import { Store } from "../server/store";
 import { parseReport, TaskRunner, Tasks, type TaskPort } from "../server/tasks";
 import { buildToday } from "../server/today";
@@ -35,8 +37,11 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 class ManualPort implements TaskPort {
   first: FinishResult = { status: "idle", lastMessage: report("needs-you", QUESTION) };
   waits: { agentId: string; timeoutMs: number }[] = [];
+  /** How many runs were started. */
+  runs = 0;
   private ends: ((r: FinishResult) => void)[] = [];
   async run(task: Task, _prompt: string, _cfg: Config, created: (agentId: string) => void): Promise<FinishResult> {
+    this.runs++;
     created(`run-${task.id}`);
     return this.first;
   }
@@ -674,5 +679,90 @@ describe("the whole plugin, when they answer a task in its run", () => {
     } finally {
       p.end();
     }
+  });
+});
+
+describe("a run that hit a usage limit, then went on by itself", () => {
+  // 18 Nov 2026: a run hit the account's usage limit, so hopkins put the task up for another try. A
+  // second later the run carried on (on another account). Then the retry started a second run on the
+  // same work, while the first run's own report went unheard.
+  const LIMIT = "You've hit your individual spend limit · your 5-hour limit resets 5:30pm (Asia/Kolkata)";
+  const DONE = report("done", "Fixed on a branch; nothing shipped.");
+
+  /** A model whose answer comes when the test says so. */
+  class HeldLlm implements Llm {
+    readonly available = true;
+    private answers: ((reply: string) => void)[] = [];
+    complete(): Promise<string> {
+      return new Promise((resolve) => this.answers.push(resolve));
+    }
+    answer(reply: string): void {
+      for (const resolve of this.answers.splice(0)) resolve(reply);
+    }
+  }
+
+  const broken = async (llm: Llm | null, first: FinishResult = { status: "error", lastMessage: null, error: LIMIT }) => {
+    const w = world();
+    w.runner.retries = new Retries(llm, w.env.reminders, w.env.clock, w.env.config, silentLogger);
+    w.port.first = first;
+    const t = await w.asking();
+    await settle();
+    return { w, id: t.id, agent: `run-${t.id}` }; // the run ManualPort made (the task may have let go of it)
+  };
+
+  it("keeps following it, with no retry, when it goes on while the retry is decided", async () => {
+    const llm = new HeldLlm();
+    const { w, id, agent } = await broken(llm);
+    expect(w.tasks.get(id)!.state).toBe("running"); // the retry is being decided
+    w.runner.onResumed(agent); // "continue", a second later
+    llm.answer('{"retry": true, "in_minutes": 30, "reason": "the limit resets later"}');
+    await settle();
+    await settle();
+    const t = w.tasks.get(id)!;
+    expect(t).toMatchObject({ state: "running", agentId: agent });
+    expect(t.retry).toBeUndefined();
+    expect(w.told).toEqual([]); // never "it did not work"
+    expect(w.view().tasks.find((x) => x.id === id)).toMatchObject({ state: "running" });
+
+    w.env.clock.advance(60 * 60_000);
+    w.runner.tick(w.env.clock.now());
+    w.port.end({ status: "idle", lastMessage: DONE });
+    await settle();
+    expect(w.tasks.get(id)).toMatchObject({ state: "done", agentId: agent, attempts: 1 });
+    expect(w.port.runs).toBe(1);
+    expect(w.told.map((x) => x.state)).toEqual(["done"]);
+  });
+
+  it("takes it back and calls off the planned retry when it goes on after the retry was planned", async () => {
+    const { w, id, agent } = await broken(null); // no model: the plain rule, again in 15 minutes
+    expect(w.tasks.get(id)).toMatchObject({ state: "scheduled", agentId: null, retry: { n: 2, from: agent } });
+    expect(w.view().tasks.find((x) => x.id === id)?.retry).toMatchObject({ n: 2 });
+
+    expect(w.runner.isTaskAgent(agent)).toBe(true); // the turn-start hook reaches it
+    w.runner.onResumed(agent);
+    const t = w.tasks.get(id)!;
+    expect(t).toMatchObject({ state: "running", agentId: agent });
+    expect(t.retry).toBeUndefined();
+    expect(t.tries).toBeUndefined(); // that try is still going: it has not failed
+    expect(t.error).toBeUndefined();
+    expect(w.view().tasks.find((x) => x.id === id)).toMatchObject({ state: "running", retry: null });
+
+    w.env.clock.advance(30 * 60_000); // past the planned retry
+    w.runner.tick(w.env.clock.now());
+    await settle();
+    expect(w.port.runs).toBe(1);
+    w.port.end({ status: "idle", lastMessage: DONE });
+    await settle();
+    expect(w.tasks.get(id)).toMatchObject({ state: "done", attempts: 1 });
+    expect(w.told.map((x) => x.state)).toEqual(["scheduled", "done"]);
+  });
+
+  it("leaves the retry alone when the run itself reported the failure", async () => {
+    const { w, id, agent } = await broken(null, { status: "idle", lastMessage: report("failed", "The airline's site returned 503.") });
+    expect(w.tasks.get(id)).toMatchObject({ state: "scheduled", retry: { n: 2 } });
+    expect(w.tasks.get(id)!.retry!.from).toBeUndefined();
+    expect(w.runner.isTaskAgent(agent)).toBe(false);
+    w.runner.onResumed(agent); // a stray turn in it changes nothing
+    expect(w.tasks.get(id)).toMatchObject({ state: "scheduled", agentId: null });
   });
 });

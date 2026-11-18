@@ -173,8 +173,12 @@ export const TaskSchema = z.object({
   source: SourceSchema,
   /** A deadline: nothing runs, or runs again, after it ("before the flight leaves"). */
   by: z.number().optional(),
-  /** When this run is a retry: which one, and why it is being tried again. */
-  retry: z.object({ n: z.number().int().min(1), of: z.number().int().min(1), why: z.string(), reason: z.string() }).optional(),
+  /**
+   * When this run is a retry: which one, and why it is being tried again. `from`: the run whose turn
+   * broke (an error, not its own report); if that run goes on by itself (a usage limit lifted), it is
+   * the task's run again and this retry is called off.
+   */
+  retry: z.object({ n: z.number().int().min(1), of: z.number().int().min(1), why: z.string(), reason: z.string(), from: z.string().optional() }).optional(),
   /** Every try that failed so far, oldest first: when it ran, and why it failed. */
   tries: z.array(z.object({ at: z.number(), outcome: z.enum(["done", "failed", "needs-you"]), why: z.string() })).optional(),
   /** When it ran late (hopkins was offline at the time): the time it was due. */
