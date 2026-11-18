@@ -127,6 +127,19 @@ store.putTask(
   }),
 );
 store.putTask(task({ id: "t_photos", text: "back up this week's photos to Nextcloud", state: "scheduled", dueAt: zonedToInstant({ ...localDateOf(realNow + DAY, TZ), hour: 9, minute: 0 }, TZ) }));
+// SEED_TASK_NOW=1: a harmless task due in a minute, to see a run in progress (install with TASK_MODEL).
+if (process.env.SEED_TASK_NOW === "1") {
+  store.putTask(
+    task({
+      id: "t_poem",
+      text: "write a short poem about patience",
+      instructions: "Write a poem of about 200 words about patience, in your reply only (do not create or change any files), then end with the report block, status done.",
+      state: "scheduled",
+      attempts: 0,
+      dueAt: realNow + MIN,
+    }),
+  );
+}
 store.putTask(
   task({
     id: "t_library",

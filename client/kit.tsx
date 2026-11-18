@@ -3,7 +3,7 @@
 // beside conversations, so it should read like a well-kept list, not a dashboard.
 
 import { Children, isValidElement, useState, type ReactNode } from "react";
-import { Platform, Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { ActivityIndicator, Platform, Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { space, tabular, type Colors } from "./theme";
 
@@ -154,6 +154,14 @@ export function CompleteRing(props: { colors: Colors; label: string; onPress: ()
       {done || hover ? <Icon name="Check" size={13} color={done ? props.colors.accentForeground : props.colors.foreground} /> : null}
     </Pressable>
   );
+}
+
+/**
+ * Something is happening: the platform's own spinner, sized for where it sits. (The plugin kit's
+ * Loading is a whole-panel placeholder with its own label; it does not fit in a row.)
+ */
+export function Spinner(props: { color: string; large?: boolean }) {
+  return <ActivityIndicator size={props.large ? "large" : "small"} color={props.color} accessibilityLabel="Working" />;
 }
 
 /** A small label for the exceptional ("work"); personal is the default, so it never gets one. */

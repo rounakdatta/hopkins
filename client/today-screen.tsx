@@ -5,10 +5,10 @@
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useRpc, useSubscription, type PluginScreenProps } from "@getpaseo/plugin/client";
-import { Icon, Loading, ScrollView, SettingsCard, SettingsSelect, SettingsSwitch, useToast } from "@getpaseo/plugin/client/ui";
+import { Icon, ScrollView, SettingsCard, SettingsSelect, SettingsSwitch, useToast } from "@getpaseo/plugin/client/ui";
 import type { TodayItem, TodayView } from "../shared/model";
 import { actRpc, backfillRpc, recapsRpc, taskRpc, todayWatch } from "../shared/rpc";
-import { Button, Card, ChoiceRow, CompleteRing, Divider, Rows, Section, Tag, type } from "./kit";
+import { Button, Card, ChoiceRow, CompleteRing, Divider, Rows, Section, Spinner, Tag, type } from "./kit";
 import { NoticedLine, Review } from "./review";
 import { space, tabular, type Colors } from "./theme";
 import { clockLabel, dayOf, headline, recapSummary, spokenAt, upcoming, type TaskItem, type Upcoming } from "./words";
@@ -51,7 +51,7 @@ export function TodayScreen(props: PluginScreenProps) {
         {subscription.status === "error" ? (
           <Text style={[type.meta, { color: colors.foregroundMuted, textAlign: "center" }]}>hopkins isn't answering right now. It will catch up on its own; nothing is lost.</Text>
         ) : (
-          <Loading />
+          <Spinner color={colors.foregroundMuted} large />
         )}
       </View>
     );
@@ -654,7 +654,7 @@ function TaskRow(props: { task: TaskItem; colors: Colors; openAgent: ((agentId: 
   const openRun = task.agentId && props.openAgent ? () => props.openAgent!(task.agentId!) : null;
   const look: Record<TaskItem["state"], { icon: string | null; tint: string; status: string }> = {
     scheduled: { icon: "Clock", tint: colors.foregroundMuted, status: task.when },
-    running: { icon: null, tint: colors.foregroundMuted, status: "Working on it now" },
+    running: { icon: null, tint: colors.foregroundMuted, status: task.time && task.day === "Today" ? `Working on it since ${task.time}` : "Working on it now" },
     "needs-you": { icon: "CircleAlert", tint: colors.statusWarning, status: "Needs your answer" },
     missed: { icon: "Clock", tint: colors.statusWarning, status: `Didn't start ${spokenAt(task.day, task.time, task.when)}: hopkins was offline` },
     done: { icon: "CircleCheck", tint: colors.foregroundMuted, status: task.tries?.length ? `Done on try ${task.tries.length + 1} · ${task.when}` : `Done · ${task.when}` },
@@ -683,7 +683,7 @@ function TaskRow(props: { task: TaskItem; colors: Colors; openAgent: ((agentId: 
   const pressable = !buttons && openRun !== null;
   const body = (
     <>
-      <View style={{ width: 22, height: 21, alignItems: "center", justifyContent: "center" }}>{l.icon ? <Icon name={l.icon} size={20} color={l.tint} /> : <Loading />}</View>
+      <View style={{ width: 22, height: 21, alignItems: "center", justifyContent: "center" }}>{l.icon ? <Icon name={l.icon} size={20} color={l.tint} /> : <Spinner color={colors.accent} />}</View>
       <View style={{ flex: 1, gap: 4 }}>
         <Text style={[type.title, { color: colors.foreground }]}>{task.text}</Text>
         <Text style={[type.meta, { color: urgent ? colors.statusWarning : colors.foregroundMuted, fontWeight: urgent ? "600" : "400" }]}>{l.status}</Text>

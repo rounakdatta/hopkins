@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react";
 import { Text, View } from "react-native";
 import { useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { Loading, ScrollView, SettingsInput, SettingsSection, SettingsSelect, SettingsSwitch } from "@getpaseo/plugin/client/ui";
+import { ScrollView, SettingsInput, SettingsSection, SettingsSelect, SettingsSwitch } from "@getpaseo/plugin/client/ui";
 import { hopkinsSettings, type HopkinsSettings } from "../shared/settings";
+import { Spinner } from "./kit";
 import { space } from "./theme";
 
 const REPING = ["15", "30", "60", "120"] as const;
@@ -18,7 +19,13 @@ export function SettingsScreen(props: PluginSurfaceProps) {
     if (timer.current) clearTimeout(timer.current);
   }, []);
 
-  if (settings.status === "loading") return <Loading />;
+  if (settings.status === "loading") {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <Spinner color={props.theme.colors.foregroundMuted} large />
+      </View>
+    );
+  }
   if (settings.status === "error") {
     return <Text style={{ color: colors.foreground, padding: space.l }}>Couldn't load the settings: {settings.error}</Text>;
   }
