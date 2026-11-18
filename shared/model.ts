@@ -414,6 +414,8 @@ export const TodayViewSchema = z.object({
   tz: z.string(),
   /** Today as people say it, in the user's zone ("Tuesday 17 November"). */
   dateLabel: z.string().optional(),
+  /** Today's local date ("2026-11-17"): where Week and Month start from. */
+  date: z.string().optional(),
   /** Fired and not yet done: the things waiting on you. */
   waiting: z.array(TodayItemSchema),
   today: z.array(TodayItemSchema),

@@ -152,6 +152,41 @@ store.putTask(
   }),
 );
 
+// SEED_DESK=1: a busy day on the desk: something in the machine, and a basket of finished work
+// (a task done with its report, one that didn't work, a reminder done, one dropped).
+if (process.env.SEED_DESK === "1") {
+  const at = (minutesAgo: number) => realNow - minutesAgo * MIN;
+  // With TASK_MODEL set (e.g. claude/claude-haiku-5-5), a real run that waits two minutes starts in
+  // a minute, so the machine can be seen turning. It backs nothing up.
+  if (process.env.SEED_RUN === "1") {
+    store.putTask(
+      task({
+        id: "t_run",
+        text: "back up the photo library to the home server",
+        instructions: "This is an automated preview of hopkins's desk: nothing is backed up. Run the shell command `sleep 240` once, then end with the report block, status done, saying 'Backed up 1,204 photos (6.1 GB).'. Do not use any other tool, and do not read or change any file.",
+        state: "scheduled",
+        attempts: 0,
+        dueAt: realNow + MIN,
+      }),
+    );
+  }
+  store.putTask(
+    task({ id: "t_plans", text: "compare the three electricity plans for the flat", state: "done", dueAt: at(190), startedAt: at(190), finishedAt: at(150), report: "The 'Green Saver' plan is cheapest for your usage: ₹1,840 a month against ₹2,115 and ₹2,260. The comparison is in Documents/Bills/plans.md." }),
+  );
+  store.putTask(
+    task({ id: "t_dentist", text: "book a dentist appointment for a cleaning, any weekday morning", state: "failed", dueAt: at(110), startedAt: at(110), finishedAt: at(95), error: "The clinic's booking page kept timing out after the date step, three times in a row." }),
+  );
+  clock.t = at(80);
+  const bank = set({ text: "call the bank about the card replacement", when: "in 5m" }, "errands");
+  clock.t = at(70);
+  reminders.close(bank.id, "done");
+  clock.t = at(50);
+  const parcel = set({ text: "pick up the parcel from the post office", when: "in 5m" }, "errands");
+  clock.t = at(40);
+  reminders.close(parcel.id, "dropped");
+  clock.t = realNow;
+}
+
 const notice = (id: string, text: string, why: string, when: string | null) =>
   store.putSuggestion({ id, text, when, why, scope: "personal", origin: "noticed", sourceTitle: "weekend plans", createdAt: realNow - 3_600_000, state: "open", key: text.toLowerCase() });
 notice("s_1", "book the dentist for a cleaning", "said on Sunday: 'I really need to book the dentist'", null);

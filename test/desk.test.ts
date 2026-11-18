@@ -247,7 +247,7 @@ describe("Week and Month", () => {
 });
 
 describe("the machine", () => {
-  it("holds running tasks, and a reminder's own card while its daily check runs", () => {
+  it("holds running tasks, a reminder's daily check, and a history scan", () => {
     const t = rig();
     const now = t.clock.now();
     const bed = t.remind({ text: "go to bed", when: "11pm", repeat: "daily" });
@@ -257,7 +257,7 @@ describe("the machine", () => {
     const machine = machineNow(t.store, t.cfg, { ...idleBackfill(), state: "running", startedAt: now - 120_000, total: 618, done: 212 });
     expect(machine.map((m) => [m.key, m.kind, m.since])).toEqual([
       ["t:t_run", "task", "1pm"],
-      [`r:${bed.id}`, "check", "1:59pm"],
+      [`c:${bed.id}`, "check", "1:59pm"],
       ["history", "history", "1:58pm"],
     ]);
     expect(machine[2]!.progress).toEqual({ done: 212, total: 618 });

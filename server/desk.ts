@@ -81,8 +81,7 @@ export function basketCounts(entries: readonly BasketEntry[]): { done: number; o
 }
 
 /**
- * What is being processed right now: running tasks, a reminder's daily check (its own card is in
- * the machine while it is looked at), and a history scan.
+ * What is being processed right now: running tasks, a reminder's daily check, and a history scan.
  */
 export function machineNow(store: Store, cfg: Config, backfill: BackfillState): MachineItem[] {
   const since = (t: number | undefined | null) => (t ? timeLabel(t, cfg.tz, cfg.clock) : null);
@@ -91,7 +90,8 @@ export function machineNow(store: Store, cfg: Config, backfill: BackfillState): 
   for (const t of running) {
     if (t.kind === "check") {
       const r = t.reminderId ? store.get(t.reminderId) : undefined;
-      if (r) items.push({ key: `r:${r.id}`, kind: "check", id: r.id, text: r.text, since: since(t.startedAt), scope: r.scope });
+      // A slip of its own: the reminder's card stays where it is (on the table, or in your hand).
+      if (r) items.push({ key: `c:${r.id}`, kind: "check", id: r.id, text: r.text, since: since(t.startedAt), scope: r.scope });
     } else {
       items.push({ key: `t:${t.id}`, kind: "task", id: t.id, text: t.text, since: since(t.startedAt), agentId: t.agentId, scope: t.scope });
     }

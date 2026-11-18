@@ -25,3 +25,43 @@ export type TextInputProps = Props;
 export type FlatListProps<T> = Props & { data?: readonly T[] };
 export type NativeScrollView = unknown;
 export type GestureResponderEvent = unknown;
+
+// Motion and platform services the desk uses. Loose on purpose, like the rest of this file.
+export namespace Animated {
+  class Value {
+    constructor(value: number);
+    setValue(value: number): void;
+    stopAnimation(callback?: (value: number) => void): void;
+    interpolate(config: { inputRange: number[]; outputRange: (number | string)[]; extrapolate?: "clamp" | "extend" | "identity" }): AnimatedInterpolation;
+  }
+  type AnimatedInterpolation = Value;
+  interface CompositeAnimation {
+    start(callback?: (result: { finished: boolean }) => void): void;
+    stop(): void;
+  }
+  function timing(value: Value, config: { toValue: number; duration?: number; delay?: number; easing?: (t: number) => number; useNativeDriver: boolean }): CompositeAnimation;
+  function spring(value: Value, config: { toValue: number; useNativeDriver: boolean; [key: string]: unknown }): CompositeAnimation;
+  function loop(animation: CompositeAnimation, config?: { iterations?: number }): CompositeAnimation;
+  function parallel(animations: CompositeAnimation[]): CompositeAnimation;
+  function sequence(animations: CompositeAnimation[]): CompositeAnimation;
+  const View: ComponentType<Props>;
+  const Text: ComponentType<Props>;
+}
+export const Easing: {
+  linear: (t: number) => number;
+  ease: (t: number) => number;
+  out(f: (t: number) => number): (t: number) => number;
+  in(f: (t: number) => number): (t: number) => number;
+  inOut(f: (t: number) => number): (t: number) => number;
+  cubic: (t: number) => number;
+  quad: (t: number) => number;
+  bezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number;
+};
+export const AccessibilityInfo: {
+  isReduceMotionEnabled(): Promise<boolean>;
+  addEventListener(event: "reduceMotionChanged", handler: (enabled: boolean) => void): { remove(): void };
+};
+export const BackHandler: {
+  addEventListener(event: "hardwareBackPress", handler: () => boolean): { remove(): void };
+};
+export type LayoutChangeEvent = { nativeEvent: { layout: { x: number; y: number; width: number; height: number } } };

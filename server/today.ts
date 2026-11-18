@@ -2,7 +2,7 @@
 
 import type { BackfillState, Reminder, TodayItem, TodayView } from "../shared/model";
 import type { Suggestions } from "./noticing";
-import { addDays, dayLabel, formatClock, localDateOf, longDate, timeLabel, weekdayOf, zonedToInstant, formatWhen } from "../shared/time";
+import { addDays, dayLabel, formatClock, formatLocalDate, localDateOf, longDate, timeLabel, weekdayOf, zonedToInstant, formatWhen } from "../shared/time";
 import type { Config } from "./config";
 import type { Store } from "./store";
 import type { Reminders } from "./reminders";
@@ -100,6 +100,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     generatedAt: now,
     tz: cfg.tz,
     dateLabel: longDate(now, cfg.tz),
+    date: formatLocalDate(localDateOf(now, cfg.tz)),
     waiting: waiting.map((r) => item(r, true)),
     today: today.map((r) => item(r)),
     upcoming: upcoming.map((r) => item(r)),
