@@ -177,7 +177,7 @@ const OUTSIDE_EFFECTS =
 /** The message that picks a run up in its own conversation after it died: it keeps all it knew. */
 export function resumeText(why: string, stoppedAt: number, cfg: Config, now: number): string {
   return [
-    `hopkins: this run stopped at ${formatWhen(stoppedAt, cfg.tz, now, cfg.clock)} before it finished (${why.replace(/\s+/g, " ").slice(0, 300)}). Pick up where you left off.`,
+    `hopkins: this run stopped at ${formatWhen(stoppedAt, cfg.tz, now, cfg.clock).replace(/^today /, "")} before it finished (${why.replace(/\s+/g, " ").slice(0, 300)}). Pick up where you left off.`,
     `${OUTSIDE_EFFECTS} A command or subagent that was running when it stopped did not finish: run it again if it is still needed.`,
     `Then carry on, and end with the <hopkins-report> block when you stop, as before.`,
   ].join("\n");

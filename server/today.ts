@@ -140,8 +140,14 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       dueAt: t.dueAt,
       when: tasks!.describe(t, now),
       // Running: since when it has been working (an answer restarts that), not when it was due.
-      day: dayLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.dueAt, cfg.tz, now),
-      time: timeLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.dueAt, cfg.tz, cfg.clock),
+      day: dayLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.hold?.kind === "capacity" ? now : t.dueAt, cfg.tz, now),
+      // Queued for room: no time of its own, it goes as soon as there is room.
+      time:
+        t.state === "scheduled" && t.hold?.kind === "capacity"
+          ? "When there is room"
+          : t.state === "needs-you" && t.hold?.kind === "paused"
+            ? "When you resume it"
+            : timeLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.dueAt, cfg.tz, cfg.clock),
       report: (t.report ?? t.error ?? null)?.slice(0, 400) ?? null,
       ...(t.state === "needs-you" && t.unreported ? { unreported: true } : {}),
       agentId: t.agentId,

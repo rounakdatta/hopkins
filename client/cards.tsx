@@ -2,7 +2,7 @@
 // A face uses the reminder's own words, never rewritten; the care is in what else sits on it,
 // which is only what helps at a glance. Everything else waits in the picked-up card.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, TextInput, useToast } from "@getpaseo/plugin/client/ui";
@@ -310,6 +310,7 @@ export function AnswerBox(props: { task: TaskItem; colors: Colors; compact?: boo
   const toast = useToast();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const field = useRef<{ focus?: () => void } | null>(null);
   const send = async (words: string) => {
     const said = words.trim();
     if (!said || busy) return;
@@ -336,7 +337,10 @@ export function AnswerBox(props: { task: TaskItem; colors: Colors; compact?: boo
         </ChoiceRow>
       ) : null}
       <View style={{ flexDirection: "row", alignItems: "flex-end", gap: space.s }}>
+        {/* The card picks itself up when pressed; a press on the field is the field's: it gets the caret. */}
+        <Pressable accessible={false} onPress={() => field.current?.focus?.()} style={{ flex: 1 }}>
         <TextInput
+          ref={field as never}
           value={text}
           onChangeText={setText}
           placeholder={yesNoQuestion(task.question) ? "Or say more…" : "Answer it here…"}
@@ -352,7 +356,6 @@ export function AnswerBox(props: { task: TaskItem; colors: Colors; compact?: boo
             }
           }}
           style={{
-            flex: 1,
             minHeight: props.compact ? 36 : 40,
             maxHeight: 120,
             borderWidth: 1,
@@ -366,6 +369,7 @@ export function AnswerBox(props: { task: TaskItem; colors: Colors; compact?: boo
             outlineStyle: "none",
           } as never}
         />
+        </Pressable>
         <Button colors={colors} tone="primary" compact icon="Send" label="Send" a11y={`Send your answer to ${task.text}`} disabled={busy || !text.trim()} onPress={() => void send(text)} />
       </View>
     </View>
@@ -437,7 +441,7 @@ export function MachineFace(props: { item: MachineItem; colors: Colors; ink?: st
         style={[type.meta, { color: props.ink ?? colors.foregroundMuted, fontWeight: "600", paddingBottom: 5, marginBottom: 2, borderBottomWidth: 1, borderColor: fade(props.ink ?? colors.foregroundMuted, 0.18) }]}
         numberOfLines={1}
       >
-        {item.kind === "check" ? "Checking whether it can stop" : item.kind === "history" ? "Reading history" : "Working on it"}
+        {item.kind === "check" ? "Checking whether it can stop" : item.kind === "history" ? "Reading history" : item.live === "stalled" ? "Stalled" : item.live === "quiet" ? "Quiet" : "Working on it"}
       </Text>
       <Text style={[type.title, { color: colors.foreground }]}>{item.kind === "history" ? "Your past conversations" : item.text}</Text>
       {item.progress ? (
@@ -447,7 +451,7 @@ export function MachineFace(props: { item: MachineItem; colors: Colors; ink?: st
       ) : null}
       {item.line ? (
         <Text style={[type.small, tabular, { color: item.live === "stalled" ? colors.statusWarning : colors.foregroundMuted, fontWeight: item.live === "stalled" ? "600" : "400" }]} numberOfLines={2}>
-          {item.live === "stalled" ? `Stalled · ${item.line}` : item.live === "quiet" ? `Quiet · ${item.line}` : item.line}
+          {item.line}
         </Text>
       ) : since ? (
         <Text style={[type.small, tabular, { color: colors.foregroundMuted }]}>{since}</Text>

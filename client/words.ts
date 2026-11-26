@@ -34,7 +34,10 @@ export function needsYou(view: TodayView): number {
 /** Reminders to come and tasks hopkins will do, in time order. */
 export function upcoming(view: TodayView): Upcoming[] {
   const reminders: Upcoming[] = [...view.today, ...view.upcoming].map((item) => ({ kind: "reminder", at: item.dueAt ?? 0, item }));
-  const tasks: Upcoming[] = view.tasks.filter((t) => t.state === "scheduled" || (t.state === "needs-you" && t.live?.state === "paused")).map((task) => ({ kind: "task", at: task.dueAt, task }));
+  const tasks: Upcoming[] = view.tasks
+    .filter((t) => t.state === "scheduled" || (t.state === "needs-you" && t.live?.state === "paused"))
+    // Queued goes as soon as there is room; paused waits for them, after everything with a time.
+    .map((task) => ({ kind: "task", at: task.live?.state === "queued" ? view.generatedAt : task.live?.state === "paused" ? Number.MAX_SAFE_INTEGER : task.dueAt, task }));
   return [...reminders, ...tasks].sort((a, b) => a.at - b.at);
 }
 
@@ -48,6 +51,8 @@ export function said(entry: Upcoming): string {
   const day = dayOf(entry);
   const time = (entry.kind === "reminder" ? entry.item.time : entry.task.time) ?? null;
   if (!day || !time) return `${text}, ${entry.kind === "reminder" ? entry.item.when : entry.task.when}`;
+  if (entry.kind === "task" && entry.task.live?.state === "queued") return `${text}, when there is room`;
+  if (entry.kind === "task" && entry.task.live?.state === "paused") return `${text} (paused)`;
   if (day === "Today") return `${text} at ${time}`;
   return `${text}, ${day === "Tomorrow" ? "tomorrow" : day} at ${time}`;
 }
@@ -60,7 +65,8 @@ export function headline(view: TodayView): { title: string; detail: string | nul
   const reminders = view.waiting.length;
   const tasks = view.tasks.filter(urgent).length;
   const ahead = upcoming(view);
-  const next = ahead[0] ?? null;
+  // What comes next by itself: a paused run waits for them, so it is never "then".
+  const next = ahead.find((e) => !(e.kind === "task" && e.task.live?.state === "paused")) ?? null;
   if (reminders + tasks > 0) {
     const title =
       reminders && tasks

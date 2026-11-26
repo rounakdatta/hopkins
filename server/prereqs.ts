@@ -77,7 +77,7 @@ export class HostPrereqs implements Prereqs {
     }
     if (lower === "gpg") {
       const ok = await gpgUnlocked();
-      return { ok, step: custom?.fix?.trim() || "GPG is locked: unlock it by decrypting something once (for example `pass show` any entry) and entering the passphrase." };
+      return { ok, step: custom?.fix?.trim() || "GPG is locked: unlock it by decrypting something once (for example, open any entry with pass) and entering the passphrase." };
     }
     if (lower.startsWith("net:") || lower.startsWith("http:") || lower.startsWith("https:")) {
       const url = lower.startsWith("net:") ? name.slice(4).trim() : name.trim();

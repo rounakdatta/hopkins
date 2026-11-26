@@ -103,10 +103,13 @@ export function runsHeadline(groups: RunGroups): { title: string; detail: string
   if (needsYou.length + working.length + finished.length === 0) {
     return { title: "No runs yet.", detail: "When hopkins does something for you at a set time, the agent it starts is listed here." };
   }
-  const workingLine = working.length === 0 ? null : working.length === 1 ? "One more is working." : `${capital(number(working.length))} more are working.`;
+  // Some of them may be waiting (for a reset, for room, paused): "under way" is true of all of them.
+  const atWork = working.every((r) => r.state === "running" && r.liveState !== "stalled");
+  const verb = atWork ? "working" : "under way";
+  const workingLine = working.length === 0 ? null : working.length === 1 ? `One more is ${verb}.` : `${capital(number(working.length))} more are ${verb}.`;
   if (needsYou.length === 1) return { title: "A run needs you.", detail: workingLine };
   if (needsYou.length > 1) return { title: `${capital(number(needsYou.length))} runs need you.`, detail: workingLine };
-  if (working.length === 1) return { title: "One run is working.", detail: null };
-  if (working.length > 1) return { title: `${capital(number(working.length))} runs are working.`, detail: null };
+  if (working.length === 1) return { title: `One run is ${verb}.`, detail: null };
+  if (working.length > 1) return { title: `${capital(number(working.length))} runs are ${verb}.`, detail: null };
   return { title: "Nothing is running.", detail: null };
 }

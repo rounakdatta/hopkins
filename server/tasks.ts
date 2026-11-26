@@ -183,6 +183,15 @@ export function atTime(instant: number, cfg: Config, now: number): string {
   return when.startsWith("today ") ? when.slice(6) : when;
 }
 
+/** After a verb: "at 12:40am", "tomorrow at 9am", "on Mon 30 Nov, 1:30am". */
+export function atPhrase(instant: number, cfg: Config, now: number): string {
+  const when = formatWhen(instant, cfg.tz, now, cfg.clock);
+  if (when.startsWith("today ")) return `at ${when.slice(6)}`;
+  if (when.startsWith("tomorrow ")) return `tomorrow at ${when.slice(9)}`;
+  if (when.startsWith("yesterday ")) return `yesterday at ${when.slice(10)}`;
+  return `on ${when}`;
+}
+
 /** "3h 12m", "45 min", "2 days 4h". */
 export function spanText(ms: number): string {
   const minutes = Math.max(0, Math.round(ms / 60_000));
@@ -1147,7 +1156,7 @@ export class TaskRunner {
         return this.settle(id, { state: "needs-you", report: "It was stopped in the middle of a step. Open the run to see where it got to.", unreported: true }, now);
       }
       // Cut off mid-step (or nothing on record): the process went away without finishing.
-      this.dead(id, turn?.ended === "mid-turn" ? "it was cut off mid-step: the host or Paseo restarted, or its process died" : "it stopped without a word");
+      this.dead(id, turn?.ended === "mid-turn" ? "it was cut off mid-step: the host or Paseo restarted, or its process died" : "its turn ended without a word: Paseo or the host restarted, or its process died");
     } catch (err) {
       this.log.warn("could not read how a run stopped", { task: id, error: errorText(err) });
     } finally {
@@ -1276,7 +1285,7 @@ export class TaskRunner {
       this.settle(id, { state: "failed", error: `a usage limit stopped it, and it lifts only at ${formatWhen(at, cfg.tz, now, cfg.clock)}, after its deadline` }, now);
       return;
     }
-    const why = `a usage limit${resetAt !== null ? `, which resets at ${atTime(resetAt, cfg, now)}` : ""}`;
+    const why = `a usage limit${resetAt !== null ? `, which resets ${atPhrase(resetAt, cfg, now)}` : ""}`;
     this.put({
       ...task,
       state: "scheduled",
@@ -1584,7 +1593,7 @@ export class TaskRunner {
     const current = this.store.getTask(id);
     if (!current || !isOpen(current)) return { ok: false, message: "It finished meanwhile." };
     const now = this.clock.now();
-    this.put({ ...current, state: "needs-you", hold: { kind: "paused", since: now, ...(agentId ? { agentId } : {}) }, report: `Paused by you at ${formatWhen(now, this.config().tz, now, this.config().clock)}.`, unreported: undefined, live: { ...(current.live ?? { since: now }), state: "paused", since: now }, updatedAt: now, reported: `paused:${now}` });
+    this.put({ ...current, state: "needs-you", hold: { kind: "paused", since: now, ...(agentId ? { agentId } : {}) }, report: `Paused by you ${atPhrase(now, this.config(), now)}.`, unreported: undefined, live: { ...(current.live ?? { since: now }), state: "paused", since: now }, updatedAt: now, reported: `paused:${now}` });
     this.store.event("task-paused", { id });
     return { ok: true, message: `Paused: ${task.text}. Resume it when you like.` };
   }

@@ -4,7 +4,7 @@
 import type { Task, TaskLiveView } from "../shared/model";
 import { formatWhen } from "../shared/time";
 import type { Config } from "./config";
-import { atTime, spanText, waitsOnUser } from "./tasks";
+import { atPhrase, atTime, spanText, waitsOnUser } from "./tasks";
 
 /** "just now", "4 min ago", "2h 10m ago"; past a day, the time itself. */
 export function ago(at: number, cfg: Config, now: number): string {
@@ -32,7 +32,7 @@ export function liveOf(task: Task, cfg: Config, now: number): TaskLiveView | nul
     const commit = live?.commit ? `"${live.commit.subject}" ${ago(live.commit.at, cfg, now)}` : null;
     const phase = live?.phase ?? null;
     const parts = [
-      elapsed,
+      elapsed ? `${elapsed} in` : null,
       lastActivity ? `last activity ${lastActivity}` : null,
       phase ? `phase: ${phase}` : null,
       commit ? `last commit ${commit}` : null,
@@ -46,16 +46,16 @@ export function liveOf(task: Task, cfg: Config, now: number): TaskLiveView | nul
   if (task.state === "scheduled") {
     if (hold.kind === "resume") {
       const until = hold.until ?? task.dueAt;
-      const line = until > now + 30_000 ? `Stopped at ${at(hold.since)} (${hold.why ?? "it stopped"}); picks up again at ${at(until)}` : `Picking it up again (${hold.why ?? "it stopped"})`;
+      const line = until > now + 30_000 ? `Stopped ${atPhrase(hold.since, cfg, now)} (${hold.why ?? "it stopped"}); picks up again ${atPhrase(until, cfg, now)}` : `Picking it up again (${hold.why ?? "it stopped"})`;
       return { ...base, state: "resuming", line, until: at(until) };
     }
-    if (hold.kind === "limit") return { ...base, state: "limit", line: `Waiting for ${hold.why ?? "a usage limit"}; carries on at ${at(hold.until ?? task.dueAt)}`, until: at(hold.until ?? task.dueAt) };
+    if (hold.kind === "limit") return { ...base, state: "limit", line: `Waiting for ${hold.why ?? "a usage limit"}; carries on ${atPhrase(hold.until ?? task.dueAt, cfg, now)}`, until: at(hold.until ?? task.dueAt) };
     if (hold.kind === "capacity") return { ...base, state: "queued", line: `Queued: waiting for capacity (${hold.why ?? "the host is busy"})` };
   }
   if (task.state === "needs-you") {
     if (hold.kind === "sign-in") return { ...base, state: "sign-in", line: "Stopped: its sign-in expired. It carries on by itself once sign-in works.", step: hold.step ?? null };
     if (hold.kind === "prereq") return { ...base, state: "prereq", line: "Needs you before it can start", step: hold.step ?? null };
-    if (hold.kind === "paused") return { ...base, state: "paused", line: `Paused at ${at(hold.since)}` };
+    if (hold.kind === "paused") return { ...base, state: "paused", line: `Paused ${atPhrase(hold.since, cfg, now)}` };
   }
   return null;
 }

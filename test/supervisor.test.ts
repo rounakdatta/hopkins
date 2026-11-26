@@ -33,7 +33,7 @@ describe("a run that works for hours", () => {
     // At three hours its card says how it is doing, not that it failed.
     expect(at3h?.state).toBe("running");
     expect(at3h?.live).toMatchObject({ state: "working", phase: "build and tests" });
-    expect(at3h?.live?.line).toMatch(/^3h \d+m · last activity (just now|\d+ min ago) · phase: build and tests$/);
+    expect(at3h?.live?.line).toMatch(/^3h \d+m in · last activity (just now|\d+ min ago) · phase: build and tests$/);
   });
 
   it("goes quiet, then stalled (told once), and back to working when it shows life again", async () => {
