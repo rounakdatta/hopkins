@@ -4,14 +4,19 @@
 // needed an answer could not be found. Each task's runs now share one workspace named after the
 // task; a Runs list shows every run; and the runs started before this get their names once.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TaskSchema, type Task } from "../shared/model";
 import { filterRuns, groupRuns, runsHeadline, runTitle, RUN_TITLE_MAX, type Run } from "../shared/runs";
 import { PaseoTaskPort, runTabTitle, TASK_LABEL } from "../server/task-port";
 import { buildRuns, nameRunWorkspaces, taskTextOf } from "../server/runs";
 import { taskCueText } from "../server/prompts";
 import { silentLogger } from "../server/log";
-import { agentSource, setup } from "./helpers";
+import { agentSource, setup, tmpDir } from "./helpers";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { startHopkins } from "../server/app";
+import { Store } from "../server/store";
+import { settingsSchema } from "../shared/settings";
+import type { RunsView } from "../shared/runs";
 
 const at = Date.parse("2026-11-26T05:30:00Z");
 
@@ -315,5 +320,69 @@ describe("telling the user where a run is", () => {
     expect(cue).toContain(`"${runTitle(t.text)}"`);
     expect(cue).toContain("under Runs in hopkins's sidebar entry");
     expect(cue).not.toContain("under Tasks"); // the Today screen has had no Tasks section since the desk
+  });
+});
+
+describe("the whole plugin, once it connects", () => {
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    // This shell may be inside a real Paseo: never let the test reach that daemon.
+    for (const key of ["PASEO_LISTEN", "PASEO_PASSWORD", "PASEO_HOME"]) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) if (value !== undefined) process.env[key] = value;
+  });
+
+  it("names the earlier runs' windows, and keeps the Runs screen live", async () => {
+    expect(process.env.PASEO_LISTEN).toBeUndefined();
+    const dir = tmpDir();
+    const seed = new Store(dir, silentLogger);
+    seed.load();
+    seed.putTask({ ...task("t_old", "check that last night's photo backup finished"), state: "done", agentId: "run-old", report: "Backed up 312 photos.", startedAt: at });
+    seed.save();
+
+    const handlers = new Map<string, (input: unknown, ctx: unknown) => unknown>();
+    const host = {
+      registerSettings: () => ({ read: async () => ({ status: "ready", revision: "1", values: settingsSchema.parse({ timezone: "Asia/Kolkata" }) }), subscribe: () => () => undefined }),
+      addHook: () => () => undefined,
+      handle: (contract: { name: string }, handler: (input: unknown, ctx: unknown) => unknown) => void handlers.set(contract.name, handler),
+      on: () => () => undefined,
+      before: () => () => undefined,
+      registerProvider: () => undefined,
+      registerUsageSource: () => undefined,
+    } as unknown as PluginServerContext;
+    const titled: Record<string, string> = {};
+    const nothing = () => Promise.reject(new Error("not in this test"));
+    const paseo = {
+      workspaces: {
+        list: () => Promise.resolve({ entries: [{ id: "wks_old", title: null, background: true }], pageInfo: { hasMore: false, nextCursor: null } }),
+        ref: (id: string) => ({ setTitle: (title: string) => ((titled[id] = title), Promise.resolve({ title })) }),
+        open: nothing,
+      },
+      agents: {
+        list: () =>
+          Promise.resolve({
+            entries: [{ agent: { id: "run-old", workspaceId: "wks_old", title: "check that last night's photo backup fini", labels: { "hopkins.role": "task", [TASK_LABEL]: "t_old" } } }],
+            pageInfo: { hasMore: false, nextCursor: null },
+          }),
+        ref: () => ({ refresh: nothing, waitForFinish: nothing }),
+        create: nothing,
+      },
+    };
+    const views: RunsView[] = [];
+    const subscription = new AbortController();
+    const stop = startHopkins(host, { dataDir: dir, log: silentLogger, tickMs: 3_600_000, nameRunsAfterMs: 10 });
+    try {
+      void handlers.get("hopkins.runs.watch")!({}, { paseo, signal: subscription.signal, push: async (v: RunsView) => void views.push(v) });
+      for (let i = 0; i < 100 && !titled.wks_old; i++) await new Promise((r) => setTimeout(r, 20));
+      expect(titled).toEqual({ wks_old: "check that last night's photo backup finished" });
+      expect(views[0]!.runs.map((r) => ({ id: r.id, state: r.state, agentId: r.agentId }))).toEqual([{ id: "t_old", state: "done", agentId: "run-old" }]);
+    } finally {
+      subscription.abort();
+      stop();
+    }
   });
 });
