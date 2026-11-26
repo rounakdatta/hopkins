@@ -178,8 +178,9 @@ export class PaseoThreadPort implements ThreadPort {
       const own = this.store.threadAgentId();
       const titles: string[] = [];
       for (const entry of result.entries as unknown[]) {
-        const agent = ((entry as { agent?: unknown }).agent ?? entry) as AgentLike & { title?: string | null; lastActivityAt?: string; updatedAt?: string; background?: boolean; parentAgentId?: string | null };
-        if (!agent.id || agent.id === own || agent.background || agent.parentAgentId) continue;
+        const agent = ((entry as { agent?: unknown }).agent ?? entry) as AgentLike & { title?: string | null; lastActivityAt?: string; updatedAt?: string; background?: boolean; parentAgentId?: string | null; labels?: Record<string, string> | null };
+        // hopkins's own runs are tabs now, yet they are what hopkins did, not what the user worked on.
+        if (!agent.id || agent.id === own || agent.background || agent.parentAgentId || agent.labels?.[THREAD_LABEL] === "task") continue;
         const active = Date.parse(agent.lastActivityAt ?? agent.updatedAt ?? "");
         if (Number.isFinite(active) && active >= since && agent.title) titles.push(agent.title);
       }

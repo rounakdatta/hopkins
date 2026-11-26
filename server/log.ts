@@ -2,7 +2,7 @@
 // Paseo copies plugin stdout into the daemon log, which may be readable by
 // other users on the host, so only ids, counts and states go out.
 
-export type Fields = Record<string, string | number | boolean | null | undefined>;
+type Fields = Record<string, string | number | boolean | null | undefined>;
 
 export interface Logger {
   info(message: string, fields?: Fields): void;

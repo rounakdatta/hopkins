@@ -23,7 +23,7 @@ import { PaseoLink } from "./paseo-link";
 import { Recaps } from "./recaps";
 import { Reminders, systemClock, type Clock } from "./reminders";
 import { Scheduler } from "./scheduler";
-import { PaseoTaskPort } from "./task-port";
+import { PaseoTaskPort, TASK_LABEL } from "./task-port";
 import { TaskRunner, Tasks } from "./tasks";
 import { Conditions } from "./conditions";
 import { defaultDataDir, Store } from "./store";
@@ -69,7 +69,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   const queue = new DeliveryQueue(store, reminders, () => (link.connected ? port : null), clock, getConfig, log, defaultDeliveryOptions, recapSource);
   // Tasks: "at 8pm, do X". They start from the scheduler's tick and report through the queue.
   const tasks = new Tasks(store, reminders, clock, getConfig);
-  const taskPort = new PaseoTaskPort(link, (message, fields) => log.warn(message, fields));
+  const taskPort = new PaseoTaskPort(link);
   const runner = new TaskRunner(
     store,
     tasks,
@@ -336,7 +336,8 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
         runner.onTurnFinished(agent.id, outcome.kind === "canceled");
         return;
       }
-      if (outcome.kind === "canceled" || agent.parentAgentId || agent.background || agent.id === store.threadAgentId()) return;
+      // A run (even an old one whose task is no longer kept) is hopkins's own work, not a conversation to notice in.
+      if (outcome.kind === "canceled" || agent.parentAgentId || agent.background || agent.metadata?.[TASK_LABEL] !== undefined || agent.id === store.threadAgentId()) return;
       noticer.touch(agent.id, scopeFor(agent.cwd, config.workRoots));
     } catch (err) {
       log.warn("could not note a finished turn", { error: errorText(err) });

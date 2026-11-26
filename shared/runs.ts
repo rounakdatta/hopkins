@@ -1,7 +1,7 @@
-// Runs: the agents hopkins starts to do tasks, findable by name. Paseo names a workspace after its
-// folder unless it is given a title, so every run in ~/personal was a workspace called "personal",
-// and a search for a run listed a dozen of them, told apart only by their age. Each task's runs now
-// share one workspace named after the task, and the app lists every run in one place.
+// Runs: the agents hopkins starts to do tasks, findable by name. Each used to sit in a hidden window
+// of its own, named after its folder ("personal"), and a search listed a dozen of those, told apart
+// only by their age. A run is now a tab in its folder's workspace, named after its task, and the
+// app lists every run in one place.
 
 import { z } from "zod";
 import { ScopeSchema, TaskStateSchema } from "./model";
@@ -11,7 +11,7 @@ export const RUN_TITLE_MAX = 72;
 
 /**
  * How a run is named in Paseo: its task in the user's own words, on one line, cut at a word (never
- * mid-word) when it is long. Search matches these words, so they are the task's, not hopkins's.
+ * mid-word) when it is long. Search and History match these words, so they are the task's.
  */
 export function runTitle(text: string, max = RUN_TITLE_MAX): string {
   const flat = text.replace(/\s+/g, " ").trim();
@@ -27,7 +27,7 @@ export function runTitle(text: string, max = RUN_TITLE_MAX): string {
 export const RunSchema = z.object({
   /** The task's id. */
   id: z.string(),
-  /** The name the run has in Paseo (its workspace's title): what a search for it matches. */
+  /** The run's name in Paseo (its tab's title, without the try): what a search for it matches. */
   title: z.string(),
   state: TaskStateSchema,
   /** needs-you without a question: it stopped without saying how it went. */

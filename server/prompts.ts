@@ -171,8 +171,8 @@ export function taskCueText(delivery: Delivery, task: Task, now: number, cfg: Co
   const nth = ["first", "second", "third", "fourth"][failures] ?? `${failures + 1}th`;
   const lateLine = task.lateFrom ? ` It ran late: hopkins was offline at ${when}; mention that in a few words.` : "";
   // Where the run is: a link in a message cannot open a conversation in Paseo (the app opens only
-  // web pages and files from one), so the message names the run the way Paseo's search finds it.
-  const findRun = `which is under Runs in hopkins's sidebar entry, and which Paseo's search finds by its name, ${quote(runTitle(task.text))}`;
+  // web pages and files from one), so the message names the run the way Paseo shows and finds it.
+  const findRun = `a tab named ${quote(runTitle(task.text))} in its folder's workspace, also listed under Runs in hopkins's sidebar entry`;
   const ask: Record<string, string> = {
     scheduled:
       retryAt !== undefined
