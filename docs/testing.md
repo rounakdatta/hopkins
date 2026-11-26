@@ -21,6 +21,8 @@ npm run check   # tsc + vitest
 | `delivery` | Against a fake conversation that can be busy, fail or go unread: one-at-a-time sends, merging, waiting instead of interrupting, retry with back-off, catch-up after downtime, seen tracking, a single re-ping |
 | `tools`, `mcp-server`, `cue` | What agents see and receive; the MCP protocol surface; that every prompt hopkins writes is recognised by the app's transformer |
 
+| `supervisor` | Long runs on a simulated Paseo (`test/sim.ts`): scripted agents that work for hours, hang, ask, stop without a report, die, lose the daemon, hit a usage limit or an expired sign-in, on a clock that runs as fast as the test likes. It proves a ten-hour run is never failed; quiet, stalled (told once) and back; one run per task; a dead run picked up in its own conversation, once per death, with backoff and a clear failure after five; a usage limit waited out to its reset; a sign-in told at once and carried on once fixed; answers passed into the run; heavy runs capped; prerequisites told once per outage; pause, stop, nudge |
+
 The delivery tests exercise `DeliveryQueue` through a `ThreadPort` interface. That port is the only part that touches Paseo, so it is what the end-to-end checks cover.
 
 ## End-to-end, on an isolated daemon
@@ -53,6 +55,34 @@ Test agents are real agents with your real provider setup, including any skills 
 scripts/dev-paseo.sh run --provider claude/claude-haiku-5-5 --mode bypassPermissions \
   "This is an automated test. Call the hopkins_remind tool once with text 'water the ferns' and when 'in 2m'. Do not use any other tool."
 ```
+
+### Long runs, end to end, with fake agents
+
+`scripts/sim/` runs an isolated Paseo 0.16.1 with a scripted fake agent as a provider (`fakeagent`, an ACP agent in plain Node: no tokens, about 60 MB a run) and hopkins installed from this checkout. Script time runs 60 times faster than real time. See `scripts/sim/README.md`.
+
+```sh
+cd scripts/sim
+./daemon.sh start && ./paseo.sh plugin add "$PWD/fake-provider"
+SEED=1 ./install-hopkins.sh        # hopkins with short thresholds and eight scripted tasks
+SEED=1 SEED_SET=showcase ./install-hopkins.sh   # tasks that stay a while in each state, for screenshots
+./daemon.sh restart                # the daemon dying under a run
+./daemon.sh stop
+```
+
+Verified on 26 Nov 2026 (Paseo 0.16.1 daemon, 0.17.4 web app, desktop and phone sizes):
+
+| Check | Result |
+|---|---|
+| A six-hour build (heavy, progress file) | worked throughout, never quiet; its card read "6 min in · last activity just now · phase: build and tests"; done, one run |
+| A second heavy run with one allowed | "Queued: waiting for capacity (a heavy run is working)", started when the first finished |
+| The agent's process dies mid-turn | picked up again in the same conversation after a minute; exactly one resume message, although Paseo reported that send as failed ("has no pending run") |
+| The daemon restarts under a run | the run came back unloaded; hopkins read it as stopped without its turn ending and picked it up in place; done, one run |
+| A usage limit at 11:13pm that resets at 11:17pm | waited; the resume arrived at 11:20:06, in the same conversation |
+| A prerequisite missing (a file, then GPG locked) | "Needs you before it can start" with the step, one message; it started by itself once the file existed |
+| A step that hangs | quiet at 1 minute, stalled at 2 (test thresholds), one note; Nudge from its card freed it |
+| A question | Yes on the Today card (desktop), and typed words on the card (phone), each reached the run as the user's message |
+| Pause from a card | the run's turn ended; the card moved to Coming up as Paused, out of the badge |
+| hopkins restarted (plugin reinstalled) mid-runs | every run followed again; no run restarted |
 
 ### What was verified (Paseo 0.16.1, 17 Nov 2026)
 
