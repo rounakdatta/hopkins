@@ -18,6 +18,6 @@
     "assets/07-noticed.png"
   ],
   "requirements": {
-    "paseo": "^0.16.1"
+    "paseo": ">=0.16.1"
   }
 }
