@@ -39,49 +39,61 @@ function task(id: string, text: string, attempts = 1, cwd = "/home/someone/perso
 }
 
 /**
- * A daemon as far as starting runs goes: opening a folder hands back that folder's one workspace
- * (the one in the sidebar), making it the first time; a missing folder is refused.
+ * A daemon as far as starting runs goes. `shown` folders have a workspace in the sidebar; opening one
+ * of them hands it back. Opening any other folder would bring back an archived workspace or make
+ * one, so here it is refused: hopkins must not ask. A folder that is not on disk cannot be made.
  */
-function daemon(folders = ["/home/someone/personal", "/home/someone/work"]) {
-  const known = new Set(folders);
-  const workspaces = new Map<string, { id: string; cwd: string; background: boolean }>();
+function daemon(options: { folders?: string[]; shown?: string[] } = {}) {
+  const onDisk = new Set(options.folders ?? ["/home/someone/personal", "/home/someone/work"]);
+  const shown = new Set(options.shown ?? ["/home/someone/personal", "/home/someone/work"]);
+  const workspaces = new Map<string, { id: string; cwd: string }>();
   const opened: string[] = [];
-  const agents: { id: string; workspaceId: string; key: string; title: string; labels: Record<string, string>; metadata: Record<string, unknown>; background: unknown }[] = [];
+  const made: string[] = [];
+  const agents: { id: string; workspaceId: string | null; cwd: string | null; key: string; title: string; labels: Record<string, string>; metadata: Record<string, unknown>; background: unknown }[] = [];
   let n = 0;
+  const createAgent = (workspaceId: string | null, cwd: string | null, request: Record<string, unknown>) => {
+    const id = `agent-${++n}`;
+    agents.push({
+      id,
+      workspaceId,
+      cwd,
+      key: String(request.idempotencyKey),
+      title: String(request.title),
+      labels: request.labels as Record<string, string>,
+      metadata: request.metadata as Record<string, unknown>,
+      background: request.background,
+    });
+    return Promise.resolve({ id, run: () => Promise.resolve({ status: "idle", lastMessage: "done" }) });
+  };
+  const workspaceFor = (cwd: string) => {
+    const w = workspaces.get(cwd) ?? { id: `wks_${cwd.split("/").pop()}`, cwd };
+    workspaces.set(cwd, w);
+    return { id: w.id, agents: { create: (request: Record<string, unknown>) => createAgent(w.id, null, request) } };
+  };
   const api = {
     workspaces: {
+      list: () => Promise.resolve({ entries: [...shown].map((cwd) => ({ id: `wks_${cwd.split("/").pop()}`, projectRootPath: cwd, workspaceDirectory: cwd, background: false })), pageInfo: { hasMore: false, nextCursor: null } }),
       open: (cwd: string) => {
         opened.push(cwd);
-        if (!known.has(cwd)) return Promise.reject(new Error(`Directory not found: ${cwd}`));
-        const w = workspaces.get(cwd) ?? { id: `wks_${cwd.split("/").pop()}`, cwd, background: false };
-        workspaces.set(cwd, w);
-        return Promise.resolve({
-          id: w.id,
-          agents: {
-            create: (request: Record<string, unknown>) => {
-              const id = `agent-${++n}`;
-              agents.push({
-                id,
-                workspaceId: w.id,
-                key: String(request.idempotencyKey),
-                title: String(request.title),
-                labels: request.labels as Record<string, string>,
-                metadata: request.metadata as Record<string, unknown>,
-                background: request.background,
-              });
-              return Promise.resolve({ id, run: () => Promise.resolve({ status: "idle", lastMessage: "done" }) });
-            },
-          },
-        });
+        if (!shown.has(cwd)) return Promise.reject(new Error(`asked to open ${cwd}, which would revive an archived workspace or make one`));
+        return Promise.resolve(workspaceFor(cwd));
+      },
+      create: (request: { source: { path: string }; background?: boolean }) => {
+        made.push(request.source.path);
+        if (!onDisk.has(request.source.path)) return Promise.reject(new Error(`Directory not found: ${request.source.path}`));
+        if (request.background) return Promise.reject(new Error("a run's workspace is not hidden"));
+        shown.add(request.source.path);
+        return Promise.resolve(workspaceFor(request.source.path));
       },
     },
     // A bare create made a new hidden workspace, named after the folder, for every run.
-    agents: { create: () => Promise.reject(new Error("a bare create makes a hidden workspace for every run")) },
+    agents: { create: (request: Record<string, unknown>) => createAgent(null, String(request.cwd), request) },
   };
-  return { api, workspaces, opened, agents };
+  return { api, workspaces, opened, made, agents };
 }
 
 const run = (d: ReturnType<typeof daemon>, t: Task) => new PaseoTaskPort({ api: d.api } as never).run(t, "do it", setup().config(), () => undefined, 1_000);
+const keyOf = (id: string, attempt: number) => new RegExp(`^hopkins-task-${id}-${attempt}-[0-9a-f]{10}$`);
 
 describe("a run's name", () => {
   it("is its task, in the user's words", () => {
@@ -116,8 +128,9 @@ describe("starting runs", () => {
     for (const t of tasks) await run(d, t);
 
     expect(d.opened).toEqual(tasks.map((t) => t.cwd));
+    expect(d.made).toEqual([]);
     expect(d.workspaces.size).toBe(1); // one workspace for the folder, not one per run
-    expect(new Set(d.agents.map((a) => a.workspaceId))).toEqual(new Set(["wks_personal"]));
+    expect(d.agents.every((a) => a.workspaceId === "wks_personal")).toBe(true); // no bare create: that made a hidden window
     expect(d.agents.map((a) => a.title)).toEqual(tasks.map((t) => t.text));
     expect(new Set(d.agents.map((a) => a.title)).size).toBe(tasks.length);
     expect(d.agents.map((a) => a.title)).not.toContain("personal");
@@ -125,7 +138,7 @@ describe("starting runs", () => {
     expect(d.agents.every((a) => a.background === false)).toBe(true);
     expect(d.agents.map((a) => a.labels)).toEqual(tasks.map((t) => ({ "hopkins.role": "task", [TASK_LABEL]: t.id })));
     expect(d.agents.map((a) => a.metadata)).toEqual(tasks.map((t) => ({ [TASK_LABEL]: t.id })));
-    expect(d.agents.map((a) => a.key)).toEqual(tasks.map((t) => `hopkins-task-${t.id}-1`));
+    d.agents.forEach((a, i) => expect(a.key).toMatch(keyOf(tasks[i]!.id, 1)));
   });
 
   it("starts a retry as a new tab beside the first, saying which try it is", async () => {
@@ -134,7 +147,15 @@ describe("starting runs", () => {
     await run(d, task("t_web", "web check-in for the Goa flight", 2));
     expect(d.agents.map((a) => a.title)).toEqual(["web check-in for the Goa flight", "web check-in for the Goa flight · try 2"]);
     expect(new Set(d.agents.map((a) => a.workspaceId)).size).toBe(1);
-    expect(d.agents.map((a) => a.key)).toEqual(["hopkins-task-t_web-1", "hopkins-task-t_web-2"]);
+    expect(d.agents[0]!.key).toMatch(keyOf("t_web", 1));
+    expect(d.agents[1]!.key).toMatch(keyOf("t_web", 2));
+  });
+
+  it("asks again with the same key when a start is tried again on the same attempt, so a slow start is not made twice", async () => {
+    const d = daemon();
+    await run(d, task("t_web", "web check-in for the Goa flight", 1));
+    await run(d, task("t_web", "web check-in for the Goa flight", 1));
+    expect(d.agents[0]!.key).toBe(d.agents[1]!.key);
   });
 
   it("puts a run in another folder in that folder's workspace", async () => {
@@ -142,6 +163,14 @@ describe("starting runs", () => {
     await run(d, task("t_home", "check last night's backup"));
     await run(d, task("t_work", "sum up the sprint", 1, "/home/someone/work"));
     expect(d.agents.map((a) => a.workspaceId)).toEqual(["wks_personal", "wks_work"]);
+  });
+
+  it("makes a workspace for a run whose folder has none, and never brings an archived one back", async () => {
+    const d = daemon({ shown: [] });
+    await run(d, task("t_new", "tidy the downloads folder"));
+    expect(d.opened).toEqual([]);
+    expect(d.made).toEqual(["/home/someone/personal"]);
+    expect(d.agents[0]).toMatchObject({ workspaceId: "wks_personal", background: false });
   });
 
   it("gives a long task a tab title cut at a whole word", async () => {
@@ -159,8 +188,16 @@ describe("starting runs", () => {
     expect(d.agents[0]).toMatchObject({ workspaceId: "wks_personal", background: true });
   });
 
+  it("starts a check hidden on its own, as before, when its folder has no workspace, rather than make one", async () => {
+    const d = daemon({ shown: [] });
+    await run(d, { ...task("t_check", "Check: go to bed"), kind: "check", reminderId: "r_1" });
+    expect(d.opened).toEqual([]);
+    expect(d.made).toEqual([]);
+    expect(d.agents[0]).toMatchObject({ workspaceId: null, cwd: "/home/someone/personal", background: true });
+  });
+
   it("starts nothing when the task's folder is gone", async () => {
-    const d = daemon([]);
+    const d = daemon({ folders: [], shown: [] });
     await expect(run(d, task("t_web", "web check-in"))).rejects.toThrow(/Directory not found/);
     expect(d.agents).toHaveLength(0);
   });
@@ -248,11 +285,11 @@ describe("naming the runs started before runs had names", () => {
       },
       agents: {
         list: (o: { filter?: { labels?: Record<string, string> }; page?: { cursor?: string } }) => {
-          const wanted = o.filter?.labels?.["hopkins.role"];
-          const matching = agents
-            .filter((a) => (a.role ?? "task") === wanted)
-            .map((a) => ({ agent: { id: `${a.workspaceId}-${a.task}`, workspaceId: a.workspaceId, title: a.title, labels: { "hopkins.role": a.role ?? "task", ...(a.task ? { [TASK_LABEL]: a.task } : {}) } } }));
-          return page(matching, o.page?.cursor);
+          // Every chat: hopkins's runs, its conversation, and the person's own.
+          const all = agents.map((a, i) => ({
+            agent: { id: `agent-${i}`, workspaceId: a.workspaceId, title: a.title, labels: a.role === "mine" ? {} : { "hopkins.role": a.role ?? "task", ...(a.task ? { [TASK_LABEL]: a.task } : {}) } },
+          }));
+          return page(all, o.page?.cursor);
         },
       },
     };
@@ -299,6 +336,24 @@ describe("naming the runs started before runs had names", () => {
     const result = await nameRunWorkspaces(api, taskTextOf(env.store), silentLogger);
     expect(titled).toEqual({});
     expect(result).toEqual({ named: 0, left: 3 });
+  });
+
+  it("leaves a run's window alone once they started chats of their own in it", async () => {
+    const env = setup();
+    const { api, titled } = host(
+      [
+        { id: "wks_run", title: null, background: true },
+        { id: "wks_theirs", title: null, background: true },
+      ],
+      [
+        { workspaceId: "wks_run", task: "t_1", title: "check the Zepp sync" },
+        { workspaceId: "wks_theirs", task: "t_2", title: "make the Zepp store listing" },
+        { workspaceId: "wks_theirs", title: "tower of hn: fix the reply box", role: "mine" },
+      ],
+    );
+    const result = await nameRunWorkspaces(api, taskTextOf(env.store), silentLogger);
+    expect(titled).toEqual({ wks_run: "check the Zepp sync" });
+    expect(result).toEqual({ named: 1, left: 1 });
   });
 
   it("reads every page of a long history, and one refusal does not stop the rest", async () => {

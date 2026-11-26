@@ -48,7 +48,8 @@ export function TodayScreen(props: PluginScreenProps) {
   );
   const subscription = useSubscription(todayWatch, {}, onView);
   const [reviewing, setReviewing] = useState<{ startAt: string | null } | null>(null);
-  // The sidebar's "Runs" row opens this screen on Runs (with a fresh `at`, so a second press still does).
+  // The sidebar's rows open this screen on Day ("hopkins") or Runs, each press with a fresh `at`,
+  // so a press brings its tab back even when the switcher moved away from it.
   const asked = props.params?.view === "runs" ? "runs" : "day";
   const [scale, setScale] = useState<Scale | "runs">(asked);
   useEffect(() => setScale(asked), [asked, props.params?.at]);

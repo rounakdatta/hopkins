@@ -11,15 +11,23 @@
 // History and search find it by its task's name, and its dot says when it has finished. Like any
 // chat, it also notifies when it finishes; hopkins still tells the outcome in its conversation.
 
+import { createHash } from "node:crypto";
+import path from "node:path";
 import type { Task } from "../shared/model";
 import { runTitle } from "../shared/runs";
 import type { Config } from "./config";
 import type { FinishResult } from "./delivery";
-import type { PaseoLink } from "./paseo-link";
+import { every } from "./paseo-pages";
+import type { PaseoApi, PaseoLink } from "./paseo-link";
 import type { TaskPort } from "./tasks";
 import { THREAD_LABEL, withTimeout } from "./thread-port";
 
 export const TASK_LABEL = "hopkins.task";
+
+/** Opening a folder makes Paseo read its git state too, which takes a while on a busy host. */
+const OPEN_MS = 60_000;
+
+type Workspace = Awaited<ReturnType<PaseoApi["workspaces"]["open"]>>;
 
 /** A run's tab title: its task, and which try it is when it is not the first. */
 export function runTabTitle(task: Pick<Task, "text" | "attempts">): string {
@@ -37,34 +45,59 @@ export class PaseoTaskPort implements TaskPort {
 
   async run(task: Task, prompt: string, cfg: Config, created: (agentId: string) => void, timeoutMs: number): Promise<FinishResult> {
     const api = this.api();
-    // The folder's own workspace: the one Paseo opens for it, which is in the sidebar. A tab
-    // someone opens from the run's window lands there too.
-    const workspace = await withTimeout(api.workspaces.open(task.cwd), 15_000, "opening the task's folder");
+    // A reminder's daily check is hopkins's own read-only look, told only through the reminder:
+    // it stays out of sight (no tab, no notification).
+    const background = task.kind === "check";
+    const workspace = await this.folderWorkspace(task.cwd, !background);
     const request = {
       title: runTabTitle(task),
       labels: { [THREAD_LABEL]: "task", [TASK_LABEL]: task.id },
       // Hooks see an agent's metadata but not its labels: this is how they know a run.
       metadata: { [TASK_LABEL]: task.id },
-      // A reminder's daily check is hopkins's own read-only look, told only through the reminder:
-      // it stays out of sight (no tab, no notification), though in the same workspace, so it no
-      // longer leaves a hidden window behind each day either.
-      background: task.kind === "check",
+      background,
       config: {
         provider: task.model || cfg.taskModel,
         ...(cfg.taskMode ? { modeId: cfg.taskMode } : {}),
         ...((task.model ? task.thinking : cfg.taskThinking) ? { thinkingOptionId: task.model ? task.thinking : cfg.taskThinking } : {}),
       },
     };
-    // The same attempt reuses its key, so a create that timed out after the daemon made the agent
-    // does not make a second one.
+    // A start that failed before its agent was known is tried again on the same attempt, with the
+    // same key, so an agent the daemon made after all is handed back rather than made twice. The
+    // daemon refuses a key reused with another request, so the key also carries what the request
+    // is (where, and as what): a changed one is a new start, not a refusal.
+    const digest = createHash("sha256")
+      .update(JSON.stringify({ workspace: workspace?.id ?? task.cwd, title: request.title, background }))
+      .digest("hex")
+      .slice(0, 10);
+    const key = `hopkins-task-${task.id}-${task.attempts}-${digest}`;
     const handle = await withTimeout(
-      workspace.agents.create({ ...request, idempotencyKey: `hopkins-task-${task.id}-${task.attempts}` } as never),
+      workspace
+        ? workspace.agents.create({ ...request, idempotencyKey: key } as never)
+        : api.agents.create({ ...request, cwd: task.cwd, idempotencyKey: key } as never),
       60_000,
       "starting the task's agent",
     );
     created(handle.id);
     const result = await withTimeout(handle.run(prompt, { timeoutMs }), timeoutMs + 60_000, "waiting for the task");
     return { status: result.status, lastMessage: result.lastMessage, ...(result.error ? { error: result.error } : {}), ...costOf(handle) };
+  }
+
+  /**
+   * The folder's own workspace: the one in the sidebar, which Paseo opens for it. Asking Paseo to
+   * open a folder with none brings back an archived one (with its old chats) or makes one, so it is
+   * asked only when one is there. A run in a folder with none gets a new workspace of its own; a
+   * check gets none (null): it is started on its own, hidden, as before.
+   */
+  private async folderWorkspace(cwd: string, visible: boolean): Promise<Workspace | null> {
+    const api = this.api();
+    const folder = path.resolve(cwd);
+    const shown = await every<{ workspaceDirectory?: string; projectRootPath?: string; background?: boolean }>(
+      (cursor) => api.workspaces.list({ includeBackground: false, page: { limit: 200, ...(cursor ? { cursor } : {}) } } as never) as never,
+    );
+    const known = shown.some((w) => !w.background && path.resolve(w.workspaceDirectory ?? w.projectRootPath ?? "") === folder);
+    if (known) return withTimeout(api.workspaces.open(cwd), OPEN_MS, "opening the task's folder");
+    if (!visible) return null;
+    return withTimeout(api.workspaces.create({ source: { kind: "directory", path: cwd } } as never), OPEN_MS, "making the task's folder a workspace");
   }
 
   async waitForFinish(agentId: string, timeoutMs: number): Promise<FinishResult> {

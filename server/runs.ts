@@ -7,6 +7,7 @@ import type { ArchivedTask, Task } from "../shared/model";
 import type { Config } from "./config";
 import { errorText, type Logger } from "./log";
 import type { PaseoApi } from "./paseo-link";
+import { every, type Page } from "./paseo-pages";
 import type { Store } from "./store";
 import { TASK_LABEL } from "./task-port";
 import { THREAD_LABEL, withTimeout } from "./thread-port";
@@ -55,50 +56,38 @@ interface WorkspaceEntry {
   title?: string | null;
   background?: boolean;
 }
-interface Page<T> {
-  entries?: T[];
-  pageInfo?: { nextCursor?: string | null; hasMore?: boolean };
-}
-
-/** Pages through a Paseo list, at most `max` entries. */
-async function every<T>(list: (cursor: string | undefined) => Promise<Page<T>>, max = 5_000): Promise<T[]> {
-  const all: T[] = [];
-  let cursor: string | undefined;
-  while (all.length < max) {
-    const page = await withTimeout(list(cursor), 30_000, "listing");
-    all.push(...(page.entries ?? []));
-    const next = page.pageInfo?.nextCursor;
-    if (!page.pageInfo?.hasMore || !next || next === cursor) break;
-    cursor = next;
-  }
-  return all;
-}
 
 /**
  * Names the workspaces of runs started before runs had names. Each is titled with its task, the
  * same name a new run gets, so the old runs stop being a pile of "personal" in Paseo's search.
  *
- * Only a background workspace whose runs are all one task's, and which has no title, is named:
- * a title someone gave is never replaced, and a workspace shared with other work is left alone.
- * It sets a title and nothing else: no agent, turn or file is touched, so a run at work goes on.
+ * Only a hidden (background) workspace with no title, whose chats are all runs of one task, is
+ * named: a title someone gave is never replaced, and a window where they also started chats of
+ * their own (it happened: one run's window collected eight) is theirs, and left alone. It sets a
+ * title and nothing else: no agent, turn or file is touched, so a run at work goes on.
  */
 export async function nameRunWorkspaces(api: PaseoApi, textOf: (taskId: string) => string | null, log: Logger): Promise<{ named: number; left: number }> {
   const workspaces = await every<WorkspaceEntry>(
     (cursor) => api.workspaces.list({ includeBackground: true, filter: { includeBackground: true }, page: { limit: 200, ...(cursor ? { cursor } : {}) } } as never) as Promise<Page<WorkspaceEntry>>,
   );
+  // Every chat, archived ones too: a workspace is a run's only if nothing else was ever in it.
   const agents = await every<AgentEntry>(
     (cursor) =>
       api.agents.list({
         includeBackground: true,
-        filter: { labels: { [THREAD_LABEL]: "task" }, includeBackground: true, includeArchived: true },
+        filter: { includeBackground: true, includeArchived: true },
         page: { limit: 200, ...(cursor ? { cursor } : {}) },
       } as never) as Promise<Page<AgentEntry>>,
   );
-  // The tasks whose runs each workspace holds.
   const tasksIn = new Map<string, Map<string, string>>();
+  const shared = new Set<string>();
   for (const { agent } of agents) {
-    const task = agent?.labels?.[TASK_LABEL];
-    if (!agent?.workspaceId || !task) continue;
+    if (!agent?.workspaceId) continue;
+    const task = agent.labels?.[THREAD_LABEL] === "task" ? agent.labels?.[TASK_LABEL] : undefined;
+    if (!task) {
+      shared.add(agent.workspaceId);
+      continue;
+    }
     const titles = tasksIn.get(agent.workspaceId) ?? new Map<string, string>();
     titles.set(task, textOf(task) ?? agent.title ?? "");
     tasksIn.set(agent.workspaceId, titles);
@@ -109,7 +98,7 @@ export async function nameRunWorkspaces(api: PaseoApi, textOf: (taskId: string) 
     const tasks = w.id ? tasksIn.get(w.id) : undefined;
     if (!w.id || !tasks) continue;
     const [text] = [...tasks.values()];
-    if (w.title || !w.background || tasks.size !== 1 || !text?.trim()) {
+    if (w.title || !w.background || shared.has(w.id) || tasks.size !== 1 || !text?.trim()) {
       left += 1;
       continue;
     }

@@ -38,8 +38,9 @@ export interface StartOptions {
   log?: Logger;
   clock?: Clock;
   tickMs?: number;
-  /** How long after connecting the earlier runs' workspaces get their names (tests make it short). */
+  /** How long after connecting the earlier runs' workspaces get their names, and the wait before another go (tests make them short). */
   nameRunsAfterMs?: number;
+  nameRunsRetryMs?: number;
 }
 
 export function startHopkins(server: PluginServerContext, options: StartOptions = {}): () => void {
@@ -240,9 +241,11 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
 
   // Runs started before runs had names sit in workspaces called after their folder ("personal").
   // Once per start, a minute in (out of the way of everything a start does), each gets its task's
-  // name. Only untitled run workspaces are touched, and only their title.
+  // name. Only untitled run workspaces are touched, and only their title. A busy daemon that does
+  // not answer gets two more goes, ten minutes apart.
   let naming: "idle" | "waiting" | "done" = "idle";
-  function nameOldRuns(): void {
+  let namingTries = 0;
+  function nameOldRuns(delay = options.nameRunsAfterMs ?? 60_000): void {
     if (naming !== "idle") return;
     naming = "waiting";
     const timer = setTimeout(() => {
@@ -251,16 +254,18 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
         naming = "idle";
         return;
       }
+      namingTries += 1;
       void nameRunWorkspaces(api, taskTextOf(store), log)
         .then(({ named, left }) => {
           naming = "done";
           if (named > 0) log.info("named the workspaces of earlier runs", { named, left });
         })
         .catch((err) => {
-          naming = "idle"; // the next connection tries again
-          log.warn("could not name the workspaces of earlier runs", { error: errorText(err) });
+          naming = "idle";
+          log.warn("could not name the workspaces of earlier runs", { error: errorText(err), tries: namingTries });
+          if (namingTries < 3) nameOldRuns(options.nameRunsRetryMs ?? 600_000);
         });
-    }, options.nameRunsAfterMs ?? 60_000);
+    }, delay);
     (timer as { unref?: () => void }).unref?.();
   }
 

@@ -44,8 +44,8 @@ export function SidebarItem(props: PluginSidebarItemProps) {
   const onRuns = onToday && props.currentScreen?.params.view === "runs";
   return (
     <>
-      <SidebarRow id="today" icon="Bell" label="hopkins" active={onToday && !onRuns} onPress={() => props.openScreen({ screenId: "today" })} trailing={trailing} />
-      {/* A fresh `at` on every press, so pressing it while another tab is showing still brings Runs back. */}
+      {/* A fresh `at` on every press, so a press always brings its tab back, whichever tab is showing. */}
+      <SidebarRow id="today" icon="Bell" label="hopkins" active={onToday && !onRuns} onPress={() => props.openScreen({ screenId: "today", params: { at: String(Date.now()) } })} trailing={trailing} />
       <SidebarRow id="runs" icon="Bot" label="Runs" active={onRuns} onPress={() => props.openScreen({ screenId: "today", params: { view: "runs", at: String(Date.now()) } })} />
     </>
   );

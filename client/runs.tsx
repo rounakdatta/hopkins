@@ -47,7 +47,7 @@ export function RunsList(props: { colors: Colors; phone: boolean; switcher: Reac
     <View style={{ gap: phone ? space.l : space.xl, maxWidth: 820, width: "100%", alignSelf: "center" }}>
       <View style={{ gap: 6 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.s, flexWrap: "wrap" }}>
-          <Text style={[type.meta, { color: colors.foregroundMuted, flex: 1 }]}>Every run hopkins started, newest first</Text>
+          <Text style={[type.meta, { color: colors.foregroundMuted, flex: 1 }]}>Each task's latest run, newest first</Text>
           {phone ? null : props.switcher}
         </View>
         <Text accessibilityRole="header" style={[type.headline, { color: colors.foreground }]}>
