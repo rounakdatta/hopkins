@@ -376,6 +376,9 @@ const promptText = (blocks) =>
     .map((block) => block.text)
     .join("\n");
 
+/** The one model a fake agent offers: Paseo reads it as the session's model option. */
+const CONFIG_OPTIONS = [{ id: "model", name: "Model", category: "model", type: "select", currentValue: "fake", options: [{ value: "fake", name: "Fake" }] }];
+
 const METHODS = {
   initialize() {
     processLog("initialize");
@@ -398,7 +401,13 @@ const METHODS = {
     sessions.set(sessionId, session);
     session.save();
     session.log("session/new", { cwd: params.cwd, mcpServers: (params.mcpServers ?? []).map((server) => server.name) });
-    return { sessionId };
+    // One model, so a create that names "fakeagent/fake" (Paseo needs provider/model) is accepted.
+    return { sessionId, configOptions: CONFIG_OPTIONS };
+  },
+
+  "session/set_config_option"(params) {
+    if (params.configId !== "model" || params.value !== "fake") throw new RpcError(-32602, `Unknown option ${params.configId}=${params.value}`);
+    return { configOptions: CONFIG_OPTIONS };
   },
 
   "session/load"(params) {
@@ -419,7 +428,7 @@ const METHODS = {
     session.replay();
     const { next, steps, cur, turns } = session.st;
     session.log("session/load", { replayed: session.st.history.length, next, of: steps.length, cur, turns });
-    return {};
+    return { configOptions: CONFIG_OPTIONS };
   },
 
   async "session/prompt"(params) {

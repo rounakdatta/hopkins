@@ -189,6 +189,7 @@ export class Sim {
         cwd: "/sim",
         sessionId: a.id,
         archived: a.archived,
+        lastEventAt: a.loaded ? a.lastWrite : null,
       };
       return view;
     },

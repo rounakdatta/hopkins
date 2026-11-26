@@ -391,7 +391,7 @@ export class DeliveryQueue {
     const stuck = this.store.deliveries().filter((d) => d.state === "pending" && d.attempts >= 3);
     if (stuck.length > 0) {
       const last = stuck[stuck.length - 1]!;
-      out.push(`Couldn't deliver ${stuck.length === 1 ? "a reminder" : `${stuck.length} reminder batches`} after ${last.attempts} tries (${last.error ?? "unknown error"}). Still retrying.`);
+      out.push(`Couldn't deliver ${stuck.length === 1 ? "a message" : `${stuck.length} messages`} after ${last.attempts} tries (${last.error ?? "unknown error"}). Still retrying.`);
     }
     const overdue = this.store.deliveries().filter((d) => d.state === "pending" && now - d.createdAt > 10 * 60_000);
     if (overdue.length > 0 && stuck.length === 0) out.push("Some reminders are waiting to be delivered.");

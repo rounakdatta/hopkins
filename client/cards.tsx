@@ -294,7 +294,10 @@ function resumeLabel(task: TaskItem): string {
 /** A question that reads as yes or no ("Merge PR #12 now?"): it gets those two answers as buttons. */
 export function yesNoQuestion(question: string | null | undefined): boolean {
   const q = (question ?? "").trim();
-  return q.length > 0 && q.length <= 160 && /\?$/.test(q) && /^(should|shall|can|could|do|does|did|is|are|was|were|will|would|may|ok|okay|go|merge|deploy|proceed|continue|send|buy|pay|book|submit|delete|ship|publish|apply|restart)\b/i.test(q);
+  if (q.length === 0 || q.length > 400 || !/\?$/.test(q)) return false;
+  // The question is its last sentence: "PR #12 is green. Merge it now?"
+  const last = q.split(/(?<=[.!])\s+/).pop() ?? q;
+  return last.length <= 160 && !/\bor\b/i.test(last) && /^(should|shall|can|could|do|does|did|is|are|was|were|will|would|may|ok|okay|go|merge|deploy|proceed|continue|send|buy|pay|book|submit|delete|ship|publish|apply|restart|want)\b/i.test(last);
 }
 
 /**

@@ -1286,7 +1286,7 @@ export class TaskRunner {
       live: { ...(task.live ?? { since: now }), state: "limit", since: now },
       updatedAt: now,
     });
-    this.store.event("task-limit", { id, waits, at });
+    this.store.event("task-limit", { id, waits, until: at });
     this.log.info("a run waits for a usage limit to reset", { task: id, until: new Date(at).toISOString() });
     // A wait of hours (a weekly limit) is news; a short one is only shown on its card.
     if (at - now > LONG_WAIT_MS) this.reporter.note?.(`${task.text}: stopped by a usage limit; hopkins carries it on at ${formatWhen(at, cfg.tz, now, cfg.clock)}, when it resets.`, now);
@@ -1358,6 +1358,7 @@ export class TaskRunner {
       if (!after || after.state !== "running" || after.agentId !== task.agentId) return;
       const marks: [number | null | undefined, string][] = [
         [wrote, "wrote to its transcript"],
+        [view.lastEventAt, "worked"],
         [progress?.at, "updated its progress"],
         [commit?.at, commit ? `committed "${commit.subject}"` : ""],
         [after.live?.lastActivityAt, after.live?.activity ?? "worked"],
@@ -1747,7 +1748,7 @@ export class TaskRunner {
     const closed = patch.state === "done" || patch.state === "failed";
     const outcome = `${patch.state}:${task.tries?.length ?? 0}:${patch.report ?? patch.error ?? ""}`;
     const fresh = task.reported !== outcome;
-    const ended = closed || patch.state === "missed" ? { runs: withRunEnd(task.runs, task.agentId, now, patch.state, patch.state === "failed" ? (patch.report ?? patch.error) : undefined), hold: undefined } : {};
+    const ended = closed || patch.state === "missed" ? { runs: withRunEnd(task.runs, task.agentId, now, patch.state, patch.state === "failed" ? (patch.report ?? patch.error) : undefined), hold: undefined, live: undefined } : {};
     // The flags describe this outcome only: an earlier one's never carry over. A pause or a wait on
     // the user keeps its hold; anything else that settles has nothing left to wait for.
     const hold = patch.state === "needs-you" && waitsOnUser(task) ? task.hold : undefined;

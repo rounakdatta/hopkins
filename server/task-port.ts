@@ -107,10 +107,14 @@ export class PaseoTaskPort implements TaskPort {
   }
 
   async observe(agentId: string): Promise<RunView | null> {
-    const found = await withTimeout(this.api().agents.ref(agentId).refresh(), 15_000, "looking at a run");
+    const ref = this.api().agents.ref(agentId);
+    const found = await withTimeout(ref.refresh(), 15_000, "looking at a run");
     const agent = found?.agent as AgentSnapshot | undefined;
     if (!agent) return null;
     const time = (s: string | null | undefined) => (s ? Date.parse(s) || null : null);
+    // Its newest timeline entry (a message, a tool call): a sign of life from any provider.
+    const tail = (await withTimeout(ref.timeline.refetch({ direction: "tail", limit: 1 } as never), 15_000, "reading a run's timeline").catch(() => null)) as { entries?: { timestamp?: string }[] } | null;
+    const lastEventAt = time(tail?.entries?.at(-1)?.timestamp);
     return {
       status: agent.status ?? "closed",
       turnStartedAt: agent.activeTurn ? (time(agent.activeTurn.startedAt) ?? Date.now()) : null,
@@ -123,6 +127,7 @@ export class PaseoTaskPort implements TaskPort {
       cwd: agent.cwd ?? "",
       sessionId: agent.persistence?.sessionId ?? null,
       archived: Boolean(agent.archivedAt),
+      lastEventAt,
     };
   }
 
@@ -179,6 +184,8 @@ export interface RunView {
   /** The provider's session id (Claude's names its transcript). */
   sessionId: string | null;
   archived: boolean;
+  /** When its newest timeline entry was made (any provider; none for a run not loaded). */
+  lastEventAt?: number | null;
 }
 
 interface AgentSnapshot {
