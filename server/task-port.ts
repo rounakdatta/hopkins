@@ -45,7 +45,10 @@ export class PaseoTaskPort implements TaskPort {
       labels: { [THREAD_LABEL]: "task", [TASK_LABEL]: task.id },
       // Hooks see an agent's metadata but not its labels: this is how they know a run.
       metadata: { [TASK_LABEL]: task.id },
-      background: false,
+      // A reminder's daily check is hopkins's own read-only look, told only through the reminder:
+      // it stays out of sight (no tab, no notification), though in the same workspace, so it no
+      // longer leaves a hidden window behind each day either.
+      background: task.kind === "check",
       config: {
         provider: task.model || cfg.taskModel,
         ...(cfg.taskMode ? { modeId: cfg.taskMode } : {}),

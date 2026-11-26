@@ -147,6 +147,13 @@ describe("starting runs", () => {
     expect(runTabTitle({ text: long, attempts: 3 })).toBe(`${runTitle(long)} · try 3`);
   });
 
+  it("keeps a reminder's daily check out of sight, in the folder's workspace rather than a window of its own", async () => {
+    const d = daemon();
+    await run(d, { ...task("t_check", "Check: go to bed"), kind: "check", reminderId: "r_1" });
+    expect(d.agents).toHaveLength(1);
+    expect(d.agents[0]).toMatchObject({ workspaceId: "wks_personal", background: true });
+  });
+
   it("starts nothing when the task's folder is gone", async () => {
     const d = daemon([]);
     await expect(run(d, task("t_web", "web check-in"))).rejects.toThrow(/Directory not found/);
