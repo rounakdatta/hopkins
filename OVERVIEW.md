@@ -28,7 +28,7 @@ Tap a card to pick it up and see everything about it. Week and Month show how mu
 
 ## Setup
 
-- **Paseo:** 0.16.1 or a later 0.16 release.
+- **Paseo:** 0.16.1 or later, on the daemon and in each app.
 - **Reminders, check-ins and tasks** work without setup.
   - The hopkins conversation uses the model set in settings.
   - Tasks use the provider, mode and folder set in settings. The mode defaults to the provider's own default.
