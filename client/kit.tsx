@@ -32,7 +32,7 @@ export function Section(props: { colors: Colors; title: string; count?: number; 
 }
 
 /**
- * A titled group that opens on a tap, closed to start with. `open` takes it over from outside (a
+ * A titled group that stays folded until asked for (someday ideas, settings, finished runs). `open` takes it over from outside (a
  * search that matched something inside it shows it open, whatever the tap said).
  */
 export function Fold(props: { colors: Colors; title: string; count?: number; summary?: string; open?: boolean; children: ReactNode }) {

@@ -265,7 +265,7 @@ function Lifted(props: { liftKey: string; view: TodayView; desk: Desk; colors: C
 
 // --- the header -------------------------------------------------------------------------------
 
-/** Day, Week, Month: three words in one control, the chosen one raised. */
+/** Day, Week, Month and Runs: four words in one control, the chosen one raised. */
 const SCALE_LABELS = { day: "Day", week: "Week", month: "Month", runs: "Runs" } as const;
 
 function ScaleSwitch(props: { colors: Colors; scale: Scale | "runs"; full?: boolean; onScale: (s: Scale | "runs") => void }) {
@@ -386,7 +386,6 @@ function Notice(props: { colors: Colors; text: string; quiet?: boolean }) {
   );
 }
 
-/** A section that stays folded until asked for: someday ideas and settings are not today's business. */
 /** First visit: what hopkins can do, said as the three things you could type right now. */
 function FirstRun(props: { colors: Colors; onOpenThread: (() => void) | null }) {
   const examples = ["remind me to call Ma on Sunday at 10", "at 8pm, do my web check-in and check the passport details", "remind me to go to bed at 11 until I'm up by 7:30 for a week"];
