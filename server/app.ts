@@ -6,7 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PluginServerContext, PluginSettingsState } from "@getpaseo/plugin/server";
 import type { TodayView } from "../shared/model";
-import { actRpc, answerRpc, backfillRpc, checkinWatch, dayRpc, daysRpc, recapsRpc, suggestionRpc, taskRpc, todayRpc, todayWatch } from "../shared/rpc";
+import { actRpc, answerRpc, backfillRpc, checkinWatch, dayRpc, daysRpc, recapsRpc, runsWatch, suggestionRpc, taskRpc, todayRpc, todayWatch } from "../shared/rpc";
+import type { RunsView } from "../shared/runs";
 import { card as checkinCard, CheckIns } from "./checkins";
 import { localDateOf, zonedToInstant } from "../shared/time";
 import { hopkinsSettings, settingsSchema, type HopkinsSettings } from "../shared/settings";
@@ -29,6 +30,7 @@ import { defaultDataDir, Store } from "./store";
 import { PaseoThreadPort, paseoTimelineReader, THREAD_LABEL } from "./thread-port";
 import { buildDay, buildDays, parseDate } from "./desk";
 import { buildToday } from "./today";
+import { buildRuns, nameRunWorkspaces, taskTextOf } from "./runs";
 import { createTools } from "./tools";
 
 export interface StartOptions {
@@ -36,6 +38,8 @@ export interface StartOptions {
   log?: Logger;
   clock?: Clock;
   tickMs?: number;
+  /** How long after connecting the earlier runs' workspaces get their names (tests make it short). */
+  nameRunsAfterMs?: number;
 }
 
 export function startHopkins(server: PluginServerContext, options: StartOptions = {}): () => void {
@@ -65,7 +69,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   const queue = new DeliveryQueue(store, reminders, () => (link.connected ? port : null), clock, getConfig, log, defaultDeliveryOptions, recapSource);
   // Tasks: "at 8pm, do X". They start from the scheduler's tick and report through the queue.
   const tasks = new Tasks(store, reminders, clock, getConfig);
-  const taskPort = new PaseoTaskPort(link);
+  const taskPort = new PaseoTaskPort(link, (message, fields) => log.warn(message, fields));
   const runner = new TaskRunner(
     store,
     tasks,
@@ -145,6 +149,8 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   // --- Today view and live watchers ------------------------------------------------
 
   const watchers = new Set<(view: TodayView) => void>();
+  // The Runs screen: every run, live.
+  const runWatchers = new Set<(view: RunsView) => void>();
   // Each check-in card in the conversation follows its own reminder.
   const cardWatchers = new Set<() => void>();
   const checkins = new CheckIns(store, clock);
@@ -166,12 +172,16 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     );
   let notifyTimer: ReturnType<typeof setTimeout> | null = null;
   const notifyWatchers = () => {
-    if (notifyTimer || watchers.size + cardWatchers.size === 0) return;
+    if (notifyTimer || watchers.size + runWatchers.size + cardWatchers.size === 0) return;
     notifyTimer = setTimeout(() => {
       notifyTimer = null;
       if (watchers.size > 0) {
         const view = today();
         for (const push of watchers) push(view);
+      }
+      if (runWatchers.size > 0) {
+        const view = buildRuns(store, config, clock.now());
+        for (const push of runWatchers) push(view);
       }
       for (const push of cardWatchers) push();
     }, 100);
@@ -225,6 +235,33 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     // Pick up any task run that was under way when hopkins (or its connection) went away.
     runner.recover();
     changed();
+    nameOldRuns();
+  }
+
+  // Runs started before runs had names sit in workspaces called after their folder ("personal").
+  // Once per start, a minute in (out of the way of everything a start does), each gets its task's
+  // name. Only untitled run workspaces are touched, and only their title.
+  let naming: "idle" | "waiting" | "done" = "idle";
+  function nameOldRuns(): void {
+    if (naming !== "idle") return;
+    naming = "waiting";
+    const timer = setTimeout(() => {
+      const api = link.api;
+      if (stopped || !api) {
+        naming = "idle";
+        return;
+      }
+      void nameRunWorkspaces(api, taskTextOf(store), log)
+        .then(({ named, left }) => {
+          naming = "done";
+          if (named > 0) log.info("named the workspaces of earlier runs", { named, left });
+        })
+        .catch((err) => {
+          naming = "idle"; // the next connection tries again
+          log.warn("could not name the workspaces of earlier runs", { error: errorText(err) });
+        });
+    }, options.nameRunsAfterMs ?? 60_000);
+    (timer as { unref?: () => void }).unref?.();
   }
 
   // --- Agent tools -----------------------------------------------------------------
@@ -399,6 +436,20 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     return result.ok ? { ok: true, message: result.message } : { ok: false, message: result.error };
   });
 
+  server.handle(runsWatch, async (_input, context) => {
+    link.adopt(context.paseo);
+    const push = (view: RunsView) => {
+      void context.push(view).catch(() => runWatchers.delete(push));
+    };
+    runWatchers.add(push);
+    push(buildRuns(store, config, clock.now()));
+    await new Promise<void>((resolve) => {
+      if (context.signal.aborted) resolve();
+      else context.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    runWatchers.delete(push);
+  });
+
   server.handle(todayWatch, async (_input, context) => {
     link.adopt(context.paseo);
     const push = (view: TodayView) => {
@@ -442,6 +493,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     unsubscribeStore();
     unsubscribeSettings();
     watchers.clear();
+    runWatchers.clear();
     void link.stop();
     try {
       store.save();

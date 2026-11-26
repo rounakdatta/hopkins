@@ -4,6 +4,7 @@ import { defineRpc, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
 import { CheckinCardSchema } from "./checkin";
 import { AnswerActionSchema, DayPileSchema, DaysViewSchema, ReminderActionSchema, SuggestionActionSchema, TaskActionSchema, TodayViewSchema } from "./model";
+import { RunsViewSchema } from "./runs";
 
 export const todayRpc = defineRpc({
   name: "hopkins.today",
@@ -74,4 +75,11 @@ export const dayRpc = defineRpc({
   name: "hopkins.day",
   input: z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }),
   output: DayPileSchema,
+});
+
+/** Live updates of the Runs screen: every run hopkins started, sent again on every change. */
+export const runsWatch = defineSubscription({
+  name: "hopkins.runs.watch",
+  input: z.object({}),
+  event: RunsViewSchema,
 });

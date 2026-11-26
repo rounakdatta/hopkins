@@ -31,6 +31,37 @@ export function Section(props: { colors: Colors; title: string; count?: number; 
   );
 }
 
+/**
+ * A titled group that opens on a tap, closed to start with. `open` takes it over from outside (a
+ * search that matched something inside it shows it open, whatever the tap said).
+ */
+export function Fold(props: { colors: Colors; title: string; count?: number; summary?: string; open?: boolean; children: ReactNode }) {
+  const [tapped, setOpen] = useState(false);
+  const open = props.open ?? tapped;
+  const [hover, setHover] = useState(false);
+  const aside = props.count !== undefined ? String(props.count) : (props.summary ?? "");
+  return (
+    <View style={{ gap: space.s }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`${props.title}, ${aside}. ${open ? "Hide" : "Show"}`}
+        onPress={() => setOpen(!open)}
+        onHoverIn={() => setHover(true)}
+        onHoverOut={() => setHover(false)}
+        style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 2, alignSelf: "flex-start" }}
+      >
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} size={15} color={hover ? props.colors.foreground : props.colors.foregroundMuted} />
+        <Text style={[type.section, { color: hover ? props.colors.foreground : props.colors.foregroundMuted }]}>
+          {props.title}
+          <Text style={[props.count !== undefined ? tabular : null, { fontWeight: "400" }]}>{`  ${aside}`}</Text>
+        </Text>
+      </Pressable>
+      {open ? props.children : null}
+    </View>
+  );
+}
+
 /** The rounded list the rows sit in. */
 export function Card(props: { colors: Colors; children: ReactNode; style?: StyleProp<ViewStyle> }) {
   return (
