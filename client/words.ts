@@ -23,7 +23,8 @@ export function sentenceCase(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-const urgent = (t: TaskItem) => t.state === "needs-you" || t.state === "missed";
+// A run they paused is theirs to resume when they like: it waits on the table, not in their hand.
+const urgent = (t: TaskItem) => (t.state === "needs-you" && t.live?.state !== "paused") || t.state === "missed";
 
 /** What needs the person now: reminders that went out, and tasks waiting on an answer. The badge shows this. */
 export function needsYou(view: TodayView): number {
@@ -33,7 +34,7 @@ export function needsYou(view: TodayView): number {
 /** Reminders to come and tasks hopkins will do, in time order. */
 export function upcoming(view: TodayView): Upcoming[] {
   const reminders: Upcoming[] = [...view.today, ...view.upcoming].map((item) => ({ kind: "reminder", at: item.dueAt ?? 0, item }));
-  const tasks: Upcoming[] = view.tasks.filter((t) => t.state === "scheduled").map((task) => ({ kind: "task", at: task.dueAt, task }));
+  const tasks: Upcoming[] = view.tasks.filter((t) => t.state === "scheduled" || (t.state === "needs-you" && t.live?.state === "paused")).map((task) => ({ kind: "task", at: task.dueAt, task }));
   return [...reminders, ...tasks].sort((a, b) => a.at - b.at);
 }
 

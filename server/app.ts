@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PluginServerContext, PluginSettingsState } from "@getpaseo/plugin/server";
 import type { TodayView } from "../shared/model";
-import { actRpc, answerRpc, backfillRpc, checkinWatch, dayRpc, daysRpc, recapsRpc, runsWatch, suggestionRpc, taskRpc, todayRpc, todayWatch } from "../shared/rpc";
+import { actRpc, answerRpc, backfillRpc, checkinWatch, dayRpc, daysRpc, recapsRpc, runsWatch, suggestionRpc, taskAnswerRpc, taskRpc, todayRpc, todayWatch } from "../shared/rpc";
 import type { RunsView } from "../shared/runs";
 import { card as checkinCard, CheckIns } from "./checkins";
 import { localDateOf, zonedToInstant } from "../shared/time";
@@ -25,13 +25,26 @@ import { Reminders, systemClock, type Clock } from "./reminders";
 import { Scheduler } from "./scheduler";
 import { PaseoTaskPort, TASK_LABEL } from "./task-port";
 import { TaskRunner, Tasks } from "./tasks";
+import { fileSignals, hostProbe } from "./signals";
+import { HostPrereqs } from "./prereqs";
 import { Conditions } from "./conditions";
 import { defaultDataDir, Store } from "./store";
 import { PaseoThreadPort, paseoTimelineReader, THREAD_LABEL } from "./thread-port";
 import { buildDay, buildDays, parseDate } from "./desk";
 import { buildToday } from "./today";
+import { inQuietHours } from "./delivery";
+import { liveOf } from "./supervision-view";
+import { zonedParts } from "../shared/time";
+import type { Task } from "../shared/model";
 import { buildRuns, nameRunWorkspaces, taskTextOf } from "./runs";
 import { createTools } from "./tools";
+
+/** Quiet hours when they are set; otherwise 11pm to 7am, when nobody wants a progress note. */
+function isNight(cfg: Config, now: number): boolean {
+  if (cfg.quiet) return inQuietHours(cfg, now);
+  const hour = zonedParts(now, cfg.tz).hour;
+  return hour >= 23 || hour < 7;
+}
 
 export interface StartOptions {
   dataDir?: string;
@@ -80,11 +93,20 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
         queue.enqueueTask(task, now, retryAt);
         changed();
       },
+      // News about a run that is not an outcome (it stalled; a limit that lifts only in hours): it can wait out quiet hours.
+      note: (text, now) => {
+        queue.enqueueNote(text, now, { canWait: true });
+        changed();
+      },
     },
     clock,
     getConfig,
     log,
   );
+  // How runs are watched: their own records, the host's room, and what a task needs before it starts.
+  runner.signals = fileSignals;
+  runner.host = hostProbe;
+  runner.prereqs = new HostPrereqs(dataDir, log, () => clock.now());
   // "Until": the daily checks behind reminders that stop by themselves (they run as tasks of kind "check").
   const conditions = new Conditions(
     store,
@@ -103,8 +125,42 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     tick: (now) => {
       conditions.tick(now);
       runner.tick(now);
+      digest(now);
     },
   });
+
+  // While anything runs: a short note on each run every few hours (never at night). The clock
+  // starts when the first run does, and stops when nothing runs.
+  function digest(now: number): void {
+    if (config.digestMs <= 0) return;
+    const running = store.tasks().filter((t) => t.state === "running" && t.kind !== "check");
+    if (running.length === 0) {
+      if (store.digestAt() !== undefined) {
+        store.setDigestAt(0);
+        store.save();
+      }
+      return;
+    }
+    const last = store.digestAt() ?? 0;
+    if (last === 0) {
+      store.setDigestAt(now);
+      store.save();
+      return;
+    }
+    if (now - last < config.digestMs || isNight(config, now)) return;
+    const waiting = store.tasks().filter((t) => t.state === "scheduled" && t.hold && t.kind !== "check");
+    const line = (t: Task) => {
+      const live = liveOf(t, config, now);
+      return `"${t.text}"${live?.line ? ` (${live.line})` : ""}`;
+    };
+    const text = [
+      `Still at work: ${running.map(line).join("; ")}.`,
+      ...(waiting.length ? [`Waiting: ${waiting.map(line).join("; ")}.`] : []),
+    ].join(" ");
+    store.setDigestAt(now);
+    queue.enqueueNote(text, now, { canWait: true });
+    changed();
+  }
 
   // --- Noticing and backfill -----------------------------------------------------------
 
@@ -277,6 +333,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     suggestions,
     backfill,
     tasks,
+    runner,
     conditions,
     checkins,
     config: getConfig,
@@ -336,6 +393,8 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   // A conversation finished a turn: note it, so noticing reads it once it settles.
   server.addHook("agent.turn.after", async ({ agent, outcome }) => {
     try {
+      // A finished turn anywhere proves its provider's sign-in works: a run waiting on it can go on.
+      if (outcome.kind === "completed") runner.providerWorks(agent.provider);
       // A task's run finished a turn (the user answered it there): its outcome may have changed.
       if (runner.isTaskAgent(agent.id)) {
         runner.onTurnFinished(agent.id, outcome.kind === "canceled");
@@ -383,10 +442,25 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
 
   server.handle(taskRpc, async (input, context) => {
     link.adopt(context.paseo);
-    const result = input.action === "cancel" ? tasks.cancel(input.id) : tasks.runNow(input.id);
-    if (!result.ok) return { ok: false, message: result.error };
+    const act = {
+      cancel: () => runner.cancel(input.id),
+      "run-now": () => runner.runNow(input.id),
+      stop: () => runner.stop(input.id),
+      pause: () => runner.pause(input.id),
+      resume: () => runner.resumeNow(input.id),
+      nudge: () => runner.nudge(input.id),
+    }[input.action];
+    const result = await act();
     changed();
-    return { ok: true, message: result.message };
+    return result;
+  });
+
+  // An answer typed on Today: passed into the run as their own message.
+  server.handle(taskAnswerRpc, async (input, context) => {
+    link.adopt(context.paseo);
+    const result = await runner.answer(input.id, input.text, "today");
+    changed();
+    return result;
   });
 
   server.handle(recapsRpc, async (input, context) => {

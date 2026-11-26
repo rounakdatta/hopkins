@@ -54,6 +54,7 @@ export function RunsList(props: { colors: Colors; phone: boolean; switcher: Reac
           {h.title}
         </Text>
         {h.detail ? <Text style={[type.title, { color: colors.foregroundMuted }]}>{h.detail}</Text> : null}
+        {view.metrics ? <Text style={[type.small, tabular, { color: colors.foregroundMuted, paddingTop: 2 }]}>{view.metrics}</Text> : null}
       </View>
 
       {view.runs.length >= FILTER_FROM ? <Filter colors={colors} query={query} onQuery={setQuery} /> : null}
@@ -126,8 +127,10 @@ function byDay(runs: Run[]): [string, Run[]][] {
 
 /** What the second line says: the question it asks, how it went, or since when it has been working. */
 function lineOf(run: Run): { text: string | null; tone: "muted" | "warning" } {
-  if (run.state === "needs-you") return { text: run.unreported ? "It stopped without saying how it went." : run.report, tone: "muted" };
-  if (run.state === "running") return { text: null, tone: "muted" };
+  if (run.state === "needs-you") return { text: run.liveState === "paused" ? `Paused. ${run.live ?? ""}`.trim() : run.unreported ? "It stopped without saying how it went." : run.report, tone: "muted" };
+  if (run.state === "scheduled" && run.live) return { text: run.live, tone: "muted" };
+  // At work: how it is doing; quiet or stalled says so first, and a stall is worth a look.
+  if (run.state === "running") return { text: run.live ? `${run.liveState === "stalled" ? "Stalled · " : run.liveState === "quiet" ? "Quiet · " : ""}${run.live}` : null, tone: run.liveState === "stalled" ? "warning" : "muted" };
   // Done is how most runs end, so it says nothing extra; the ones that didn't work say so.
   if (run.state === "failed") return { text: `Didn't work${run.report ? `: ${run.report}` : "."}`, tone: "warning" };
   if (run.state === "cancelled") return { text: `Cancelled${run.report ? `: ${run.report}` : "."}`, tone: "muted" };

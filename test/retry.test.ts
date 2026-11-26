@@ -137,16 +137,18 @@ describe("a task that fails", () => {
     expect(w.get(id).state).toBe("failed");
   });
 
-  it("never retries what is waiting on them, or a run that may still be going", async () => {
+  it("never retries what is waiting on them, or a run that is still going", async () => {
     const asks = world([{ status: "idle", lastMessage: report("needs-you", "What is the code they sent?") }]);
     const a = asks.create();
     await asks.run();
     expect(asks.get(a).state).toBe("needs-you");
+    // A wait that ends with the turn still going is no failure: the run is still at work.
     const slow = world([{ status: "timeout", lastMessage: null }]);
     const b = slow.create();
     await slow.run();
-    expect(slow.get(b).state).toBe("failed");
+    expect(slow.get(b).state).toBe("running");
     expect(slow.get(b).retry).toBeUndefined();
+    expect(slow.port.runs).toHaveLength(1);
   });
 
   it("says it worked on the second try", async () => {

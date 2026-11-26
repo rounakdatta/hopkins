@@ -105,6 +105,98 @@ export class PaseoTaskPort implements TaskPort {
     const result = await withTimeout(ref.waitForFinish(timeoutMs), timeoutMs + 60_000, "waiting for the task");
     return { status: result.status, lastMessage: result.lastMessage, ...(result.error ? { error: result.error } : {}), ...costOf(ref) };
   }
+
+  async observe(agentId: string): Promise<RunView | null> {
+    const found = await withTimeout(this.api().agents.ref(agentId).refresh(), 15_000, "looking at a run");
+    const agent = found?.agent as AgentSnapshot | undefined;
+    if (!agent) return null;
+    const time = (s: string | null | undefined) => (s ? Date.parse(s) || null : null);
+    return {
+      status: agent.status ?? "closed",
+      turnStartedAt: agent.activeTurn ? (time(agent.activeTurn.startedAt) ?? Date.now()) : null,
+      background: agent.backgroundWork?.count ?? 0,
+      permissions: agent.pendingPermissions?.length ?? 0,
+      lastError: agent.lastError ?? null,
+      updatedAt: time(agent.updatedAt),
+      lastUserMessageAt: time(agent.lastUserMessageAt),
+      provider: agent.provider ?? "",
+      cwd: agent.cwd ?? "",
+      sessionId: agent.persistence?.sessionId ?? null,
+      archived: Boolean(agent.archivedAt),
+    };
+  }
+
+  async send(agentId: string, text: string, messageId: string, interrupt = false): Promise<void> {
+    await withTimeout(
+      this.api().agents.ref(agentId).send(text, { messageId, activeTurnBehavior: interrupt ? "interrupt" : "steer" } as never),
+      90_000,
+      "sending into a run",
+    );
+  }
+
+  async stop(agentId: string): Promise<boolean> {
+    const ref = this.api().agents.ref(agentId);
+    // Its own jobs first (a Monitor, a background shell), so nothing wakes it again.
+    const jobs = await withTimeout(ref.backgroundWork.list(), 15_000, "listing a run's background work").catch(() => []);
+    for (const job of jobs) await withTimeout(ref.backgroundWork.stop(job), 15_000, "stopping a run's background work").catch(() => undefined);
+    // The plugin API has no way to end a turn; hopkins's own daemon connection does.
+    const daemon = this.link.daemon;
+    if (!daemon?.cancelAgent) return false;
+    await withTimeout(daemon.cancelAgent(agentId), 15_000, "stopping a run");
+    return true;
+  }
+
+  async archive(agentId: string): Promise<void> {
+    await withTimeout(this.api().agents.ref(agentId).archive(), 15_000, "archiving a finished run");
+  }
+
+  /** Whether the provider can work again: Paseo's usage reading for it (it needs a working sign-in). Null when it does not say. */
+  async signedIn(provider: string): Promise<boolean | null> {
+    const id = provider.split("/")[0]!;
+    const usage = (await withTimeout(this.api().providers.listUsage(), 30_000, "reading provider usage").catch(() => null)) as UsageList | null;
+    const entry = usage?.providers?.find((p) => p.providerId === id);
+    if (!entry) return null;
+    if (entry.status === "available") return true;
+    return /expired|rejected|auth|sign|log ?in|401|403/i.test(entry.error ?? "") ? false : null;
+  }
+}
+
+/** What Paseo says about a run right now. */
+export interface RunView {
+  /** Its lifecycle status. A run not loaded (after a restart) reports its stored one, which may still say running. */
+  status: string;
+  /** When its current turn started; only a loaded run in a turn has one. */
+  turnStartedAt: number | null;
+  /** Its own pending jobs (a Monitor, a background shell): it will wake when they finish. */
+  background: number;
+  /** Permission prompts waiting for an answer. */
+  permissions: number;
+  lastError: string | null;
+  updatedAt: number | null;
+  lastUserMessageAt: number | null;
+  provider: string;
+  cwd: string;
+  /** The provider's session id (Claude's names its transcript). */
+  sessionId: string | null;
+  archived: boolean;
+}
+
+interface AgentSnapshot {
+  status?: string;
+  activeTurn?: { turnId: string; startedAt: string | null } | null;
+  backgroundWork?: { count: number };
+  pendingPermissions?: unknown[];
+  lastError?: string;
+  updatedAt?: string;
+  lastUserMessageAt?: string | null;
+  provider?: string;
+  cwd?: string;
+  persistence?: { sessionId?: string } | null;
+  archivedAt?: string | null;
+}
+
+interface UsageList {
+  providers?: { providerId: string; status: string; error?: string | null }[];
 }
 
 /**

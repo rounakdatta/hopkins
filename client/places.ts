@@ -23,7 +23,8 @@ export interface Desk {
   basket: BasketCard[];
 }
 
-const urgent = (t: TaskItem) => t.state === "needs-you" || t.state === "missed";
+// A run they paused is theirs to resume when they like: it waits on the table, not in their hand.
+const urgent = (t: TaskItem) => (t.state === "needs-you" && t.live?.state !== "paused") || t.state === "missed";
 
 /**
  * The desk for a Today view. The hand holds exactly what `needsYou` counts (the headline and the

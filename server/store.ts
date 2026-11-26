@@ -17,7 +17,12 @@ const RecapStateSchema = z.object({
 });
 export type RecapState = z.infer<typeof RecapStateSchema>;
 
-const StateSchema = z.object({
+/** A prerequisite found missing (GPG locked, say): since when, and when the user was told, so one outage is told once. */
+const OutageSchema = z.object({ since: z.number(), toldAt: z.number().optional() });
+export type Outage = z.infer<typeof OutageSchema>;
+
+// Unknown keys are kept (a later release's), so a load and save here never loses them.
+const StateSchema = z.looseObject({
   version: z.literal(1),
   reminders: z.array(ReminderSchema),
   deliveries: z.array(DeliverySchema),
@@ -33,10 +38,29 @@ const StateSchema = z.object({
    * an older hopkins drops it and loads the rest of the file.
    */
   archive: z.array(ArchivedTaskSchema).default([]),
+  /** Prerequisites found missing and not yet seen fixed (0.5). */
+  outages: z.record(z.string(), OutageSchema).default({}).catch({}),
+  /** The supervisor's own marks (0.5): when the last digest went out. */
+  supervisor: z.object({ digestAt: z.number().optional() }).default({}).catch({}),
 });
 export type State = z.infer<typeof StateSchema>;
 
-const emptyState = (): State => ({ version: 1, reminders: [], deliveries: [], thread: { agentId: null }, recaps: { morning: null, evening: null, sent: {} }, suggestions: [], cursors: {}, backfill: idleBackfill(), tasks: [], archive: [] });
+const emptyState = (): State => ({ version: 1, reminders: [], deliveries: [], thread: { agentId: null }, recaps: { morning: null, evening: null, sent: {} }, suggestions: [], cursors: {}, backfill: idleBackfill(), tasks: [], archive: [], outages: {}, supervisor: {} });
+
+/**
+ * Reads the file's tasks one by one: a task this release cannot read (a later release's, or a
+ * damaged one) is kept aside, exactly as it was, and written back with the rest; it never fails
+ * the file or gets lost.
+ */
+function splitTasks(raw: unknown): { raw: unknown; aside: unknown[] } {
+  if (!raw || typeof raw !== "object" || !Array.isArray((raw as { tasks?: unknown }).tasks)) return { raw, aside: [] };
+  const all = (raw as { tasks: unknown[] }).tasks;
+  const keep: unknown[] = [];
+  const aside: unknown[] = [];
+  for (const t of all) (TaskSchema.safeParse(t).success ? keep : aside).push(t);
+  const earlier = (raw as { tasksAside?: unknown }).tasksAside;
+  return { raw: { ...(raw as object), tasks: keep }, aside: [...(Array.isArray(earlier) ? earlier : []), ...aside] };
+}
 
 const STATE_FILE = "state.json";
 const BACKUP_FILE = "state.json.bak";
@@ -55,6 +79,8 @@ export function defaultDataDir(): string {
 
 export class Store {
   private state: State = emptyState();
+  /** Tasks this release could not read, kept as they were (see splitTasks). */
+  private aside: unknown[] = [];
   private readonly file: string;
   private readonly backup: string;
   private readonly journal: string;
@@ -80,8 +106,13 @@ export class Store {
     for (const candidate of [this.file, this.backup]) {
       if (!fs.existsSync(candidate)) continue;
       try {
-        this.state = StateSchema.parse(JSON.parse(fs.readFileSync(candidate, "utf8")));
+        const { raw, aside } = splitTasks(JSON.parse(fs.readFileSync(candidate, "utf8")));
+        this.state = StateSchema.parse(raw);
+        delete (this.state as { tasksAside?: unknown }).tasksAside;
+        this.aside = aside;
+        if (aside.length) this.log.warn("some tasks could not be read; they are kept as they are", { count: aside.length });
         if (candidate === this.backup) this.log.warn("state restored from backup");
+        this.migrate();
         return;
       } catch (err) {
         const aside = `${candidate}.corrupt-${Date.now()}`;
@@ -105,8 +136,18 @@ export class Store {
     return () => this.listeners.delete(listener);
   }
 
+  /**
+   * Fills in what a release before 0.5 did not keep: each task's run history, from the run it
+   * knew. Idempotent, additive only.
+   */
+  private migrate(): void {
+    for (const t of this.state.tasks) {
+      if (!t.runs && t.agentId) t.runs = [{ agentId: t.agentId, startedAt: t.startedAt ?? t.dueAt, how: (t.tries?.length ?? 0) > 0 ? "retry" : "first" }];
+    }
+  }
+
   save(): void {
-    const json = `${JSON.stringify(this.state)}\n`;
+    const json = `${JSON.stringify(this.aside.length ? { ...this.state, tasksAside: this.aside } : this.state)}\n`;
     const tmp = `${this.file}.tmp-${process.pid}`;
     const fd = fs.openSync(tmp, "w", 0o600);
     try {
@@ -268,6 +309,8 @@ export class Store {
     if (closed.length > KEEP_CLOSED_TASKS) {
       const old = closed.sort((a, b) => a.updatedAt - b.updatedAt).slice(0, closed.length - KEEP_CLOSED_TASKS);
       const drop = new Set(old.map((t) => t.id));
+      // The whole record goes to this month's archive file first: finished work is archived, never deleted.
+      this.keepForGood(old);
       this.state.tasks = this.state.tasks.filter((t) => !drop.has(t.id));
       const archived = this.state.archive.filter((a) => !drop.has(a.id));
       for (const t of old) {
@@ -290,9 +333,47 @@ export class Store {
     }
   }
 
+  /** Appends whole task records to archive/tasks-YYYY-MM.jsonl (append-only, private). */
+  private keepForGood(tasks: readonly Task[]): void {
+    if (tasks.length === 0) return;
+    try {
+      const dir = path.join(this.dir, "archive");
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const month = new Date().toISOString().slice(0, 7);
+      const lines = tasks.map((t) => `${JSON.stringify({ archivedAt: Date.now(), task: t })}\n`).join("");
+      fs.appendFileSync(path.join(dir, `tasks-${month}.jsonl`), lines, { mode: 0o600 });
+    } catch (err) {
+      this.log.warn("could not write the task archive", { error: errorText(err) });
+    }
+  }
+
   /** Finished tasks past the last 100 (see putTask). */
   archive(): readonly ArchivedTask[] {
     return this.state.archive;
+  }
+
+  // --- supervision ----------------------------------------------------------------------
+
+  outages(): Readonly<Record<string, Outage>> {
+    return this.state.outages;
+  }
+
+  setOutage(name: string, outage: Outage): void {
+    this.state.outages[name] = outage;
+  }
+
+  clearOutage(name: string): void {
+    if (!(name in this.state.outages)) return;
+    delete this.state.outages[name];
+    this.save();
+  }
+
+  digestAt(): number | undefined {
+    return this.state.supervisor.digestAt;
+  }
+
+  setDigestAt(at: number): void {
+    this.state.supervisor = { ...this.state.supervisor, digestAt: at };
   }
 
   removeTask(id: string): void {

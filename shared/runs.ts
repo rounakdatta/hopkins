@@ -45,6 +45,9 @@ export const RunSchema = z.object({
   /** The run's own report, shortened: the question it asks, or how it went. Shown as data. */
   report: z.string().nullable(),
   scope: ScopeSchema,
+  /** While it works or waits: how it is doing, in one line ("3h 12m · last activity 2 min ago"), and whether it is quiet or stalled. */
+  live: z.string().nullable().optional(),
+  liveState: z.string().nullable().optional(),
 });
 export type Run = z.infer<typeof RunSchema>;
 
@@ -53,6 +56,8 @@ export const RunsViewSchema = z.object({
   tz: z.string(),
   /** Newest first. */
   runs: z.array(RunSchema),
+  /** The last seven days in numbers: tasks, done, didn't work, how long they took, resumes. */
+  metrics: z.string().nullable().optional(),
 });
 export type RunsView = z.infer<typeof RunsViewSchema>;
 
@@ -67,10 +72,14 @@ export interface RunGroups {
 /** The order the Runs screen shows them in: what needs them, then what is working, then the rest; newest first in each. */
 export function groupRuns(runs: readonly Run[]): RunGroups {
   const newest = [...runs].sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
+  // Between tries (picked up again soon, waiting for a reset or for room) and paused are still under
+  // way: they sit with the working ones, each saying why it waits.
+  const paused = (r: Run) => r.state === "needs-you" && r.liveState === "paused";
+  const working = (r: Run) => r.state === "running" || r.state === "scheduled" || paused(r);
   return {
-    needsYou: newest.filter((r) => r.state === "needs-you"),
-    working: newest.filter((r) => r.state === "running"),
-    finished: newest.filter((r) => r.state !== "needs-you" && r.state !== "running"),
+    needsYou: newest.filter((r) => r.state === "needs-you" && !paused(r)),
+    working: newest.filter(working),
+    finished: newest.filter((r) => r.state !== "needs-you" && !working(r)),
   };
 }
 

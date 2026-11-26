@@ -6,11 +6,13 @@ import { defineAgentTool, type AgentToolDefinition, type AgentToolResult } from 
 import { z } from "zod";
 import { RepeatSchema, type Reminder, type Source } from "../shared/model";
 import { scopeFor, type Config } from "./config";
+import { formatWhen } from "../shared/time";
 import type { Backfill } from "./backfill";
 import type { Suggestions } from "./noticing";
 import type { Recaps } from "./recaps";
 import type { Clock, ListFilter, Reminders, Result } from "./reminders";
-import type { Tasks } from "./tasks";
+import type { TaskRunner, Tasks } from "./tasks";
+import { buildMetrics, liveOf, metricsLine } from "./supervision-view";
 import type { Conditions } from "./conditions";
 import { brief, type CheckIns } from "./checkins";
 
@@ -20,6 +22,8 @@ export interface ToolDeps {
   suggestions?: Suggestions;
   backfill?: Backfill;
   tasks?: Tasks;
+  /** The runs' supervisor: answers passed on, stop, pause, resume (absent in tests that need none). */
+  runner?: TaskRunner;
   conditions?: Conditions;
   checkins?: CheckIns;
   config: () => Config;
@@ -71,9 +75,12 @@ action "create":
 - when: ${WHEN_HELP} If they gave no time, ask; never guess one for a task.
 - cwd: optional folder to work in; by default their personal (or work) folder.
 - by: optional deadline, when there is one ("before 5am on the 19th", the flight's departure): if it fails, hopkins tries again only before this, and runs it late after downtime only before this.
+- Runs may work for hours or days: hopkins watches them (no time limit), picks a run up again if it dies, waits out usage limits, and starts at most a few heavy runs at once. Optional, to help it: weight ("heavy" for builds, browsers, media, long test suites; "light" for a quick look); progress (a file the run keeps its phase in, e.g. "~/personal/x/progress.md"); repo and branch (a git folder whose commits count as progress); needs (what must be ready before it starts: "gpg", "net:https://…", "file:/path", or a check the host names); maxHours (only when the user wants a hard cap).
 If it fails, hopkins decides from why whether and when to try again (at most 3 tries) and tells them.
 After it is saved, give them the one-line confirmation from the result, as is.
-action "list": scheduled, running and recent tasks with ids and outcomes. action "cancel" or "run_now": with id.`;
+action "list": scheduled, running and recent tasks with ids, how each run is doing, and outcomes.
+action "answer" (id, text): pass the user's answer into a task's run as their own message, when its run asked them something (or to tell a working run something). Use their words unchanged.
+action "cancel", "stop" (end its run too), "pause", "resume" (carry on now: a paused run, one waiting for a reset, a sign-in or room), "run_now", "history" (every run it started): with id.`;
 
 function textResult(text: string, structuredContent?: unknown, isError = false): AgentToolResult {
   return isError ? { text, structuredContent, isError } : { text, structuredContent };
@@ -281,13 +288,19 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
         title: "Have something done at a time",
         description: TASK_DESCRIPTION,
         input: z.object({
-          action: z.enum(["create", "list", "cancel", "run_now"]),
+          action: z.enum(["create", "list", "cancel", "run_now", "answer", "stop", "pause", "resume", "history"]),
           text: z.string().optional().describe("The task, short, in their words."),
           instructions: z.string().optional().describe("The complete brief for the agent that will do it."),
           when: z.string().optional().describe(`When to do it. ${WHEN_HELP}`),
           cwd: z.string().optional().describe("Folder to work in (optional)."),
           by: z.string().optional().describe("A deadline, if there is one: no tries after it."),
-          id: z.string().optional().describe("For cancel and run_now: the task id, e.g. t_k3x9qa."),
+          id: z.string().optional().describe("For every action but create and list: the task id, e.g. t_k3x9qa."),
+          weight: z.enum(["light", "normal", "heavy"]).optional().describe("How hard it works the host: heavy for builds, browsers, media, long test suites."),
+          progress: z.string().optional().describe("A file the run keeps its progress in (its phase on a 'Phase: …' line)."),
+          repo: z.string().optional().describe("A git folder whose commits count as the run's progress."),
+          branch: z.string().optional().describe("The branch to watch in repo."),
+          needs: z.array(z.string()).optional().describe('What must be ready before it starts: "gpg", "net:https://…", "file:/path", or a check the host names.'),
+          maxHours: z.number().positive().optional().describe("A hard cap, only when the user asks for one. No cap by default."),
         }),
         async execute(input, { agent }) {
           if (input.action === "create") {
@@ -308,13 +321,40 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
           if (input.action === "list") {
             const all = tasks.list();
             if (all.length === 0) return textResult(`No tasks. Now: ${deps.reminders.nowText()}.`, { items: [] });
+            const cfg = deps.config();
+            const now = deps.clock.now();
             const lines = all.slice(0, 30).map((t) => {
               const outcome = t.report ?? t.error;
-              return `- ${t.id} · ${t.text} · ${t.state} · ${tasks.describe(t)}${outcome ? ` · ${outcome.split("\n")[0]!.slice(0, 160)}` : ""}`;
+              const live = liveOf(t, cfg, now);
+              const status = live ? `${live.state}${live.line ? ` (${live.line})` : ""}` : t.state;
+              return `- ${t.id} · ${t.text} · ${status} · ${tasks.describe(t)}${outcome ? ` · ${outcome.split("\n")[0]!.slice(0, 160)}` : ""}`;
             });
-            return textResult(`${lines.join("\n")}\nNow: ${deps.reminders.nowText()}.`, { items: all.slice(0, 30).map((t) => ({ id: t.id, text: t.text, state: t.state, dueAt: t.dueAt })) });
+            const stats = metricsLine(buildMetrics(all, now));
+            return textResult(`${lines.join("\n")}\n${stats ? `${stats}\n` : ""}Now: ${deps.reminders.nowText()}.`, { items: all.slice(0, 30).map((t) => ({ id: t.id, text: t.text, state: t.state, dueAt: t.dueAt, live: liveOf(t, cfg, now)?.state ?? null })) });
           }
           if (!input.id) return textResult("Not changed: pass the task id from action list.", undefined, true);
+          if (input.action === "history") {
+            const t = tasks.get(input.id);
+            if (!t) return textResult(`No task ${input.id}.`, undefined, true);
+            const cfg = deps.config();
+            const now = deps.clock.now();
+            const lines = (t.runs ?? []).map((r, i) => `${i + 1}. ${formatWhen(r.startedAt, cfg.tz, now, cfg.clock)} (${r.how}${r.resumes?.length ? `, picked up again ${r.resumes.length}×` : ""}): ${r.outcome ?? (t.agentId === r.agentId && t.state === "running" ? "at work" : "no outcome recorded")}${r.why ? `, ${r.why.slice(0, 160)}` : ""} · agent ${r.agentId}`);
+            return textResult(lines.length ? `${t.text}\n${lines.join("\n")}` : `${t.text}: no runs yet.`, { runs: t.runs ?? [] });
+          }
+          const runner = deps.runner;
+          if (input.action === "answer") {
+            if (!runner) return textResult("Not passed on: hopkins cannot reach runs here.", undefined, true);
+            const r = await runner.answer(input.id, input.text ?? "", deps.isThread(agent.id) ? "thread" : "today");
+            deps.changed();
+            return textResult(r.message, { delivered: r.ok }, !r.ok);
+          }
+          if (runner) {
+            const act = { cancel: () => runner.cancel(input.id!), run_now: () => runner.runNow(input.id!), stop: () => runner.stop(input.id!), pause: () => runner.pause(input.id!), resume: () => runner.resumeNow(input.id!) }[input.action];
+            const r = await act();
+            deps.changed();
+            return textResult(r.ok ? r.message : `Not changed: ${r.message}`, { changed: r.ok, id: input.id }, !r.ok);
+          }
+          if (input.action !== "cancel" && input.action !== "run_now") return textResult("Not changed: hopkins cannot reach runs here.", undefined, true);
           const r = input.action === "cancel" ? tasks.cancel(input.id) : tasks.runNow(input.id);
           if (!r.ok) return textResult(`Not changed: ${r.error}.`, { changed: false }, true);
           deps.changed();

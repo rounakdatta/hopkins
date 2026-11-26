@@ -125,7 +125,7 @@ export class Recaps {
       doneToday: kind === "evening" ? all.filter((r) => r.state === "done" && (r.closedAt ?? 0) >= startOfToday) : [],
       workedOn: kind === "evening" ? workedOn.slice(0, 5) : [],
       tasks: {
-        needYou: tasks.filter((t) => t.state === "needs-you" || t.state === "missed"),
+        needYou: tasks.filter((t) => (t.state === "needs-you" && t.hold?.kind !== "paused") || t.state === "missed"),
         running: tasks.filter((t) => t.state === "running"),
         today: tasksDue(startOfTomorrow),
         tomorrow: kind === "evening" ? tasksDue(endOfTomorrow, startOfTomorrow) : [],

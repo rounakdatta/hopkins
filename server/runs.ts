@@ -9,6 +9,7 @@ import { errorText, type Logger } from "./log";
 import type { PaseoApi } from "./paseo-link";
 import { every, type Page } from "./paseo-pages";
 import type { Store } from "./store";
+import { buildMetrics, liveOf, metricsLine } from "./supervision-view";
 import { TASK_LABEL } from "./task-port";
 import { THREAD_LABEL, withTimeout } from "./thread-port";
 
@@ -24,6 +25,7 @@ export function buildRuns(store: Store, cfg: Config, now: number): RunsView {
   for (const t of store.tasks()) {
     // A daily check belongs to its reminder; a task with no agent yet has no run to open.
     if (t.kind === "check" || !t.agentId) continue;
+    const live = liveOf(t, cfg, now);
     runs.push({
       id: t.id,
       title: runTitle(t.text),
@@ -33,6 +35,7 @@ export function buildRuns(store: Store, cfg: Config, now: number): RunsView {
       ...at(t.startedAt ?? t.dueAt),
       report: shorten(t.report ?? t.error),
       scope: t.scope,
+      ...(live ? { live: live.line, liveState: live.state } : {}),
     });
   }
   for (const a of store.archive()) {
@@ -40,7 +43,7 @@ export function buildRuns(store: Store, cfg: Config, now: number): RunsView {
     runs.push({ id: a.id, title: runTitle(a.text), state: a.state, agentId: a.agentId, ...at(a.dueAt), report: shorten(a.report), scope: a.scope });
   }
   runs.sort((x, y) => y.at - x.at || x.id.localeCompare(y.id));
-  return { generatedAt: now, tz: cfg.tz, runs };
+  return { generatedAt: now, tz: cfg.tz, runs, metrics: metricsLine(buildMetrics(store.tasks(), now)) };
 }
 
 function shorten(text: string | undefined): string | null {

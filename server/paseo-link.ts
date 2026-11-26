@@ -23,6 +23,8 @@ export interface DaemonLike {
   connect?(): Promise<void>;
   close?(): Promise<void>;
   clearAgentAttention(agentId: string | string[]): Promise<void>;
+  /** Ends an agent's current turn (the plugin API has no such call). */
+  cancelAgent?(agentId: string): Promise<void>;
 }
 
 interface ClientModules {

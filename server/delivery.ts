@@ -4,6 +4,7 @@
 
 import type { Delivery, RecapKind, Reminder, Task } from "../shared/model";
 import type { Config } from "./config";
+import { formatWhen, zonedParts } from "../shared/time";
 import { errorText, type Logger } from "./log";
 import { cueText, noteCueText, recapCueText, taskCueText } from "./prompts";
 import type { RecapData } from "./recaps";
@@ -67,6 +68,26 @@ export const defaultDeliveryOptions: DeliveryOptions = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
+/** Local minutes since midnight. */
+function minuteOfDay(instant: number, tz: string): number {
+  const p = zonedParts(instant, tz);
+  return p.hour * 60 + p.minute;
+}
+
+/** Inside the user's quiet hours (which may run past midnight). */
+export function inQuietHours(cfg: Config, now: number): boolean {
+  if (!cfg.quiet) return false;
+  const t = minuteOfDay(now, cfg.tz);
+  const from = cfg.quiet.from.hour * 60 + cfg.quiet.from.minute;
+  const until = cfg.quiet.until.hour * 60 + cfg.quiet.until.minute;
+  return from < until ? t >= from && t < until : t >= from || t < until;
+}
+
+/** Queued during quiet hours that have ended since: it waited, so it is told with the rest. */
+function heldThroughQuiet(cfg: Config, createdAt: number, now: number): boolean {
+  return Boolean(cfg.quiet) && inQuietHours(cfg, createdAt) && now - createdAt < 24 * 3_600_000;
+}
+
 export class DeliveryQueue {
   private sending = false;
   private current: Promise<void> | null = null;
@@ -129,8 +150,8 @@ export class DeliveryQueue {
   }
 
   /** Queues a short note from hopkins itself. */
-  enqueueNote(text: string, now: number): Delivery {
-    const delivery: Delivery = { id: newId("d"), reminderIds: [], kind: "note", note: text.slice(0, 1_000), createdAt: now, state: "pending", attempts: 0 };
+  enqueueNote(text: string, now: number, options: { canWait?: boolean } = {}): Delivery {
+    const delivery: Delivery = { id: newId("d"), reminderIds: [], kind: "note", note: text.slice(0, 1_000), createdAt: now, state: "pending", attempts: 0, ...(options.canWait ? { canWait: true } : {}) };
     this.store.putDelivery(delivery);
     this.store.save();
     this.store.event("queued", { id: delivery.id, kind: "note" });
@@ -139,6 +160,9 @@ export class DeliveryQueue {
 
   /** Queues how a task went (done, needs you, failed, missed): one message per outcome. */
   enqueueTask(task: Task, now: number, retryAt?: number): Delivery {
+    // Done, trying again, or did not start: news that can wait out quiet hours. A question, a step
+    // only they can do, or a real failure is told at once.
+    const canWait = task.state === "done" || task.state === "scheduled" || task.state === "missed" || task.state === "cancelled";
     const delivery: Delivery = {
       id: newId("d"),
       reminderIds: [],
@@ -147,6 +171,7 @@ export class DeliveryQueue {
       createdAt: now,
       state: "pending",
       attempts: 0,
+      ...(canWait ? { canWait: true } : {}),
     };
     this.store.putDelivery(delivery);
     this.store.save();
@@ -186,9 +211,12 @@ export class DeliveryQueue {
         const port = this.port();
         if (!port) return;
         const now = this.clock.now();
+        const quiet = inQuietHours(this.config(), now);
+        // After quiet hours, what waited goes out as one note rather than a burst of pushes.
+        if (!quiet) this.mergeHeld(now);
         const next = this.store
           .deliveries()
-          .filter((d) => d.state === "pending" && (d.nextAttemptAt ?? 0) <= now)
+          .filter((d) => d.state === "pending" && (d.nextAttemptAt ?? 0) <= now && !(quiet && d.canWait))
           .sort((a, b) => a.createdAt - b.createdAt)[0];
         if (!next) return;
         await this.send(next, port);
@@ -196,6 +224,36 @@ export class DeliveryQueue {
     } finally {
       this.sending = false;
     }
+  }
+
+  /** Things that waited out quiet hours (two or more), told in one note: each in a line. */
+  private mergeHeld(now: number): void {
+    const cfg = this.config();
+    const held = this.store.deliveries().filter((d) => d.state === "pending" && d.canWait && d.attempts === 0 && !d.mergedInto && heldThroughQuiet(cfg, d.createdAt, now));
+    if (held.length < 2) return;
+    const lines: string[] = [];
+    for (const d of held.sort((a, b) => a.createdAt - b.createdAt)) {
+      if (d.task) {
+        const task = this.store.getTask(d.task.id);
+        // Moved on since (answered, retried, cancelled): what is true now is told by its own message.
+        if (!task || task.state !== d.task.state) continue;
+        const report = (task.report ?? task.error ?? "").replace(/\s+/g, " ").slice(0, 160);
+        const said =
+          task.state === "done"
+            ? `done${report ? `: ${report}` : ""}`
+            : task.state === "scheduled" && d.task.retryAt !== undefined
+              ? `didn't work${report ? ` (${report})` : ""}; trying again at ${formatWhen(d.task.retryAt, cfg.tz, now, cfg.clock)}`
+              : task.state === "missed"
+                ? "didn't start: hopkins was offline then"
+                : task.state;
+        lines.push(`- "${task.text}": ${said}`);
+      } else if (d.note) lines.push(`- ${d.note}`);
+    }
+    const merged: Delivery = { id: newId("d"), reminderIds: [], kind: "note", note: `While you were away (quiet hours):\n${lines.join("\n")}`.slice(0, 1_000), createdAt: now, state: "pending", attempts: 0 };
+    for (const d of held) this.store.putDelivery({ ...d, state: "sent", sentAt: now, mergedInto: merged.id, message: "(told in the note after quiet hours)" });
+    if (lines.length) this.store.putDelivery(merged);
+    this.store.save();
+    this.store.event("merged", { id: merged.id, count: held.length });
   }
 
   private liveReminders(d: Delivery, now: number): Reminder[] {

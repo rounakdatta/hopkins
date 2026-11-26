@@ -9,6 +9,7 @@ import type { Reminders } from "./reminders";
 import { brief } from "./checkins";
 import { basketToday, machineNow, waitingOnYou } from "./desk";
 import type { Tasks } from "./tasks";
+import { controlsOf, liveOf, questionOf } from "./supervision-view";
 
 export interface Health {
   running: boolean;
@@ -147,8 +148,15 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       scope: t.scope,
       retry: t.state === "scheduled" && t.retry ? { n: t.retry.n, of: t.retry.of, why: t.retry.why.slice(0, 300) } : null,
       ...(t.tries?.length ? { tries: t.tries.map((x) => ({ when: formatWhen(x.at, cfg.tz, now, cfg.clock), outcome: x.outcome, why: x.why.slice(0, 200) })) } : {}),
+      live: liveOf(t, cfg, now),
+      question: questionOf(t),
+      answer: t.answer
+        ? { text: t.answer.text.slice(0, 600), state: (["sending", "sent", "picked-up", "failed"].includes(t.answer.state) ? t.answer.state : "sent") as "sending" | "sent" | "picked-up" | "failed", when: formatWhen(t.answer.at, cfg.tz, now, cfg.clock), error: t.answer.error ?? null }
+        : null,
+      controls: controlsOf(t),
+      ...(t.runs?.length ? { runs: t.runs.map((r) => ({ when: formatWhen(r.startedAt, cfg.tz, now, cfg.clock), how: r.how, outcome: r.outcome ?? null, why: r.why ?? null, resumes: r.resumes?.length ?? 0 })) } : {}),
     })),
-    machine: machineNow(store, cfg, noticing?.backfill ?? store.backfill()),
+    machine: machineNow(store, cfg, noticing?.backfill ?? store.backfill(), now),
     ...basketToday(store, cfg, now),
   };
 }
