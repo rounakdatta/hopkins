@@ -44,9 +44,12 @@ export function RunsList(props: { colors: Colors; phone: boolean; switcher: Reac
   const open = props.openAgent;
 
   return (
-    <View style={{ gap: phone ? space.l : space.xl, maxWidth: 820 }}>
+    <View style={{ gap: phone ? space.l : space.xl, maxWidth: 820, width: "100%", alignSelf: "center" }}>
       <View style={{ gap: 6 }}>
-        {phone ? null : <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>{props.switcher}</View>}
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.s, flexWrap: "wrap" }}>
+          <Text style={[type.meta, { color: colors.foregroundMuted, flex: 1 }]}>Every run hopkins started, newest first</Text>
+          {phone ? null : props.switcher}
+        </View>
         <Text accessibilityRole="header" style={[type.headline, { color: colors.foreground }]}>
           {h.title}
         </Text>
@@ -107,7 +110,7 @@ export function RunsList(props: { colors: Colors; phone: boolean; switcher: Reac
 
       {view.runs.length > 0 ? (
         <Text style={[type.small, { color: colors.foregroundMuted, paddingHorizontal: space.xs }]}>
-          {open ? "Paseo's search finds each run by its task's name, too." : "This app can't open a run from here; Paseo's search finds each one by its task's name."}
+          {open ? "Each run is a conversation in Paseo too: its search finds it by the task's name." : "This app can't open a run from here; Paseo's search finds each one by its task's name."}
         </Text>
       ) : null}
     </View>

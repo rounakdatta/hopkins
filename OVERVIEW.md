@@ -5,6 +5,7 @@ hopkins is a reminders companion for Paseo. Tell any agent "remind me to call th
 - **Reminders.** One-off, repeating (daily, weekdays, every N weeks, monthly on a date or weekday, yearly), important (one more nudge if unopened) and someday ideas. Reply in the hopkins conversation with "done", "snooze 1h" or "move it to 6pm", or use the Today screen.
 - **Check-ins.** A repeating reminder can ask whether you did it, with **Yes** and **Not today**, or how you feel, with a mood slider that uses words (Rough, Low, Okay, Good, Great). Answer on a card in the hopkins conversation, on Today, or in words. hopkins keeps one answer per day it was due and shows the last two weeks under Rhythms.
 - **Tasks.** "At 8pm, do my web check-in." At that time hopkins starts an agent from a brief written by the agent you asked, follows it, and tells you how it went.
+  - Each run is a tab in its folder's workspace, named after its task; Runs (in the sidebar, under hopkins) lists every run, what needs you first, one tap from each.
   - When a task fails, hopkins tries again only when that could work, at a time chosen from why it failed: first the agent's own advice, then a model's judgement, then a fixed rule.
   - It makes at most three tries, never retries past a deadline you gave, and never retries a run that is waiting for your answer.
 - **Repeats that stop by themselves.** "Remind me to go to bed at 11 until I'm up by 7:30 for a week." An agent checks the rule once a day and is told only to read. The reminder stops once the rule has held for the chosen number of days in a row.
@@ -43,7 +44,7 @@ Tap a card to pick it up and see everything about it. Week and Month show how mu
 - **Tools for your other agents.**
   - hopkins runs an MCP server on localhost, protected by a token in a file only you can read.
   - It adds a small stdio bridge to new Claude Code, Codex and OpenCode sessions, so they can set and change reminders. The bridge is a script hopkins writes into its data folder.
-- **Tasks.** They start background agents with the provider, mode and folder in your settings. Those agents act with the permissions that mode grants, so choose a mode you trust for unattended work.
+- **Tasks.** They start agents (tabs in the folder's workspace) with the provider, mode and folder in your settings. Those agents act with the permissions that mode grants, so choose a mode you trust for unattended work.
 - **The model API.** These are the only things hopkins sends to it:
   - **Noticing:** the text you typed in a conversation since hopkins last read it, plus the agent's last reply.
   - **The one-time history import:** excerpts of your past Claude Code conversations and the memory notes under `~/.claude/projects`.
