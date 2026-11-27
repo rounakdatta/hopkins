@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TaskSchema, type Task } from "../shared/model";
-import { filterRuns, groupRuns, runsHeadline, runTitle, RUN_TITLE_MAX, type Run } from "../shared/runs";
+import { allAtWork, filterRuns, groupRuns, runsHeadline, runTitle, RUN_TITLE_MAX, type Run } from "../shared/runs";
 import { PaseoTaskPort, runTabTitle, TASK_LABEL } from "../server/task-port";
 import { buildRuns, nameRunWorkspaces, taskTextOf } from "../server/runs";
 import { taskCueText } from "../server/prompts";
@@ -221,6 +221,25 @@ describe("the Runs list", () => {
     expect(g.needsYou.map((r) => r.id)).toEqual(["asks-newer", "asks"]);
     expect(g.working.map((r) => r.id)).toEqual(["works"]);
     expect(g.finished.map((r) => r.id)).toEqual(["missed", "new-fail", "old-done"]);
+  });
+
+  it("keeps a run that waits (to be picked up, for a reset, for room) or is paused with those under way, and says 'under way' then", () => {
+    const runs = [
+      runOf({ id: "works", state: "running", at: 1, liveState: "working" }),
+      runOf({ id: "limit", state: "scheduled", at: 2, liveState: "limit", live: "Waiting for a usage limit, which resets at 12:40am; carries on at 12:43am" }),
+      runOf({ id: "paused", state: "needs-you", at: 3, liveState: "paused", live: "Paused at 10:30pm" }),
+      runOf({ id: "asks", state: "needs-you", at: 4 }),
+    ];
+    const g = groupRuns(runs);
+    expect(g.needsYou.map((r) => r.id)).toEqual(["asks"]);
+    expect(g.working.map((r) => r.id)).toEqual(["paused", "limit", "works"]);
+    expect(allAtWork(g.working)).toBe(false);
+    expect(runsHeadline(g)).toEqual({ title: "A run needs you.", detail: "Three more are under way." });
+    // All at work, and none stalled: then "working" is true.
+    const atWork = groupRuns([runOf({ id: "a", state: "running", at: 1, liveState: "working" }), runOf({ id: "b", state: "running", at: 2, liveState: "quiet" })]);
+    expect(allAtWork(atWork.working)).toBe(true);
+    expect(runsHeadline(atWork).title).toBe("Two runs are working.");
+    expect(runsHeadline(groupRuns([runOf({ id: "s", state: "running", at: 1, liveState: "stalled" })])).title).toBe("One run is under way.");
   });
 
   it("finds a run by any words of its name or report, in any order", () => {

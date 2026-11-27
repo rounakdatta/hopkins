@@ -4,7 +4,7 @@
 import type { Task, TaskLiveView } from "../shared/model";
 import { formatWhen } from "../shared/time";
 import type { Config } from "./config";
-import { atPhrase, atTime, spanText, waitsOnUser } from "./tasks";
+import { atPhrase, spanText, waitsOnUser, workedFor } from "./tasks";
 
 /** "just now", "4 min ago", "2h 10m ago"; past a day, the time itself. */
 export function ago(at: number, cfg: Config, now: number): string {
@@ -14,27 +14,25 @@ export function ago(at: number, cfg: Config, now: number): string {
   return formatWhen(at, cfg.tz, now, cfg.clock);
 }
 
-/** The task's first start: how long it has been at it, across resumes. */
-function firstStart(task: Task): number | null {
-  return task.runs?.[0]?.startedAt ?? task.startedAt ?? null;
-}
-
 export function liveOf(task: Task, cfg: Config, now: number): TaskLiveView | null {
-  const at = (t: number) => atTime(t, cfg, now);
+  const at = (t: number) => atPhrase(t, cfg, now);
   const resumes = task.resumes ?? 0;
   const base = { elapsed: null, lastActivity: null, phase: null, commit: null, until: null, step: null, resumes };
   if (task.state === "running") {
     const live = task.live;
     const state = live?.state === "quiet" || live?.state === "stalled" ? live.state : "working";
-    const start = firstStart(task);
-    const elapsed = start !== null ? spanText(now - start) : null;
+    // Time at work in this go (across resumes and answers; waiting on them is not work). Under a
+    // minute it has only just started: "0 min in" says nothing.
+    const worked = workedFor(task, now);
+    const elapsed = worked >= 60_000 ? spanText(worked) : null;
     const lastActivity = live?.lastActivityAt !== undefined ? ago(live.lastActivityAt, cfg, now) : null;
     const commit = live?.commit ? `"${live.commit.subject}" ${ago(live.commit.at, cfg, now)}` : null;
     const phase = live?.phase ?? null;
     const parts = [
-      elapsed ? `${elapsed} in` : null,
+      elapsed ? `${elapsed} in` : "just started",
       lastActivity ? `last activity ${lastActivity}` : null,
-      phase ? `phase: ${phase}` : null,
+      // A progress file's heading often names the phase itself ("Phase 3: build and tests").
+      phase ? (/^(phase|step|stage)\b/i.test(phase) ? phase : `phase: ${phase}`) : null,
       commit ? `last commit ${commit}` : null,
       live?.background ? `${live.background === 1 ? "a background job" : `${live.background} background jobs`} running` : null,
       resumes ? `picked up again ${resumes === 1 ? "once" : `${resumes} times`}` : null,
@@ -44,18 +42,25 @@ export function liveOf(task: Task, cfg: Config, now: number): TaskLiveView | nul
   const hold = task.hold;
   if (!hold) return null;
   if (task.state === "scheduled") {
+    // Ready to carry on, but the host has no room for it yet: it says so (it keeps why it stopped).
+    if (hold.room && hold.kind !== "capacity") return { ...base, state: "queued", line: `Ready to carry on when there is room (${hold.room.why})` };
     if (hold.kind === "resume") {
       const until = hold.until ?? task.dueAt;
       const line = until > now + 30_000 ? `Stopped ${atPhrase(hold.since, cfg, now)} (${hold.why ?? "it stopped"}); picks up again ${atPhrase(until, cfg, now)}` : `Picking it up again (${hold.why ?? "it stopped"})`;
       return { ...base, state: "resuming", line, until: at(until) };
     }
-    if (hold.kind === "limit") return { ...base, state: "limit", line: `Waiting for ${hold.why ?? "a usage limit"}; carries on ${atPhrase(hold.until ?? task.dueAt, cfg, now)}`, until: at(hold.until ?? task.dueAt) };
+    if (hold.kind === "limit") {
+      // The reset is said now, not when the limit was hit: "tomorrow at 12:40am" said at 11:50pm is "at 12:40am" by 12:10am.
+      const why = hold.resetAt !== undefined ? `a usage limit, which resets ${atPhrase(hold.resetAt, cfg, now)}` : "a usage limit";
+      return { ...base, state: "limit", line: `Waiting for ${why}; carries on ${atPhrase(hold.until ?? task.dueAt, cfg, now)}`, until: at(hold.until ?? task.dueAt) };
+    }
     if (hold.kind === "capacity") return { ...base, state: "queued", line: `Queued: waiting for capacity (${hold.why ?? "the host is busy"})` };
   }
   if (task.state === "needs-you") {
     if (hold.kind === "sign-in") return { ...base, state: "sign-in", line: "Stopped: its sign-in expired. It carries on by itself once sign-in works.", step: hold.step ?? null };
     if (hold.kind === "prereq") return { ...base, state: "prereq", line: "Needs you before it can start", step: hold.step ?? null };
     if (hold.kind === "paused") return { ...base, state: "paused", line: `Paused ${atPhrase(hold.since, cfg, now)}` };
+    if (hold.kind === "permission") return { ...base, state: "permission", line: "Waiting for a permission only you can give: allow or deny it in the run" };
   }
   return null;
 }
@@ -72,7 +77,9 @@ export function controlsOf(task: Task): TaskControls {
   const run = task.agentId ?? task.hold?.agentId ?? null;
   const live = task.live?.state;
   return {
-    answer: task.state === "needs-you" && Boolean(task.agentId) && task.hold?.kind !== "prereq" && task.hold?.kind !== "sign-in",
+    // A question (or a stop without a word, which they may want to tell something) takes an answer;
+    // not a step only they can do, a permission (allowed or denied in the run), or a pause.
+    answer: task.state === "needs-you" && Boolean(task.agentId) && !task.hold,
     stop: task.state === "running" || (task.state === "needs-you" && Boolean(run)) || (task.state === "scheduled" && Boolean(task.hold?.agentId)),
     pause: task.state === "running" || (task.state === "scheduled" && Boolean(task.hold)),
     resume:
@@ -85,7 +92,7 @@ export function controlsOf(task: Task): TaskControls {
 
 /** The question a run asked: its report, when it waits on an answer (not a stop without a word, a sign-in, a pause). */
 export function questionOf(task: Task): string | null {
-  if (task.state !== "needs-you" || task.unreported || waitsOnUser(task)) return null;
+  if (task.state !== "needs-you" || task.unreported || waitsOnUser(task) || task.hold?.kind === "permission") return null;
   return task.report ?? null;
 }
 

@@ -79,8 +79,8 @@ action "create":
 If it fails, hopkins decides from why whether and when to try again (at most 3 tries) and tells them.
 After it is saved, give them the one-line confirmation from the result, as is.
 action "list": scheduled, running and recent tasks with ids, how each run is doing, and outcomes.
-action "answer" (id, text): pass the user's answer into a task's run as their own message, when its run asked them something (or to tell a working run something). Use their words unchanged.
-action "cancel", "stop" (end its run too), "pause", "resume" (carry on now: a paused run, one waiting for a reset, a sign-in or room), "run_now", "history" (every run it started): with id.`;
+action "answer" (id, text), only in the hopkins conversation: pass the user's answer into a task's run as their own message, when its run asked them something (or to tell a working run something). Use their words unchanged.
+action "cancel" (a run at work is stopped too), "run_now", "history" (every run it started): with id. In the hopkins conversation also "stop" (end its run, cancel the task), "pause" and "resume" (carry on now: a paused run, one waiting for a reset, a sign-in or room).`;
 
 function textResult(text: string, structuredContent?: unknown, isError = false): AgentToolResult {
   return isError ? { text, structuredContent, isError } : { text, structuredContent };
@@ -342,9 +342,16 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
             return textResult(lines.length ? `${t.text}\n${lines.join("\n")}` : `${t.text}: no runs yet.`, { runs: t.runs ?? [] });
           }
           const runner = deps.runner;
+          // An answer goes into a run as the user's own message, and stop, pause and resume act on
+          // the user's runs: only the user does those, so only where the user speaks (this
+          // conversation; Today has its own buttons). Any other agent, a run that read a web page
+          // included, is refused rather than trusted to be passing on the user's words.
+          if ((input.action === "answer" || input.action === "stop" || input.action === "pause" || input.action === "resume") && !deps.isThread(agent.id)) {
+            return textResult(`Not done: only the user can ${input.action === "answer" ? "answer a run" : `${input.action} a run`}, in the hopkins conversation, on hopkins's Today screen, or in the run itself.`, { changed: false }, true);
+          }
           if (input.action === "answer") {
             if (!runner) return textResult("Not passed on: hopkins cannot reach runs here.", undefined, true);
-            const r = await runner.answer(input.id, input.text ?? "", deps.isThread(agent.id) ? "thread" : "today");
+            const r = await runner.answer(input.id, input.text ?? "", "thread");
             deps.changed();
             return textResult(r.message, { delivered: r.ok }, !r.ok);
           }

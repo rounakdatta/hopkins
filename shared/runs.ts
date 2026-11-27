@@ -97,15 +97,21 @@ const NUMBERS = ["no", "one", "two", "three", "four", "five", "six", "seven", "e
 const number = (n: number) => (n < NUMBERS.length ? NUMBERS[n]! : String(n));
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
+/**
+ * Whether every run under way is at work. Some may be waiting (for a reset, for room, paused) or
+ * stalled: then "working" would overstate it, and "under way" is what is true of all of them.
+ */
+export function allAtWork(working: readonly Run[]): boolean {
+  return working.every((r) => r.state === "running" && r.liveState !== "stalled");
+}
+
 /** One sentence that answers "does a run need me?", from the same groups the screen shows. */
 export function runsHeadline(groups: RunGroups): { title: string; detail: string | null } {
   const { needsYou, working, finished } = groups;
   if (needsYou.length + working.length + finished.length === 0) {
     return { title: "No runs yet.", detail: "When hopkins does something for you at a set time, the agent it starts is listed here." };
   }
-  // Some of them may be waiting (for a reset, for room, paused): "under way" is true of all of them.
-  const atWork = working.every((r) => r.state === "running" && r.liveState !== "stalled");
-  const verb = atWork ? "working" : "under way";
+  const verb = allAtWork(working) ? "working" : "under way";
   const workingLine = working.length === 0 ? null : working.length === 1 ? `One more is ${verb}.` : `${capital(number(working.length))} more are ${verb}.`;
   if (needsYou.length === 1) return { title: "A run needs you.", detail: workingLine };
   if (needsYou.length > 1) return { title: `${capital(number(needsYou.length))} runs need you.`, detail: workingLine };

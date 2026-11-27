@@ -212,6 +212,7 @@ export function taskStatus(task: TaskItem): string {
       if (live?.state === "paused") return "Paused";
       if (live?.state === "sign-in") return "Needs you: its sign-in expired";
       if (live?.state === "prereq") return "Needs you before it can start";
+      if (live?.state === "permission") return "Needs you: a permission to allow or deny in the run";
       // Only a question is something to answer; a run that stopped without a word just needs a look.
       return task.unreported ? "Stopped without saying how it went" : "Needs your answer";
     case "missed":
@@ -222,8 +223,8 @@ export function taskStatus(task: TaskItem): string {
       if (live?.elapsed) return `Working on it · ${live.elapsed}`;
       return task.time && task.day === "Today" ? `Working on it since ${task.time}` : "Working on it now";
     case "scheduled":
-      if (live?.state === "resuming") return live.until ? `Picking it up again at ${live.until}` : "Picking it up again";
-      if (live?.state === "limit") return `Waiting for the usage limit · carries on at ${live.until ?? "its reset"}`;
+      if (live?.state === "resuming") return live.until ? `Picking it up again ${live.until}` : "Picking it up again";
+      if (live?.state === "limit") return `Waiting for the usage limit · carries on ${live.until ?? "after its reset"}`;
       if (live?.state === "queued") return "Queued: waiting for capacity";
       return task.retry ? `Trying again ${spokenAt(task.day, task.time, task.when)} · try ${task.retry.n} of ${task.retry.of}` : `hopkins will do this ${spokenAt(task.day, task.time, task.when)}`;
     case "done":
@@ -294,7 +295,8 @@ function resumeLabel(task: TaskItem): string {
 /** A question that reads as yes or no ("Merge PR #12 now?"): it gets those two answers as buttons. */
 export function yesNoQuestion(question: string | null | undefined): boolean {
   const q = (question ?? "").trim();
-  if (q.length === 0 || q.length > 400 || !/\?$/.test(q)) return false;
+  // The card shows a question up to 280 characters: Yes and No only for one read whole.
+  if (q.length === 0 || q.length > 280 || !/\?$/.test(q)) return false;
   // The question is its last sentence: "PR #12 is green. Merge it now?"
   const last = q.split(/(?<=[.!])\s+/).pop() ?? q;
   return last.length <= 160 && !/\bor\b/i.test(last) && /^(should|shall|can|could|do|does|did|is|are|was|were|will|would|may|ok|okay|go|merge|deploy|proceed|continue|send|buy|pay|book|submit|delete|ship|publish|apply|restart|want)\b/i.test(last);
@@ -316,7 +318,8 @@ export function AnswerBox(props: { task: TaskItem; colors: Colors; compact?: boo
     if (!said || busy) return;
     setBusy(true);
     try {
-      const r = await remote({ id: task.id, text: said });
+      // The question this card shows goes with it: if the run has asked something else since, hopkins says so instead of answering that.
+      const r = await remote({ id: task.id, text: said, ...(task.askedId ? { asked: task.askedId } : {}) });
       if (r.ok) {
         setText("");
         toast.show(r.message, { variant: "success" });
@@ -347,10 +350,12 @@ export function AnswerBox(props: { task: TaskItem; colors: Colors; compact?: boo
           placeholderTextColor={colors.foregroundMuted}
           multiline
           editable={!busy}
+          maxLength={4_000}
           accessibilityLabel={`Your answer to ${task.text}`}
           // On the web Enter sends (Shift+Enter is a new line); on a phone the Send button does.
-          onKeyPress={(e: { nativeEvent: { key: string; shiftKey?: boolean }; preventDefault?: () => void }) => {
-            if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
+          onKeyPress={(e: { nativeEvent: { key: string; shiftKey?: boolean; isComposing?: boolean }; preventDefault?: () => void }) => {
+            // Enter that ends an input method's composition (Japanese, Chinese…) is the IME's, not a send.
+            if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault?.();
               void send(text);
             }

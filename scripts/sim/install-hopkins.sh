@@ -23,8 +23,8 @@ node -e '
   const fs = require("fs");
   const [file, work] = process.argv.slice(1);
   const values = {
-    timezone: "Asia/Kolkata", taskModel: "fakeagent/fake", taskMode: "", taskThinking: "", threadModel: "none/none", checkModel: "none/none",
-    personalFolder: work, noticing: false, quietMinutes: 1, stallMinutes: 2, maxHeavyRuns: 1, digestHours: 0,
+    timezone: "Asia/Kolkata", taskModel: "fakeagent/fake", taskMode: "", taskThinking: "", threadModel: process.env.THREAD_MODEL || "none/none", checkModel: "none/none",
+    personalFolder: work, noticing: false, quietMinutes: 1, stallMinutes: Number(process.env.STALL_MINUTES || 2), maxHeavyRuns: 1, digestHours: 0,
     archiveRunsAfterDays: 0, maxLoadPerCore: 0, minFreeMemoryPercent: 0,
   };
   fs.writeFileSync(file, JSON.stringify({ version: 1, values }, null, 2), { mode: 0o600 });

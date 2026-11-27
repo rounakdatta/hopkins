@@ -28,6 +28,17 @@ const SIGN_IN = /oauth|failed to authenticate|authentication (?:failed|error)|no
 const BILLING = /credit balance is too low|billing|payment required|\b402\b/i;
 const CRASH = /exited|exit code|terminated|killed|\bsig(?:kill|term|abrt|segv)\b|out of memory|\boom\b|econnreset|econnrefused|epipe|socket hang up|network|overloaded|\b5\d\d\b|internal server error|bad gateway|service unavailable|timed? ?out|connection (?:lost|closed|reset)|process (?:died|ended|exited)|not running|disconnected|stream (?:ended|closed)|daemon (?:restart|stopp)/i;
 
+/**
+ * A provider's own notice, written where the run's reply would be: Claude Code says a usage limit or
+ * an expired sign-in this way. Only these are read as stops; a run's own sentences ("the Nextcloud
+ * session expired, so I stopped") are its words, and say nothing about its provider.
+ */
+const NOTICE = /^\s*(?:\[System Error\]\s*)?(?:API Error\b|Claude AI usage limit reached|You(?:'|’)ve hit your|You have hit your|Your (?:\d+-hour |weekly |daily )?(?:usage )?limit|Invalid API key|OAuth token (?:has )?expired|Credit balance is too low|Please run \/login|Failed to authenticate)/i;
+
+export function providerNotice(text: string): boolean {
+  return NOTICE.test(text);
+}
+
 export function readStop(error: string, tz: string, now: number): StopReading {
   const text = error.replace(/\s+/g, " ").trim();
   if (BILLING.test(text)) return { kind: "sign-in", step: "The account it runs on is out of credit: top it up or switch the account, then say so (or tap Resume now)." };

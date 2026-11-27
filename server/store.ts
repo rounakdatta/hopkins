@@ -309,8 +309,10 @@ export class Store {
     if (closed.length > KEEP_CLOSED_TASKS) {
       const old = closed.sort((a, b) => a.updatedAt - b.updatedAt).slice(0, closed.length - KEEP_CLOSED_TASKS);
       const drop = new Set(old.map((t) => t.id));
-      // The whole record goes to this month's archive file first: finished work is archived, never deleted.
-      this.keepForGood(old);
+      // The whole record goes to this month's archive file first: finished work is archived, never
+      // deleted. If that file cannot be written, the tasks stay here whole (the state file grows a
+      // little until it can) rather than being dropped.
+      if (!this.keepForGood(old)) return;
       this.state.tasks = this.state.tasks.filter((t) => !drop.has(t.id));
       const archived = this.state.archive.filter((a) => !drop.has(a.id));
       for (const t of old) {
@@ -334,16 +336,18 @@ export class Store {
   }
 
   /** Appends whole task records to archive/tasks-YYYY-MM.jsonl (append-only, private). */
-  private keepForGood(tasks: readonly Task[]): void {
-    if (tasks.length === 0) return;
+  private keepForGood(tasks: readonly Task[]): boolean {
+    if (tasks.length === 0) return true;
     try {
       const dir = path.join(this.dir, "archive");
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       const month = new Date().toISOString().slice(0, 7);
       const lines = tasks.map((t) => `${JSON.stringify({ archivedAt: Date.now(), task: t })}\n`).join("");
       fs.appendFileSync(path.join(dir, `tasks-${month}.jsonl`), lines, { mode: 0o600 });
+      return true;
     } catch (err) {
-      this.log.warn("could not write the task archive", { error: errorText(err) });
+      this.log.warn("could not write the task archive; the tasks stay in the state file", { error: errorText(err) });
+      return false;
     }
   }
 

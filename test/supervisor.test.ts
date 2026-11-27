@@ -46,7 +46,7 @@ describe("a run that works for hours", () => {
     });
     expect(states).toEqual(["scheduled", "working", "quiet", "stalled", "working", "done"]);
     expect(sim.notes).toHaveLength(1);
-    expect(sim.notes[0]).toMatch(/^long import: no sign of progress for 1h( \dm)? \(it last wrote to its transcript at .*\)\. It may be stuck/);
+    expect(sim.notes[0]).toMatch(/^"long import": no sign of progress for 1h( \dm)? \(it last wrote to its transcript at .*\)\. It may be stuck/);
     expect(sim.told.map((t) => t.state)).toEqual(["done"]);
     expect(sim.created).toHaveLength(1);
   });
@@ -244,6 +244,18 @@ describe("usage limits", () => {
     expect(sim.task(id).state).toBe("done");
     expect(agent.told.filter((m) => m.startsWith("hopkins:"))).toEqual([]);
     expect(sim.created).toHaveLength(1);
+  });
+
+  it("says the reset as of now, not as of when the limit was hit", async () => {
+    // Hit at 11:50pm IST; the limit resets at 12:40am, which is "tomorrow" only until midnight.
+    const reset = Date.parse("2026-11-26T19:10:00Z");
+    const sim = new Sim({ start: "2026-11-26T18:15:00Z", scripts: { "late job": [[{ work: 4 * MIN, every: MIN }, { limit: LIMIT, resetAt: reset }, { work: 10 * MIN, every: MIN }, { report: "done", text: "ok" }]] } });
+    const id = sim.create("late job");
+    await sim.run(6 * MIN); // 11:51pm
+    const line = () => sim.view().tasks.find((t) => t.id === id)?.live?.line;
+    expect(line()).toBe("Waiting for a usage limit, which resets tomorrow at 12:40am; carries on tomorrow at 12:43am");
+    await sim.run(20 * MIN); // 12:11am
+    expect(line()).toBe("Waiting for a usage limit, which resets at 12:40am; carries on at 12:43am");
   });
 
   it("reads the reset from the words the limit comes in", () => {

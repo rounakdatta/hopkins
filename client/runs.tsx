@@ -7,7 +7,7 @@ import { Pressable, Text, View } from "react-native";
 import { useSubscription } from "@getpaseo/plugin/client";
 import { Icon, TextInput } from "@getpaseo/plugin/client/ui";
 import { runsWatch } from "../shared/rpc";
-import { filterRuns, groupRuns, runsHeadline, type Run, type RunsView } from "../shared/runs";
+import { allAtWork, filterRuns, groupRuns, runsHeadline, type Run, type RunsView } from "../shared/runs";
 import { Button, Card, Fold, Rows, Section, Spinner, type } from "./kit";
 import { space, tabular, type Colors } from "./theme";
 
@@ -79,7 +79,7 @@ export function RunsList(props: { colors: Colors; phone: boolean; switcher: Reac
       ) : null}
 
       {shown.working.length > 0 ? (
-        <Section colors={colors} title="Working" count={shown.working.length}>
+        <Section colors={colors} title={allAtWork(shown.working) ? "Working" : "Under way"} count={shown.working.length}>
           <Card colors={colors}>
             <Rows colors={colors}>
               {shown.working.map((run) => (
@@ -127,7 +127,8 @@ function byDay(runs: Run[]): [string, Run[]][] {
 
 /** What the second line says: the question it asks, how it went, or since when it has been working. */
 function lineOf(run: Run): { text: string | null; tone: "muted" | "warning" } {
-  if (run.state === "needs-you") return { text: run.liveState === "paused" ? `Paused. ${run.live ?? ""}`.trim() : run.unreported ? "It stopped without saying how it went." : run.report, tone: "muted" };
+  // A pause, a sign-in or a permission says what it waits for (its line already says "Paused at …").
+  if (run.state === "needs-you") return { text: run.live && run.liveState !== "working" ? run.live : run.unreported ? "It stopped without saying how it went." : run.report, tone: "muted" };
   if (run.state === "scheduled" && run.live) return { text: run.live, tone: "muted" };
   // At work: how it is doing; quiet or stalled says so first, and a stall is worth a look.
   if (run.state === "running") return { text: run.live ? `${run.liveState === "stalled" ? "Stalled · " : run.liveState === "quiet" ? "Quiet · " : ""}${run.live}` : null, tone: run.liveState === "stalled" ? "warning" : "muted" };
@@ -139,7 +140,7 @@ function lineOf(run: Run): { text: string | null; tone: "muted" | "warning" } {
 }
 
 const STATE_WORDS: Record<Run["state"], string> = {
-  "needs-you": "needs your answer",
+  "needs-you": "needs you",
   running: "working",
   done: "done",
   failed: "didn't work",
@@ -152,12 +153,13 @@ function RunRow(props: { run: Run; colors: Colors; open: ((agentId: string) => v
   const { run, colors } = props;
   const [hover, setHover] = useState(false);
   const line = lineOf(run);
-  const asks = run.state === "needs-you";
+  // Bold is for a question waiting on them; a pause, a sign-in or a permission says so in its line.
+  const asks = run.state === "needs-you" && !run.unreported && (!run.liveState || run.liveState === "working");
   const open = props.open;
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${run.title}: ${run.state === "needs-you" && run.unreported ? "stopped without saying how it went" : STATE_WORDS[run.state]}, ${run.when}. ${open ? "Open the run" : ""}`.trim()}
+      accessibilityLabel={`${run.title}: ${line.text && run.state !== "done" ? line.text : run.state === "needs-you" && run.unreported ? "stopped without saying how it went" : STATE_WORDS[run.state]}, ${run.when}. ${open ? "Open the run" : ""}`.trim()}
       disabled={!open}
       onPress={() => open?.(run.agentId)}
       onHoverIn={() => setHover(true)}
@@ -177,7 +179,7 @@ function RunRow(props: { run: Run; colors: Colors; open: ((agentId: string) => v
           {run.title}
         </Text>
         {line.text ? (
-          <Text style={[type.meta, { color: line.tone === "warning" ? colors.statusWarning : colors.foregroundMuted }]} numberOfLines={asks ? 3 : 1}>
+          <Text style={[type.meta, { color: line.tone === "warning" ? colors.statusWarning : colors.foregroundMuted }]} numberOfLines={asks ? 3 : 2}>
             {line.text}
           </Text>
         ) : null}

@@ -6,7 +6,7 @@ import type { Delivery, RecapKind, Reminder, Task } from "../shared/model";
 import type { Config } from "./config";
 import { formatWhen, zonedParts } from "../shared/time";
 import { errorText, type Logger } from "./log";
-import { cueText, noteCueText, recapCueText, taskCueText } from "./prompts";
+import { cueText, noteCueText, quote, recapCueText, taskCueText } from "./prompts";
 import type { RecapData } from "./recaps";
 import { newId, type Clock, type Reminders } from "./reminders";
 import type { Store } from "./store";
@@ -237,16 +237,17 @@ export class DeliveryQueue {
         const task = this.store.getTask(d.task.id);
         // Moved on since (answered, retried, cancelled): what is true now is told by its own message.
         if (!task || task.state !== d.task.state) continue;
+        // The report and the task's words were written elsewhere (a run that read the web): quoted, they stay data.
         const report = (task.report ?? task.error ?? "").replace(/\s+/g, " ").slice(0, 160);
         const said =
           task.state === "done"
-            ? `done${report ? `: ${report}` : ""}`
+            ? `done${report ? `: ${quote(report)}` : ""}`
             : task.state === "scheduled" && d.task.retryAt !== undefined
-              ? `didn't work${report ? ` (${report})` : ""}; trying again at ${formatWhen(d.task.retryAt, cfg.tz, now, cfg.clock)}`
+              ? `didn't work${report ? ` (${quote(report)})` : ""}; trying again at ${formatWhen(d.task.retryAt, cfg.tz, now, cfg.clock)}`
               : task.state === "missed"
                 ? "didn't start: hopkins was offline then"
                 : task.state;
-        lines.push(`- "${task.text}": ${said}`);
+        lines.push(`- ${quote(task.text)}: ${said}`);
       } else if (d.note) lines.push(`- ${d.note}`);
     }
     const merged: Delivery = { id: newId("d"), reminderIds: [], kind: "note", note: `While you were away (quiet hours):\n${lines.join("\n")}`.slice(0, 1_000), createdAt: now, state: "pending", attempts: 0 };

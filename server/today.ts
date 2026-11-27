@@ -8,7 +8,7 @@ import type { Store } from "./store";
 import type { Reminders } from "./reminders";
 import { brief } from "./checkins";
 import { basketToday, machineNow, waitingOnYou } from "./desk";
-import type { Tasks } from "./tasks";
+import { askedIdOf, atPhrase, type Tasks } from "./tasks";
 import { controlsOf, liveOf, questionOf } from "./supervision-view";
 
 export interface Health {
@@ -139,8 +139,9 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       state: t.state,
       dueAt: t.dueAt,
       when: tasks!.describe(t, now),
-      // Running: since when it has been working (an answer restarts that), not when it was due.
-      day: dayLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.hold?.kind === "capacity" ? now : t.dueAt, cfg.tz, now),
+      // Running: since when it has been working (an answer restarts that), not when it was due. Paused:
+      // a group of its own on the table, never under a day it no longer keeps.
+      day: t.state === "needs-you" && t.hold?.kind === "paused" ? "Paused" : dayLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.hold?.kind === "capacity" ? now : t.dueAt, cfg.tz, now),
       // Queued for room: no time of its own, it goes as soon as there is room.
       time:
         t.state === "scheduled" && t.hold?.kind === "capacity"
@@ -156,9 +157,13 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       ...(t.tries?.length ? { tries: t.tries.map((x) => ({ when: formatWhen(x.at, cfg.tz, now, cfg.clock), outcome: x.outcome, why: x.why.slice(0, 200) })) } : {}),
       live: liveOf(t, cfg, now),
       question: questionOf(t),
-      answer: t.answer
-        ? { text: t.answer.text.slice(0, 600), state: (["sending", "sent", "picked-up", "failed"].includes(t.answer.state) ? t.answer.state : "sent") as "sending" | "sent" | "picked-up" | "failed", when: formatWhen(t.answer.at, cfg.tz, now, cfg.clock), error: t.answer.error ?? null }
-        : null,
+      askedId: questionOf(t) !== null ? askedIdOf(t.report) : null,
+      // Shown while it matters: under the question it answered, or while the run works on it. An
+      // answer to an earlier question (failed or not) is not shown under a new one.
+      answer:
+        t.answer && (t.state === "running" || (t.state === "needs-you" && (t.answer.asked === undefined || t.answer.asked === askedIdOf(t.report))))
+          ? { text: t.answer.text.slice(0, 600), state: (["sending", "sent", "picked-up", "failed"].includes(t.answer.state) ? t.answer.state : "sent") as "sending" | "sent" | "picked-up" | "failed", when: atPhrase(t.answer.at, cfg, now), error: t.answer.error ?? null }
+          : null,
       controls: controlsOf(t),
       ...(t.runs?.length ? { runs: t.runs.map((r) => ({ when: formatWhen(r.startedAt, cfg.tz, now, cfg.clock), how: r.how, outcome: r.outcome ?? null, why: r.why ?? null, resumes: r.resumes?.length ?? 0 })) } : {}),
     })),

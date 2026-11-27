@@ -177,7 +177,8 @@ export function priceTag(usd: number | null | undefined): { label: string; exact
 export function machineLine(view: TodayView): { title: string; detail: string | null } {
   const items = view.machine ?? [];
   if (items.length === 0) {
-    const next = upcoming(view).find((e) => e.kind === "task");
+    // What it will run next by itself: a paused run waits for them, so it is never "next".
+    const next = upcoming(view).find((e) => e.kind === "task" && e.task.live?.state !== "paused");
     return { title: "Idle", detail: next ? `Next: ${said(next)}.` : null };
   }
   if (items.length === 1) return { title: "Working on one thing", detail: null };

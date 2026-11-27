@@ -86,6 +86,9 @@ export function headline(view: TodayView): { title: string; detail: string | nul
     return { title: `Next: ${said(next)}.`, detail: more > 0 ? `${sentenceCase(number(more))} more later today.` : null };
   }
   if (next) return { title: "Nothing more today.", detail: `Next: ${said(next)}.` };
+  // A paused run is on the table: "nothing is scheduled" would hide it.
+  const paused = view.tasks.filter((t) => t.state === "needs-you" && t.live?.state === "paused").length;
+  if (paused) return { title: "Nothing needs you.", detail: `${sentenceCase(counted(paused, "run is", "runs are"))} paused until you resume ${paused === 1 ? "it" : "them"}.` };
   return { title: "All clear.", detail: view.noticed.length ? null : "Nothing is scheduled." };
 }
 

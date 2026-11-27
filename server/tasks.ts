@@ -19,10 +19,11 @@ import type { FinishResult } from "./delivery";
 import { errorText, type Logger } from "./log";
 import type { Prereqs } from "./prereqs";
 import { MAX_TRIES, type Retries } from "./retry";
-import { nudgeText, resumeSection, resumeText, stalledText, taskPrompt } from "./prompts";
+import { nudgeText, quote, resumeSection, resumeText, stalledText, taskPrompt } from "./prompts";
 import { newId, normalizeText, type Clock, type Reminders, type Result } from "./reminders";
 import type { HostProbe, RunSignals } from "./signals";
-import { readStop, RESET_MARGIN_MS } from "./stops";
+import { providerNotice, readStop, RESET_MARGIN_MS } from "./stops";
+import { createHash } from "node:crypto";
 import type { Store } from "./store";
 import type { RunView } from "./task-port";
 
@@ -102,6 +103,10 @@ const LOAD_WAIT_MAX_MS = 45 * 60_000;
 const RECHECK_MS = 60_000;
 /** A probe that says sign-in works, yet the run fails on it again: after this many, only a turn elsewhere (or the user) counts. */
 const SIGN_IN_PROBES = 2;
+/** Times hopkins carries a run on by itself after an expired sign-in, in one outage; then only the user's "I've signed in" does. */
+const SIGN_IN_AUTO_MAX = 2;
+/** A task queued for room looks this often for an earlier run of its own that went on by itself (a look asks Paseo). */
+const QUEUED_LOOK_MS = 5 * 60_000;
 /** The user typed in the run within this long: it is their conversation now, so hopkins does not nudge it. */
 const PRESENT_MS = 30 * 60_000;
 
@@ -137,6 +142,20 @@ function rereadable(task: Task): boolean {
 /** In a turn, waiting on its own background jobs, or on a permission: the run is at work (or about to be). */
 export function aliveIn(view: RunView | null | undefined): boolean {
   return Boolean(view && (view.turnStartedAt !== null || view.background > 0 || view.permissions > 0));
+}
+
+/** Which question a run asks: a short mark of its report, so an answer meant for one is never taken for another. */
+export function askedIdOf(report: string | null | undefined): string {
+  return createHash("sha256").update(report ?? "").digest("hex").slice(0, 12);
+}
+
+/**
+ * Time at work in this go: the stretches before (they end when it waits on them, for a reset, or
+ * dies) and the one under way. Waiting is not work: an answer given five hours later does not make
+ * a run "5h in", nor eat into a cap its task declared.
+ */
+export function workedFor(task: Pick<Task, "state" | "startedAt" | "workedMs">, now: number): number {
+  return (task.workedMs ?? 0) + (task.state === "running" && task.startedAt !== undefined ? Math.max(0, now - task.startedAt) : 0);
 }
 
 const HEAVY = /\b(build|compile|render|ffmpeg|transcod\w*|video|load[- ]test|capacity test|benchmark|playwright|puppeteer|chromium|headless|docker|nix build|test suite|backfill|re-?index|scrape|crawl)\b/i;
@@ -357,7 +376,7 @@ export class Tasks {
     const now = this.clock.now();
     // `attempts` only ever grows: it is part of each run's idempotency key, so a retry gets a new agent.
     // A queued task keeps the run it would carry on; anything else starts afresh (the resume count too).
-    const keep = task.state === "scheduled" && task.hold?.agentId ? { hold: { ...task.hold, kind: "resume", since: now, until: now } as Hold } : { hold: undefined, resumes: undefined, limitWaits: undefined };
+    const keep = task.state === "scheduled" && task.hold?.agentId ? { hold: { ...task.hold, kind: "resume", since: now, until: now } as Hold } : { hold: undefined, resumes: undefined, limitWaits: undefined, workedMs: undefined, signInAutos: undefined };
     const next: Task = { ...task, state: "scheduled", dueAt: now, updatedAt: now, agentId: task.state === "failed" ? null : task.agentId, report: undefined, error: undefined, failedStarts: 0, timedOut: undefined, ...keep };
     this.store.putTask(next);
     this.store.save();
@@ -437,6 +456,10 @@ export class TaskRunner {
   private readonly looking = new Set<string>();
   private readonly lastLookAt = new Map<string, number>();
   private readonly lastCommitAt = new Map<string, number>();
+  /** When a queued task last looked for an earlier run of its own still at work. */
+  private readonly lastLiveLook = new Map<string, number>();
+  /** Asking a run how its turn went (the send is under way): that turn's late echoes are not a second silence. */
+  private readonly nudging = new Set<string>();
   /** When each provider last finished a turn somewhere: proof its sign-in works. */
   private readonly providerOkAt = new Map<string, number>();
   private lastRecheckAt = 0;
@@ -530,9 +553,12 @@ export class TaskRunner {
       }
       // Its agent was never recorded, so it was never given the brief (the id is saved before the
       // brief is sent). Start it again on the same attempt: the same idempotency key returns the
-      // agent if the daemon made one, and the brief goes to it.
-      this.put({ ...task, state: "scheduled", attempts: Math.max(0, task.attempts - 1), updatedAt: this.clock.now() });
+      // agent if the daemon made one, and the brief goes to it. It goes back to the hold it started
+      // from: a resume stays a resume (told where the earlier runs got to), a queued task stays queued.
+      this.put({ ...task, state: "scheduled", attempts: Math.max(0, task.attempts - 1), hold: task.startingFrom, startingFrom: undefined, updatedAt: this.clock.now() });
     }
+    // An answer hopkins was passing on when it stopped: whether it arrived is read from the run.
+    for (const task of this.store.tasks()) if (task.answer?.state === "sending" && task.agentId) void this.settleAnswer(task.id);
     // Releases before 0.5 failed a run at 90 minutes whatever it was doing. Each such label from the
     // last few days is checked once against the truth: a run still at work is running; one that
     // finished says how; one that was cut off mid-step says so (it is not picked up by itself: that
@@ -541,6 +567,18 @@ export class TaskRunner {
     for (const task of this.store.tasks()) {
       if (task.state === "failed" && task.timedOut === true && task.agentId && task.updatedAt >= since) void this.review(task.id);
     }
+  }
+
+  /** An answer left "sending" by a restart: sent if the run holds a message of the user's from then on, else failed. */
+  private async settleAnswer(id: string): Promise<void> {
+    const task = this.store.getTask(id);
+    const port = this.port();
+    if (!task?.answer || task.answer.state !== "sending" || !task.agentId || !port?.observe) return;
+    const view = await port.observe(task.agentId).catch(() => undefined);
+    const current = this.store.getTask(id);
+    if (view === undefined || current?.answer?.messageId !== task.answer.messageId || current.answer.state !== "sending") return;
+    const arrived = view !== null && view.lastUserMessageAt !== null && view.lastUserMessageAt >= task.answer.at - 5_000;
+    this.put({ ...current, answer: arrived ? { ...current.answer, state: "sent" } : { ...current.answer, state: "failed", error: "hopkins restarted while passing it on" }, updatedAt: this.clock.now() });
   }
 
   /** An old "still going after 90 minutes" failure, read against the run itself. */
@@ -596,8 +634,12 @@ export class TaskRunner {
     // Any new turn ends the silence of one they stopped themselves.
     this.quiet.delete(task.id);
     const now = this.clock.now();
-    // An answer passed on from Today or the thread: this is the run taking it up.
-    const answer = task.answer && (task.answer.state === "sending" || task.answer.state === "sent") ? { ...task.answer, state: "picked-up" } : task.answer;
+    // An answer passed on from Today or the thread: this is the run taking it up, unless hopkins sent
+    // something of its own after it (a resume, a nudge), whose turn this may be.
+    const answer =
+      task.answer && (task.answer.state === "sending" || task.answer.state === "sent") && (task.live?.sentAt ?? 0) <= task.answer.at + 2_000
+        ? { ...task.answer, state: "picked-up" }
+        : task.answer;
     // A run waiting for a resume, a reset or a sign-in went on by itself (someone typed in it): it is the task's run again.
     if (task.state === "scheduled" && !retell) return this.takeBack(task, agentId);
     // Waiting on them for a sign-in or a pause, and the run moved: they did something in it.
@@ -629,6 +671,8 @@ export class TaskRunner {
       error: undefined,
       unreported: undefined,
       timedOut: undefined,
+      // A permission they settled, or a question they answered: nothing is held any more.
+      hold: undefined,
       answer,
       // A new stretch of work: deaths before it no longer count against the resumes, and a silent stop may be asked about again.
       resumes: undefined,
@@ -736,14 +780,24 @@ export class TaskRunner {
     if (!port || !claimed || claimed.state !== "scheduled" || this.following.has(id) || this.starting.has(id)) return;
     if (claimed.kind !== "check" && claimed.hold?.agentId) return this.resumeRun(id, force);
     if (claimed.kind !== "check") {
-      // A task queued for room asks nothing of Paseo until there is room (it is looked at every tick).
-      if (!claimed.runs?.length && !force && !this.admit(id, this.clock.now())) return;
+      const now = this.clock.now();
+      // Room first: it asks nothing of Paseo, so a task queued for room costs nothing while it waits
+      // (it is looked at every tick). A queued task with earlier runs still looks, now and then, for
+      // one that went on by itself.
+      const room = force || this.admit(id, now);
+      if (!room && (!claimed.runs?.length || now - (this.lastLiveLook.get(id) ?? 0) < QUEUED_LOOK_MS)) return;
       this.starting.add(id);
       let go = false;
       try {
-        // One run per task: an earlier run still at work is the task's run, not a reason for another.
-        const alive = claimed.runs?.length ? await this.liveRun(claimed) : null;
-        if (alive) return this.adopt(id, alive);
+        if (claimed.runs?.length) {
+          this.lastLiveLook.set(id, now);
+          // One run per task: an earlier run still at work is the task's run, not a reason for another.
+          const alive = await this.liveRun(claimed);
+          // Paseo could not say (a busy host, a dropped call): never guess "dead"; the next tick looks again.
+          if (alive === "unknown") return;
+          if (alive) return this.adopt(id, alive);
+        }
+        if (!room) return;
         if (!(await this.preflight(id))) return;
         const earlier = await this.earlierRuns(id);
         if (!force && !this.admit(id, this.clock.now())) return;
@@ -789,6 +843,9 @@ export class TaskRunner {
       unreported: undefined,
       timedOut: undefined,
       hold: undefined,
+      // Kept until its agent exists: a start that fails (or a hopkins restart before it) goes back to
+      // this hold, so a resume is still a resume and a queued task is still queued, never "late".
+      startingFrom: claimed.hold,
       live: { state: "working", since: now, lastActivityAt: now, activity: "started" },
       ...(resuming ? { resumes: (claimed.resumes ?? 0) + 1 } : {}),
     };
@@ -805,7 +862,7 @@ export class TaskRunner {
           const current = this.store.getTask(id);
           // From here this new run is the task's: the run it replaces can no longer take it back (a start
           // that fails before this keeps that way open).
-          if (current) this.put({ ...current, agentId, failedStarts: 0, retry: current.retry && { ...current.retry, from: undefined }, runs: withRun(current.runs, agentId, this.clock.now(), how), updatedAt: this.clock.now() });
+          if (current) this.put({ ...current, agentId, failedStarts: 0, startingFrom: undefined, retry: current.retry && { ...current.retry, from: undefined }, runs: withRun(current.runs, agentId, this.clock.now(), how), updatedAt: this.clock.now() });
           this.store.event("task-started", { id, attempt: task.attempts });
           this.log.info("task started", { task: id, agent: agentId.slice(0, 8) });
         },
@@ -824,10 +881,10 @@ export class TaskRunner {
       } else if ((current.failedStarts ?? 0) + 1 < START_ATTEMPTS) {
         // Never got going: back to scheduled on the same attempt (the retry reuses the key, so an
         // agent the daemon made after all is reused), and the next tick tries again.
-        this.put({ ...current, state: "scheduled", attempts: current.attempts - 1, failedStarts: (current.failedStarts ?? 0) + 1, updatedAt: this.clock.now(), error: errorText(err) });
+        this.put({ ...current, state: "scheduled", attempts: current.attempts - 1, failedStarts: (current.failedStarts ?? 0) + 1, hold: current.startingFrom, startingFrom: undefined, updatedAt: this.clock.now(), error: errorText(err) });
         this.log.warn("could not start a task yet", { task: id, failedStarts: (current.failedStarts ?? 0) + 1, error: errorText(err) });
       } else {
-        this.put({ ...current, failedStarts: (current.failedStarts ?? 0) + 1 });
+        this.put({ ...current, failedStarts: (current.failedStarts ?? 0) + 1, startingFrom: undefined });
         this.settle(id, { state: "failed", error: `could not start an agent: ${errorText(err)}` }, this.clock.now());
       }
     } finally {
@@ -840,25 +897,37 @@ export class TaskRunner {
     if (task.kind === "check") return Math.max(60_000, (task.startedAt ?? this.clock.now()) + CHECK_TIMEOUT_MS - this.clock.now());
     const cap = task.supervise?.maxMinutes;
     if (!cap) return WAIT_MS;
-    const left = this.episodeStart(task) + cap * 60_000 - this.clock.now();
+    const left = cap * 60_000 - workedFor(task, this.clock.now());
     return Math.max(60_000, Math.min(WAIT_MS, left));
   }
 
-  /** When it began working: its first run's start (a resume does not reset the clock of a declared cap). */
-  private episodeStart(task: Task): number {
-    return task.runs?.[0]?.startedAt ?? task.startedAt ?? this.clock.now();
+  /** Past the cap its task declared: counted in time at work, so waits on the user, a reset or room never count. */
+  private pastCap(task: Task, now: number): number | null {
+    const cap = task.supervise?.maxMinutes;
+    return cap && workedFor(task, now) >= cap * 60_000 ? cap : null;
   }
 
-  /** An earlier run of the task that is still at work, newest first; null when none is. */
-  private async liveRun(task: Task): Promise<string | null> {
+  /**
+   * An earlier run of the task that is still at work, newest first. Null when none is; "unknown"
+   * when Paseo could not say for one of them (a look timed out): that is never taken for "dead",
+   * because a second agent would then work beside the first.
+   */
+  private async liveRun(task: Task): Promise<string | "unknown" | null> {
     const port = this.port();
     if (!port?.observe) return null;
     const ids = [...new Set([...(task.runs ?? []).map((r) => r.agentId), task.agentId, task.retry?.from].filter((x): x is string => Boolean(x)))].reverse().slice(0, 3);
+    let unknown = false;
     for (const agentId of ids) {
-      const view = await port.observe(agentId).catch(() => undefined);
+      let view: RunView | null;
+      try {
+        view = await port.observe(agentId);
+      } catch {
+        unknown = true;
+        continue;
+      }
       if (aliveIn(view)) return agentId;
     }
-    return null;
+    return unknown ? "unknown" : null;
   }
 
   /** The task's earlier runs, for a new run to find where they got to. */
@@ -891,7 +960,8 @@ export class TaskRunner {
       agentId,
       hold: undefined,
       retry: undefined,
-      startedAt: task.startedAt ?? now,
+      startingFrom: undefined,
+      startedAt: now,
       report: undefined,
       error: undefined,
       unreported: undefined,
@@ -917,7 +987,15 @@ export class TaskRunner {
     if (!force && task.hold?.kind === "capacity" && !this.admit(id, this.clock.now())) return;
     this.starting.add(id);
     try {
-      const view = port.observe ? await port.observe(agentId).catch(() => undefined) : undefined;
+      let view: RunView | null | undefined;
+      if (port.observe) {
+        try {
+          view = await port.observe(agentId);
+        } catch {
+          // Paseo could not say how the run stands: never send into it blind; the next tick looks again.
+          return;
+        }
+      }
       const now = this.clock.now();
       // It went on by itself meanwhile (someone typed in it, or its account was switched): it is the run.
       if (aliveIn(view)) return this.adopt(id, agentId);
@@ -1008,7 +1086,7 @@ export class TaskRunner {
     const cores = cfg.hostCores > 0 ? cfg.hostCores : (this.host?.cores() ?? 1);
     const heavyLimit = Math.max(1, Math.min(cfg.maxHeavyRuns, Math.floor(cores)));
     const counted = running.filter((t) => weightOf(t) !== "light").length;
-    const queuedSince = task.hold?.kind === "capacity" ? task.hold.since : now;
+    const queuedSince = task.hold?.kind === "capacity" ? task.hold.since : (task.hold?.room?.since ?? now);
     let why: string | null = null;
     if (weight === "heavy" && heavy >= heavyLimit) why = heavy === 1 ? "a heavy run is working" : `${heavy} heavy runs are working`;
     else if (cfg.maxRuns > 0 && counted >= cfg.maxRuns) why = `${counted} runs are working`;
@@ -1018,6 +1096,13 @@ export class TaskRunner {
       if (load / cores > cfg.maxLoadPerCore) why = `the host is busy (load ${load.toFixed(1)} on ${Math.round(cores * 10) / 10} cores)`;
     }
     if (!why) return true;
+    if (task.hold && task.hold.kind !== "capacity") {
+      // Waiting to be picked up again (it died, a limit lifted, a sign-in works): it keeps why it
+      // stopped and when (its resume says so, and its deaths still count); the room it waits for is
+      // noted beside it.
+      if (task.hold.room?.why !== why) this.put({ ...task, hold: { ...task.hold, room: { since: task.hold.room?.since ?? now, why } }, updatedAt: now });
+      return false;
+    }
     if (task.hold?.kind !== "capacity" || task.hold.why !== why) {
       this.put({ ...task, hold: { ...(task.hold ?? {}), kind: "capacity", since: queuedSince, why, ...(task.hold?.agentId ? { agentId: task.hold.agentId } : {}) }, updatedAt: now });
       if (task.hold?.kind !== "capacity") this.store.event("task-queued", { id, weight });
@@ -1092,8 +1177,8 @@ export class TaskRunner {
     if (result.status === "timeout") {
       // Still in its turn. No clock ends a run, unless its task declared one.
       if (reread) return;
-      const cap = task.supervise?.maxMinutes;
-      if (cap && now - this.episodeStart(task) >= cap * 60_000) void this.overTime(id, cap);
+      const cap = this.pastCap(task, now);
+      if (cap) void this.overTime(id, cap);
       return;
     }
     // A re-read records from "running" like any turn, in this same step: nobody sees it in between.
@@ -1101,7 +1186,10 @@ export class TaskRunner {
     if (result.status === "error") {
       this.broken(id, result.error || "the agent hit an error");
     } else if (result.status === "permission") {
-      this.settle(id, { state: "needs-you", report: "It is waiting for a permission only you can give. Open the run to answer it." }, now);
+      // No answer passed on can settle a permission prompt: it is allowed or denied in the run.
+      const held = this.store.getTask(id)!;
+      this.put({ ...held, hold: { kind: "permission", since: now, ...(held.agentId ? { agentId: held.agentId } : {}) } });
+      this.settle(id, { state: "needs-you", report: "It is waiting for a permission only you can give: allow or deny it in the run." }, now);
     } else if (!result.lastMessage?.trim()) {
       // No words: not loaded since a restart, or it really said nothing. Its own record tells which.
       void this.silent(id);
@@ -1148,7 +1236,7 @@ export class TaskRunner {
       }
       if (turn?.ended === "error" && turn.text) {
         this.deciding.delete(id);
-        return this.broken(id, turn.text);
+        return this.broken(id, turn.text, turn.at ?? undefined);
       }
       if (turn?.ended === "interrupted") {
         // Someone stopped it: theirs to look at, nothing to tell.
@@ -1172,8 +1260,11 @@ export class TaskRunner {
     const task = this.store.getTask(id);
     if (!task?.agentId || task.state !== "running") return;
     const now = this.clock.now();
-    // A provider error written as the reply (a usage limit, a sign-in): read as the error it is.
-    if (text.length < 400) {
+    // Being asked how that turn went right now: a late echo of the same turn (a hook, a re-read) is not a second silence.
+    if (this.nudging.has(id)) return;
+    // A provider's own notice written as the reply (a usage limit, an expired sign-in): read as the
+    // error it is. Only in the provider's words: "the Nextcloud session expired" is the run talking.
+    if (text.length < 400 && providerNotice(text)) {
       const reading = readStop(text, this.config().tz, now);
       if (reading.kind === "limit" || reading.kind === "sign-in") return this.broken(id, text);
     }
@@ -1215,18 +1306,25 @@ export class TaskRunner {
     if (!current || current.state !== "running" || current.agentId !== task.agentId) return;
     this.put({ ...current, live: { ...(current.live ?? { state: "working", since: now }), nudgedAt: now, sentAt: now, lastActivityAt: now, activity: "asked how it went" }, updatedAt: now });
     this.store.event("task-nudged", { id });
+    this.nudging.add(id);
     try {
       await this.sendSure(task.agentId, nudgeText(), `hopkins-nudge-${id}-${task.attempts}-${now}`);
+      this.nudging.delete(id);
       void this.follow(id);
     } catch (err) {
+      this.nudging.delete(id);
       this.log.warn("could not ask a run how it went", { task: id, error: errorText(err) });
       const back = this.store.getTask(id);
       if (back?.state === "running") this.settle(id, { state: "needs-you", report: parseReport(text).report, unreported: true }, this.clock.now());
     }
   }
 
-  /** The turn ended on an error: a usage limit waits for its reset, a sign-in waits for the user, a crash is picked up again, anything else is a failure. */
-  private broken(id: string, error: string): void {
+  /**
+   * The turn ended on an error: a usage limit waits for its reset, a sign-in waits for the user, a
+   * crash is picked up again, anything else is a failure. `at`: when it happened, for an error read
+   * later from the run's record ("resets 2:40am" read at 2:45am meant tonight's 2:40, now past).
+   */
+  private broken(id: string, error: string, at?: number): void {
     const task = this.store.getTask(id);
     if (!task || task.state !== "running") return;
     const now = this.clock.now();
@@ -1234,7 +1332,7 @@ export class TaskRunner {
     if (/no conversation found with session id/i.test(error)) return this.dead(id, "its conversation's history is gone", true);
     // Its conversation outgrew the model: carrying it on fails the same way, so a new run takes over.
     if (/prompt is too long|context (?:length|window)|maximum context|too many tokens/i.test(error)) return this.dead(id, "its conversation grew too long to carry on", true);
-    const reading = readStop(error, this.config().tz, now);
+    const reading = readStop(error, this.config().tz, Math.min(at ?? now, now));
     if (reading.kind === "limit") return this.waitForLimit(id, reading.resetAt ?? null, error);
     if (reading.kind === "sign-in") return this.signInWait(id, reading.step ?? "Sign in again.", error);
     if (reading.kind === "crash") return this.dead(id, error.replace(/\s+/g, " ").slice(0, 200));
@@ -1285,20 +1383,19 @@ export class TaskRunner {
       this.settle(id, { state: "failed", error: `a usage limit stopped it, and it lifts only at ${formatWhen(at, cfg.tz, now, cfg.clock)}, after its deadline` }, now);
       return;
     }
-    const why = `a usage limit${resetAt !== null ? `, which resets ${atPhrase(resetAt, cfg, now)}` : ""}`;
     this.put({
       ...task,
       state: "scheduled",
       dueAt: at,
       limitWaits: waits,
-      hold: { kind: "limit", since: now, until: at, why, ...(task.agentId ? { agentId: task.agentId } : {}) },
+      hold: { kind: "limit", since: now, until: at, why: "it hit a usage limit", ...(resetAt !== null ? { resetAt } : {}), ...(task.agentId ? { agentId: task.agentId } : {}) },
       live: { ...(task.live ?? { since: now }), state: "limit", since: now },
       updatedAt: now,
     });
     this.store.event("task-limit", { id, waits, until: at });
     this.log.info("a run waits for a usage limit to reset", { task: id, until: new Date(at).toISOString() });
     // A wait of hours (a weekly limit) is news; a short one is only shown on its card.
-    if (at - now > LONG_WAIT_MS) this.reporter.note?.(`${task.text}: stopped by a usage limit; hopkins carries it on at ${formatWhen(at, cfg.tz, now, cfg.clock)}, when it resets.`, now);
+    if (at - now > LONG_WAIT_MS) this.reporter.note?.(`${quote(task.text)}: stopped by a usage limit; hopkins carries it on at ${formatWhen(at, cfg.tz, now, cfg.clock)}, when it resets.`, now);
   }
 
   /** A sign-in only the user can fix: they hear at once, with the step; the run carries on by itself once it works. */
@@ -1307,8 +1404,9 @@ export class TaskRunner {
     if (!task || task.state !== "running") return;
     const now = this.clock.now();
     const provider = (this.config().taskModel || "claude").split("/")[0]!;
-    // One message per outage: another run already said the same sign-in has expired.
-    const known = this.store.tasks().some((t) => t.id !== id && t.hold?.kind === "sign-in" && t.hold.provider === provider);
+    // One message per outage: another run already said the same sign-in has expired, or this run was
+    // carried on by hopkins after it and failed the same way (they were told, and its card says so).
+    const known = (task.signInAutos ?? 0) > 0 || this.store.tasks().some((t) => t.id !== id && t.hold?.kind === "sign-in" && t.hold.provider === provider);
     this.put({ ...task, hold: { kind: "sign-in", since: now, step, provider, ...(task.agentId ? { agentId: task.agentId } : {}) }, live: { ...(task.live ?? { since: now }), state: "sign-in", since: now } });
     this.store.event("task-sign-in", { id });
     if (known) this.quiet.add(id);
@@ -1318,8 +1416,14 @@ export class TaskRunner {
   /** It ran past the cap its task declared: stopped, and failed with that reason. */
   private async overTime(id: string, capMinutes: number): Promise<void> {
     const task = this.store.getTask(id);
-    if (!task?.agentId || task.state !== "running") return;
-    await this.port()?.stop?.(task.agentId).catch(() => false);
+    if (!task?.agentId || task.state !== "running" || this.holding.has(id)) return;
+    // hopkins cuts the turn short itself: how that turn ends is not its outcome (nor a silent stop).
+    this.holding.add(id);
+    try {
+      await this.port()?.stop?.(task.agentId).catch(() => false);
+    } finally {
+      this.holding.delete(id);
+    }
     const current = this.store.getTask(id);
     if (current?.state !== "running") return;
     this.quiet.delete(id);
@@ -1339,7 +1443,8 @@ export class TaskRunner {
    * stalled follow from that; a stall is told once; a run found idle has its end read.
    */
   async look(id: string): Promise<void> {
-    if (this.looking.has(id)) return;
+    // Not while it is being started or picked up again, nor while its end is being read: those decide.
+    if (this.looking.has(id) || this.starting.has(id) || this.deciding.has(id)) return;
     const port = this.port();
     const task = this.store.getTask(id);
     if (!port?.observe || !task?.agentId || task.state !== "running") return;
@@ -1369,7 +1474,7 @@ export class TaskRunner {
         [wrote, "wrote to its transcript"],
         [view.lastEventAt, "worked"],
         [progress?.at, "updated its progress"],
-        [commit?.at, commit ? `committed "${commit.subject}"` : ""],
+        [commit?.at, commit ? `committed ${quote(commit.subject.slice(0, 120))}` : ""],
         [after.live?.lastActivityAt, after.live?.activity ?? "worked"],
         [view.turnStartedAt, "started a turn"],
         [after.startedAt, "started"],
@@ -1399,7 +1504,7 @@ export class TaskRunner {
       const before = after.live;
       // A good stretch of work since the last pick-up: deaths before it no longer count against the cap.
       const lastResume = after.runs?.find((r) => r.agentId === after.agentId)?.resumes?.at(-1)?.at;
-      const proven = after.resumes && lastResume !== undefined && last - lastResume >= RESUME_PROVEN_MS;
+      const proven = Boolean(after.resumes || after.limitWaits || after.signInAutos) && lastResume !== undefined && last - lastResume >= RESUME_PROVEN_MS;
       const live: Live = {
         ...(before ?? {}),
         state,
@@ -1418,14 +1523,15 @@ export class TaskRunner {
       if (state === "stalled" && !before?.stalledToldAt) {
         live.stalledToldAt = now;
         this.store.event("task-stalled", { id });
-        this.reporter.note?.(`${after.text}: no sign of progress for ${spanText(idle)} (it last ${activity} at ${formatWhen(last, cfg.tz, now, cfg.clock)}). It may be stuck: open it, nudge it or stop it from Today.`, now);
+        this.reporter.note?.(`${quote(after.text)}: no sign of progress for ${spanText(idle)} (it last ${activity} at ${formatWhen(last, cfg.tz, now, cfg.clock)}). It may be stuck: open it, nudge it or stop it from Today.`, now);
       }
       if (changed || live.stalledToldAt !== before?.stalledToldAt || now - (before?.checkedAt ?? 0) > 5 * 60_000) {
-        this.put({ ...after, live, ...(proven ? { resumes: undefined } : {}), updatedAt: changed ? now : after.updatedAt });
+        // A good stretch after a pick-up: the counts of deaths, limit waits and sign-in retries in a row start again.
+        this.put({ ...after, live, ...(proven ? { resumes: undefined, limitWaits: undefined, signInAutos: undefined } : {}), updatedAt: changed ? now : after.updatedAt });
       }
       // Past the cap its task declared.
-      const cap = after.supervise?.maxMinutes;
-      if (cap && now - this.episodeStart(after) >= cap * 60_000) void this.overTime(id, cap);
+      const cap = this.pastCap(this.store.getTask(id) ?? after, now);
+      if (cap) void this.overTime(id, cap);
     } catch (err) {
       this.log.warn("could not look at a run", { task: id, error: errorText(err) });
     } finally {
@@ -1469,8 +1575,12 @@ export class TaskRunner {
       }
       const current = this.store.getTask(task.id);
       if (!works || current?.state !== "needs-you" || current.hold?.kind !== "sign-in") continue;
+      // A sign-in that seemed fixed but failed again: after a couple of those, only the user's own
+      // "I've signed in" carries it on (a turn elsewhere may run on another account).
+      if ((current.signInAutos ?? 0) >= SIGN_IN_AUTO_MAX) continue;
       const at = this.clock.now();
-      this.put({ ...current, state: "scheduled", dueAt: at, report: undefined, reported: undefined, hold: { kind: "resume", since: current.hold.since, why: "its sign-in had expired", agentId: current.hold.agentId!, provider, byUser: true }, updatedAt: at });
+      // `reported` is kept: if the same sign-in stops it again, that is not news to tell again.
+      this.put({ ...current, state: "scheduled", dueAt: at, report: undefined, signInAutos: (current.signInAutos ?? 0) + 1, hold: { kind: "resume", since: current.hold.since, why: "its sign-in had expired", agentId: current.hold.agentId!, provider, byUser: true }, updatedAt: at });
       this.store.event("task-sign-in-fixed", { id: task.id });
       void this.start(task.id);
     }
@@ -1513,13 +1623,17 @@ export class TaskRunner {
   private async sendSure(agentId: string, text: string, messageId: string, interrupt = false): Promise<void> {
     const port = this.port();
     if (!port?.send) throw new Error("hopkins is not connected to Paseo yet");
+    const sentAt = this.clock.now();
     try {
       await port.send(agentId, text, messageId, interrupt);
     } catch (err) {
       if (/not found|no such agent|unknown agent|not connected/i.test(errorText(err))) throw err;
       if (this.sendSettleMs > 0) await new Promise((resolve) => setTimeout(resolve, this.sendSettleMs));
       const view = port.observe ? await port.observe(agentId).catch(() => null) : null;
-      if (!aliveIn(view)) throw err;
+      // It arrived when the run holds a user message from this send on. A run merely alive proves
+      // nothing: it may have been at work (or at a permission prompt) all along.
+      const arrived = view?.lastUserMessageAt !== null && view?.lastUserMessageAt !== undefined && view.lastUserMessageAt >= sentAt - 5_000;
+      if (!arrived) throw err;
       this.log.info("a send reported an error, but the run took it up", { agent: agentId.slice(0, 8), error: errorText(err) });
     }
   }
@@ -1527,7 +1641,7 @@ export class TaskRunner {
   // --- the user's controls ---------------------------------------------------------------------
 
   /** Their answer, passed into the run as their own message (the same path as typing there). */
-  async answer(id: string, text: string, via: "today" | "thread"): Promise<ControlResult> {
+  async answer(id: string, text: string, via: "today" | "thread", asked?: string): Promise<ControlResult> {
     const task = this.store.getTask(id);
     const port = this.port();
     const words = text.trim();
@@ -1535,18 +1649,26 @@ export class TaskRunner {
     if (!words) return { ok: false, message: "The answer is empty." };
     if (!task.agentId || task.hold?.kind === "prereq") return { ok: false, message: "It has no run to answer yet." };
     if (task.state !== "needs-you" && task.state !== "running") return { ok: false, message: `It is ${task.state}: there is nothing waiting for an answer.` };
+    if (task.hold?.kind === "permission") return { ok: false, message: "It waits for a permission, which only the run itself can take: open the run to allow or deny it." };
+    if (task.hold?.kind === "paused") return { ok: false, message: "It is paused: resume it first, or answer in the run." };
+    // Answered from a card that showed one question, while the run has since asked another (or moved on).
+    if (asked !== undefined && (task.state !== "needs-you" || askedIdOf(task.report) !== asked)) {
+      return { ok: false, message: task.state === "needs-you" ? `It asks something else now: ${(task.report ?? "").slice(0, 200)}` : "It is working again: the question you answered is no longer open." };
+    }
     if (!port?.send) return { ok: false, message: "hopkins is not connected to Paseo yet. Try again in a moment, or answer in the run." };
     const now = this.clock.now();
     const n = (task.answer?.messageId.match(/-(\d+)$/)?.[1] ?? "0") as string;
     const messageId = `hopkins-answer-${id}-${Number(n) + 1}`;
-    this.put({ ...task, answer: { text: words.slice(0, 4_000), at: now, via, messageId, state: "sending" }, live: { ...(task.live ?? { state: "working", since: now }), sentAt: now }, updatedAt: now });
+    this.put({ ...task, answer: { text: words.slice(0, 4_000), at: now, via, messageId, state: "sending", ...(task.state === "needs-you" ? { asked: askedIdOf(task.report) } : {}) }, live: { ...(task.live ?? { state: "working", since: now }), sentAt: now }, updatedAt: now });
     this.store.event("task-answer", { id, via });
     try {
       await this.sendSure(task.agentId, words, messageId);
     } catch (err) {
       const current = this.store.getTask(id);
       const error = errorText(err).slice(0, 200);
-      if (current?.answer?.messageId === messageId) this.put({ ...current, answer: { ...current.answer, state: "failed", error }, updatedAt: this.clock.now() });
+      // Only an answer still on its way failed: one the run already took up (its turn started) arrived.
+      if (current?.answer?.messageId === messageId && current.answer.state === "sending") this.put({ ...current, answer: { ...current.answer, state: "failed", error }, updatedAt: this.clock.now() });
+      if (current?.answer?.messageId === messageId && current.answer.state === "picked-up") return { ok: true, message: `Passed on to "${task.text}": it is working on it.` };
       return { ok: false, message: `Couldn't pass it on: ${error}. Open the run to answer there.` };
     }
     const current = this.store.getTask(id);
@@ -1593,7 +1715,7 @@ export class TaskRunner {
     const current = this.store.getTask(id);
     if (!current || !isOpen(current)) return { ok: false, message: "It finished meanwhile." };
     const now = this.clock.now();
-    this.put({ ...current, state: "needs-you", hold: { kind: "paused", since: now, ...(agentId ? { agentId } : {}) }, report: `Paused by you ${atPhrase(now, this.config(), now)}.`, unreported: undefined, live: { ...(current.live ?? { since: now }), state: "paused", since: now }, updatedAt: now, reported: `paused:${now}` });
+    this.put({ ...current, state: "needs-you", hold: { kind: "paused", since: now, ...(agentId ? { agentId } : {}), ...(current.state === "scheduled" ? { until: current.dueAt } : {}) }, report: `Paused by you ${atPhrase(now, this.config(), now)}.`, unreported: undefined, live: { ...(current.live ?? { since: now }), state: "paused", since: now }, updatedAt: now, reported: `paused:${now}` });
     this.store.event("task-paused", { id });
     return { ok: true, message: `Paused: ${task.text}. Resume it when you like.` };
   }
@@ -1602,9 +1724,17 @@ export class TaskRunner {
   async resumeNow(id: string): Promise<ControlResult> {
     const task = this.store.getTask(id);
     if (!task) return { ok: false, message: `There is no task ${id}.` };
-    if (task.state === "running") return this.nudge(id);
+    // Already at work: nothing to carry on (a nudge is its own control, and interrupts the step).
+    if (task.state === "running") return { ok: false, message: `It is already at work: ${task.text}.` };
     const now = this.clock.now();
     const agentId = task.hold?.agentId ?? (task.state === "failed" || task.state === "needs-you" ? task.agentId : null);
+    // Paused before it ever ran (queued, or not yet due): back in line at its time, or now if that has passed.
+    if (task.state === "needs-you" && task.hold?.kind === "paused" && !agentId) {
+      this.put({ ...task, state: "scheduled", dueAt: Math.max(now, task.hold.until ?? now), hold: undefined, report: undefined, reported: undefined, live: undefined, updatedAt: now });
+      this.store.event("task-unpaused", { id });
+      void this.start(id);
+      return { ok: true, message: `Resumed: ${task.text}. It starts when it is due and there is room.` };
+    }
     if (task.state === "needs-you" && task.hold?.kind === "prereq") {
       (this.prereqs as { forget?: () => void } | null)?.forget?.();
       this.lastRecheckAt = 0;
@@ -1622,7 +1752,9 @@ export class TaskRunner {
       return { ok: false, message: `It is ${task.state}: nothing to resume.` };
     }
     const why = task.hold?.why ?? (task.hold?.kind === "paused" ? "you paused it" : task.hold?.kind === "sign-in" ? "its sign-in had expired" : task.state === "failed" ? `it had stopped: ${(task.error ?? task.report ?? "").slice(0, 120)}` : "it had stopped");
-    this.put({ ...task, state: "scheduled", dueAt: now, report: undefined, error: undefined, unreported: undefined, timedOut: undefined, reported: undefined, finishedAt: undefined, hold: { kind: "resume", since: task.hold?.since ?? now, why, agentId, byUser: true }, ...(task.state === "failed" ? { resumes: undefined } : {}), updatedAt: now });
+    // Their own "carry on": the counts in a row start again (deaths, limit waits, sign-in retries),
+    // and after a failure (a cap it ran past, say) so does its time at work.
+    this.put({ ...task, state: "scheduled", dueAt: now, report: undefined, error: undefined, unreported: undefined, timedOut: undefined, reported: undefined, finishedAt: undefined, hold: { kind: "resume", since: task.hold?.since ?? now, why, agentId, byUser: true }, limitWaits: undefined, signInAutos: undefined, ...(task.state === "failed" ? { resumes: undefined, workedMs: undefined } : {}), updatedAt: now });
     await this.start(id, true);
     const after = this.store.getTask(id);
     return after?.state === "running" ? { ok: true, message: `Carrying on: ${task.text}.` } : { ok: true, message: `It will carry on shortly: ${task.text}.` };
@@ -1703,7 +1835,7 @@ export class TaskRunner {
         const tries = [...(current.tries ?? []), { at: current.startedAt ?? at, outcome: "failed" as const, why: why.slice(0, 400) }];
         const runs = withRunEnd(current.runs, current.agentId, at, "failed", why);
         if (decision.retry) {
-          const next: Task = { ...current, ...patch, state: "scheduled", dueAt: decision.at, agentId: null, tries, runs, retry: { n: tries.length + 1, of: MAX_TRIES, why: why.slice(0, 400), reason: decision.reason, ...(broke ? { from: broke } : {}) }, updatedAt: at };
+          const next: Task = { ...current, ...patch, state: "scheduled", dueAt: decision.at, agentId: null, tries, runs, workedMs: undefined, retry: { n: tries.length + 1, of: MAX_TRIES, why: why.slice(0, 400), reason: decision.reason, ...(broke ? { from: broke } : {}) }, updatedAt: at };
           this.put(next);
           this.store.event("task-retry", { id, n: tries.length + 1, by: decision.by });
           this.log.info("task will be tried again", { task: id, try: tries.length + 1, by: decision.by });
@@ -1760,8 +1892,8 @@ export class TaskRunner {
     const ended = closed || patch.state === "missed" ? { runs: withRunEnd(task.runs, task.agentId, now, patch.state, patch.state === "failed" ? (patch.report ?? patch.error) : undefined), hold: undefined, live: undefined } : {};
     // The flags describe this outcome only: an earlier one's never carry over. A pause or a wait on
     // the user keeps its hold; anything else that settles has nothing left to wait for.
-    const hold = patch.state === "needs-you" && waitsOnUser(task) ? task.hold : undefined;
-    const next: Task = { ...task, unreported: undefined, timedOut: undefined, hold, ...patch, ...ended, updatedAt: now, ...(closed ? { finishedAt: now } : {}), ...(fresh ? { reported: outcome } : {}) };
+    const hold = patch.state === "needs-you" && (waitsOnUser(task) || task.hold?.kind === "permission") ? task.hold : undefined;
+    const next: Task = { ...task, unreported: undefined, timedOut: undefined, hold, ...patch, ...ended, updatedAt: now, ...(closed ? { finishedAt: now, signInAutos: undefined } : {}), ...(fresh ? { reported: outcome } : {}) };
     this.put(next);
     this.store.event("task-settled", { id, state: next.state });
     // A late hook for a turn already reported leads here with the same outcome: say nothing new.
@@ -1772,7 +1904,11 @@ export class TaskRunner {
   }
 
   private put(task: Task): void {
-    this.store.putTask(task);
+    const before = this.store.getTask(task.id);
+    // A stretch at work ends when it stops running (it waits on them, for a reset or for room, it
+    // died, or it finished): its time is added to the go's time at work.
+    const ended = before?.state === "running" && task.state !== "running" && before.startedAt !== undefined && task.workedMs === before.workedMs;
+    this.store.putTask(ended ? { ...task, workedMs: (before.workedMs ?? 0) + Math.max(0, this.clock.now() - before.startedAt!) } : task);
     this.store.save();
   }
 }

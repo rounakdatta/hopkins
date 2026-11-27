@@ -66,6 +66,28 @@ if (process.env.SEED_SET === "showcase") {
   );
 }
 
+// SEED_SET=states: one task in every state the Today screen can show, at once, for the screenshots
+// (with install-hopkins.sh's STATES=1 thresholds: quiet after 1 min, stalled after 5, one heavy run).
+if (process.env.SEED_SET === "states") {
+  const longReset = Date.now() + 50 * 60_000;
+  plan.splice(
+    0,
+    plan.length,
+    ["Build the eie reels end to end", { weight: "heavy", progress: path.join(work, "reels-progress.md"), instructions: `Build the reels.\n${fake([{ work: "60h", every: "10m", phase: "Phase 3: build and tests" }, { report: "done", text: "ok" }], { progress: path.join(work, "reels-progress.md") })}` }],
+    ["Render the Tower of HN trailer", { weight: "heavy", instructions: `Render it.\n${fake([{ work: "60h", every: "10m" }, { report: "done", text: "ok" }])}` }],
+    ["Import the photo library into albums", { instructions: `Import.\n${fake([{ work: "20m", every: "5m" }, { hang: "60h", wake: true }, { report: "done", text: "ok" }])}` }],
+    ["Check last night's backups", { instructions: `Check.\n${fake([{ work: "4h", every: "10m" }, { hang: "60h", wake: true }, { report: "done", text: "ok" }])}` }],
+    ["Portfolio: merge the polaroids PR", { instructions: `Fix and ask before merging.\n${fake([{ work: "20m", every: "5m" }, { ask: "PR #46 is green and reviewed. Merge it now?" }, { answer: true }])}` }],
+    ["Upload the November receipts to Nextcloud", { needs: ["gpg"], instructions: `Upload.\n${fake([{ work: "20m", every: "5m" }, { report: "done", text: "ok" }])}` }],
+    ["kanmani disk: find what fills it", { instructions: `Clean up.\n${fake([{ work: "20m", every: "5m" }, { error: `You've hit your individual spend limit · your 5-hour limit resets ${clock(longReset)} (Asia/Kolkata)` }, { work: "20m", every: "5m" }, { report: "done", text: "ok" }])}` }],
+    ["Migrate the photo albums", { instructions: `Migrate.\n${fake([{ work: "20m", every: "5m" }, { die: true }, { work: "20m", every: "5m" }, { die: true }, { work: "20m", every: "5m" }, { die: true }, { work: "60h", every: "10m" }, { report: "done", text: "ok" }])}` }],
+    ["Renew the taptappers.club domain", { instructions: `Renew it.\n${fake([{ work: "10m", every: "5m" }, { error: "Invalid API key · Please run /login" }, { work: "10m", every: "5m" }, { report: "done", text: "ok" }])}` }],
+    ["Rename towerofhan to Tower of HN everywhere", { instructions: `Rename.\n${fake([{ work: "60h", every: "10m" }, { report: "done", text: "ok" }])}` }],
+    ["Tidy the downloads folder", { weight: "light", instructions: `Tidy.\n${fake([{ work: "10m", every: "5m" }, { report: "done", text: "Moved 214 files into 9 folders; nothing deleted." }])}` }],
+    ["Book the Mysuru train tickets", { weight: "light", instructions: `Book.\n${fake([{ work: "10m", every: "5m" }, { report: "failed", text: "IRCTC's payment page timed out three times; nothing was charged.", retry: "no" }])}` }],
+  );
+}
+
 // SEED_ONLY="words": only the tasks whose name has them (to add one scenario to a running test).
 const only = process.env.SEED_ONLY?.toLowerCase();
 for (const [text, input] of plan.filter(([t]) => !only || t.toLowerCase().includes(only))) {

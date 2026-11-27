@@ -122,7 +122,9 @@ export function TodayScreen(props: PluginScreenProps) {
   return (
     <View style={{ flex: 1 }} ref={stage.root as never} onLayout={(e: { nativeEvent: { layout: { width: number } } }) => setWidth(e.nativeEvent.layout.width)}>
       <StageProvider api={stage.api}>
-        <ScrollView contentContainerStyle={{ padding: phone ? space.l : space.xl, paddingBottom: space.xl * 2, width: "100%", maxWidth: 1180, alignSelf: "center" }}>
+        {/* A tap on Send (or Yes) while the keyboard is up is the button's: without "handled" Android
+            spends the first tap closing the keyboard. */}
+        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: phone ? space.l : space.xl, paddingBottom: space.xl * 2, width: "100%", maxWidth: 1180, alignSelf: "center" }}>
           <View ref={stage.content as never} style={{ gap: phone ? space.xl : 28 }}>
             {phone && (!empty || scale === "runs") ? fullSwitcher : null}
             {scale === "day" ? <Header view={view} colors={colors} empty={empty} switcher={empty || phone ? null : switcher} /> : null}

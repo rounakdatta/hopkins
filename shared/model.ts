@@ -143,7 +143,7 @@ export const WeightSchema = z.enum(["light", "normal", "heavy"]);
 export type Weight = z.infer<typeof WeightSchema>;
 
 /** What the task's creator declared about how its runs are watched. All optional. */
-export const SuperviseSchema = z.object({
+export const SuperviseSchema = z.looseObject({
   /** A hard cap on how long it may work, in minutes. No cap when absent. */
   maxMinutes: z.number().int().min(1).optional(),
   /** Minutes without any sign of progress before it counts as quiet, then as stalled. */
@@ -163,7 +163,7 @@ export const SuperviseSchema = z.object({
 export type Supervise = z.infer<typeof SuperviseSchema>;
 
 /** How a running run looks: working, quiet (no sign for a while) or stalled (none for longer). */
-export const LiveSchema = z.object({
+export const LiveSchema = z.looseObject({
   state: z.string(),
   since: z.number(),
   lastActivityAt: z.number().optional(),
@@ -190,12 +190,14 @@ export type Live = z.infer<typeof LiveSchema>;
  * usage limit, until it resets; capacity: queued until there is room; sign-in and prereq: a step
  * only the user can do; paused: they paused it.
  */
-export const HoldSchema = z.object({
+export const HoldSchema = z.looseObject({
   kind: z.string(),
   since: z.number(),
   until: z.number().optional(),
   /** Why, in a few words for the user. */
   why: z.string().optional(),
+  /** When the usage limit it waits for resets (said at view time: "tomorrow" is relative to now). */
+  resetAt: z.number().optional(),
   /** The exact step for the user. */
   step: z.string().optional(),
   /** The run to continue when it is picked up. */
@@ -210,11 +212,13 @@ export const HoldSchema = z.object({
   toldAt: z.number().optional(),
   /** The user is waiting on this one (they fixed what it waited for, or asked for it): it goes first. */
   byUser: z.boolean().optional(),
+  /** Picked up again only when there is room: since when, and why there is none (it keeps its own reason above). */
+  room: z.object({ since: z.number(), why: z.string() }).optional(),
 });
 export type Hold = z.infer<typeof HoldSchema>;
 
 /** Every agent a task started, oldest first: how it began and how it ended. */
-export const RunRecordSchema = z.object({
+export const RunRecordSchema = z.looseObject({
   agentId: z.string(),
   startedAt: z.number(),
   /** first, retry, resume (a new run told where the earlier ones got to), run-now, adopted. */
@@ -231,7 +235,7 @@ export const RunRecordSchema = z.object({
 export type RunRecord = z.infer<typeof RunRecordSchema>;
 
 /** An answer the user gave from Today or the thread, passed into the run as their message. */
-export const RelayedAnswerSchema = z.object({
+export const RelayedAnswerSchema = z.looseObject({
   text: z.string(),
   at: z.number(),
   via: z.string(),
@@ -240,6 +244,8 @@ export const RelayedAnswerSchema = z.object({
   state: z.string(),
   sentAt: z.number().optional(),
   error: z.string().optional(),
+  /** Which question it answered (askedId of the report it answered): an answer to an earlier question is not shown under a new one. */
+  asked: z.string().optional(),
 });
 export type RelayedAnswer = z.infer<typeof RelayedAnswerSchema>;
 
@@ -310,6 +316,12 @@ export const TaskSchema = z.looseObject({
   resumes: z.number().int().min(0).optional().catch(undefined),
   /** Times it waited for a usage limit to reset (not tries: nothing was wrong with the task). */
   limitWaits: z.number().int().min(0).optional().catch(undefined),
+  /** Time its runs spent at work in earlier stretches of this go (a stretch ends when it waits on them, a reset, or dies). */
+  workedMs: z.number().min(0).optional().catch(undefined),
+  /** While a new run is being started: the hold it started from, put back if the start fails (so a resume stays a resume). */
+  startingFrom: HoldSchema.optional().catch(undefined),
+  /** Times hopkins carried it on by itself after an expired sign-in, in this outage (bounded: then only the user can). */
+  signInAutos: z.number().int().min(0).optional().catch(undefined),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
@@ -518,7 +530,7 @@ export type DayPile = z.infer<typeof DayPileSchema>;
 
 /** A task's supervision, as the app shows it. */
 export const TaskLiveViewSchema = z.object({
-  state: z.enum(["working", "quiet", "stalled", "resuming", "limit", "queued", "sign-in", "prereq", "paused"]),
+  state: z.enum(["working", "quiet", "stalled", "resuming", "limit", "queued", "sign-in", "prereq", "paused", "permission"]),
   /** One line, ready to show: "3h 12m · last activity 2 min ago · phase: build". */
   line: z.string(),
   /** How long it has been working ("3h 12m"), while it runs. */
@@ -528,7 +540,7 @@ export const TaskLiveViewSchema = z.object({
   phase: z.string().nullable(),
   /** The last commit it made, when its folder is watched. */
   commit: z.string().nullable(),
-  /** While it waits: until when ("12:43am"), and the step only they can do. */
+  /** While it waits: until when, said after a verb ("at 12:43am", "tomorrow at 9am"), and the step only they can do. */
   until: z.string().nullable(),
   step: z.string().nullable(),
   /** Times it was picked up again after dying. */
@@ -635,6 +647,8 @@ export const TodayViewSchema = z.object({
         live: TaskLiveViewSchema.nullable().optional(),
         /** The question it asks, when it asked one (needs-you with its report). */
         question: z.string().nullable().optional(),
+        /** Which question that is: sent back with an answer, so a card showing an older one cannot answer a newer one. */
+        askedId: z.string().nullable().optional(),
         /** An answer they gave from here or the thread, and whether it reached the run. */
         answer: z.object({ text: z.string(), state: z.enum(["sending", "sent", "picked-up", "failed"]), when: z.string(), error: z.string().nullable() }).nullable().optional(),
         /** What can be done with it right now. */
@@ -664,6 +678,8 @@ export type TaskAction = z.infer<typeof TaskActionSchema>;
 export const TaskAnswerSchema = z.object({
   id: z.string(),
   text: z.string().min(1).max(4_000),
+  /** The askedId of the question the card showed. */
+  asked: z.string().max(64).optional(),
 });
 export type TaskAnswer = z.infer<typeof TaskAnswerSchema>;
 

@@ -34,6 +34,7 @@ import { buildDay, buildDays, parseDate } from "./desk";
 import { buildToday } from "./today";
 import { inQuietHours } from "./delivery";
 import { liveOf } from "./supervision-view";
+import { quote } from "./prompts";
 import { zonedParts } from "../shared/time";
 import type { Task } from "../shared/model";
 import { buildRuns, nameRunWorkspaces, taskTextOf } from "./runs";
@@ -135,7 +136,9 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     if (config.digestMs <= 0) return;
     const running = store.tasks().filter((t) => t.state === "running" && t.kind !== "check");
     if (running.length === 0) {
-      if (store.digestAt() !== undefined) {
+      // Only once, when the last run ends (a 0 already written is not a change: saving it every tick
+      // rewrote the whole state file four times a minute).
+      if (store.digestAt()) {
         store.setDigestAt(0);
         store.save();
       }
@@ -149,9 +152,10 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
     }
     if (now - last < config.digestMs || isNight(config, now)) return;
     const waiting = store.tasks().filter((t) => t.state === "scheduled" && t.hold && t.kind !== "check");
+    // A run's phase and commit subjects come from its own files: quoted, like every task's words, they stay data.
     const line = (t: Task) => {
       const live = liveOf(t, config, now);
-      return `"${t.text}"${live?.line ? ` (${live.line})` : ""}`;
+      return `${quote(t.text)}${live?.line ? ` (${quote(live.line)})` : ""}`;
     };
     const text = [
       `Still at work: ${running.map(line).join("; ")}.`,
@@ -393,8 +397,9 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   // A conversation finished a turn: note it, so noticing reads it once it settles.
   server.addHook("agent.turn.after", async ({ agent, outcome }) => {
     try {
-      // A finished turn anywhere proves its provider's sign-in works: a run waiting on it can go on.
-      if (outcome.kind === "completed") runner.providerWorks(agent.provider);
+      // A finished turn elsewhere proves its provider's sign-in works: a run waiting on it can go on.
+      // Not hopkins's own conversation: its turn is often the one telling them the sign-in expired.
+      if (outcome.kind === "completed" && agent.id !== store.threadAgentId()) runner.providerWorks(agent.provider);
       // A task's run finished a turn (the user answered it there): its outcome may have changed.
       if (runner.isTaskAgent(agent.id)) {
         runner.onTurnFinished(agent.id, outcome.kind === "canceled");
@@ -458,7 +463,7 @@ export function startHopkins(server: PluginServerContext, options: StartOptions 
   // An answer typed on Today: passed into the run as their own message.
   server.handle(taskAnswerRpc, async (input, context) => {
     link.adopt(context.paseo);
-    const result = await runner.answer(input.id, input.text, "today");
+    const result = await runner.answer(input.id, input.text, "today", input.asked);
     changed();
     return result;
   });
