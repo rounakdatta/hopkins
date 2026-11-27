@@ -1,0 +1,79 @@
+name: Paseo compatibility
+
+# Every day hopkins meets the newest Paseo on npm. The apps update themselves and the daemon does
+# not, so a release whose plugin gate or plugin API would drop hopkins must be known the day it
+# ships, not the day the sidebar entry vanishes. Broken: an issue (one per release) and a red run.
+# Only the declared range in the way, everything else passing: a PR that opens the range.
+
+on:
+  schedule:
+    - cron: "23 2 * * *" # 07:53 in India
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Paseo version to test (empty: npm latest)"
+        required: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: paseo-compat
+
+jobs:
+  compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+
+      - name: The Paseo under test
+        id: paseo
+        env:
+          WANTED: ${{ inputs.version }}
+        run: |
+          v="${WANTED:-$(npm view @getpaseo/server version)}"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "not a version: $v"; exit 1; }
+          npm install --no-save --no-audit --no-fund "@getpaseo/plugin@$v" "@getpaseo/client@$v" "@getpaseo/protocol@$v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "hopkins against Paseo $v" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Its plugin gate (daemon and apps)
+        id: gate
+        continue-on-error: true
+        env:
+          V: ${{ steps.paseo.outputs.version }}
+        run: |
+          set +e
+          node scripts/compat/gate.mjs "$V" | tee gate.log
+          code=${PIPESTATUS[0]}
+          grep '^range=' gate.log >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Typecheck against it
+        id: types
+        continue-on-error: true
+        run: npm run typecheck 2>&1 | tee types.log
+
+      - name: Tests against it
+        id: tests
+        continue-on-error: true
+        run: npm test 2>&1 | tee tests.log
+
+      - name: Tell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.paseo.outputs.version }}
+          GATE: ${{ steps.gate.outputs.code }}
+          RANGE: ${{ steps.gate.outputs.range }}
+          TYPES: ${{ steps.types.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+        run: bash scripts/compat/tell.sh
