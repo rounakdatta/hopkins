@@ -538,10 +538,6 @@ export class TaskRunner {
    * made but never recorded is found by its label; one with no run at all starts again.
    */
   recover(): void {
-    // A run an earlier release started (no stretch on record) has been at work since it started.
-    for (const task of this.store.tasks()) {
-      if (task.state === "running" && task.kind !== "check" && task.stretchAt === undefined && task.runs === undefined) this.put({ ...task, stretchAt: task.startedAt ?? this.clock.now() });
-    }
     for (const task of this.store.tasks()) {
       // Waiting on them, or failed at the time limit: its run may have moved on while hopkins was away.
       if (rereadable(task) && task.agentId) {

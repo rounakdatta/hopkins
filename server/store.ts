@@ -142,7 +142,11 @@ export class Store {
    */
   private migrate(): void {
     for (const t of this.state.tasks) {
-      if (!t.runs && t.agentId) t.runs = [{ agentId: t.agentId, startedAt: t.startedAt ?? t.dueAt, how: (t.tries?.length ?? 0) > 0 ? "retry" : "first" }];
+      if (!t.runs && t.agentId) {
+        t.runs = [{ agentId: t.agentId, startedAt: t.startedAt ?? t.dueAt, how: (t.tries?.length ?? 0) > 0 ? "retry" : "first" }];
+        // A run an older release left at work has been at work since it started: its stretch is open.
+        if (t.state === "running" && t.kind !== "check" && t.stretchAt === undefined) t.stretchAt = t.startedAt ?? t.dueAt;
+      }
     }
   }
 

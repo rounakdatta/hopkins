@@ -33,7 +33,7 @@ const CRASH = /exited|exit code|terminated|killed|\bsig(?:kill|term|abrt|segv)\b
  * an expired sign-in this way. Only these are read as stops; a run's own sentences ("the Nextcloud
  * session expired, so I stopped") are its words, and say nothing about its provider.
  */
-const NOTICE = /^\s*(?:\[System Error\]\s*)?(?:API Error\b|Claude (?:AI )?usage limit reached|(?:(?:opus|sonnet|haiku|fable)\s+)?(?:(?:\d+-hour|weekly|daily|session)\s+)?(?:usage\s+)?limit reached|You(?:'|’)ve hit your|You have hit your|Your (?:\d+-hour |weekly |daily )?(?:usage )?limit|Invalid API key|OAuth token (?:has )?expired|Credit balance is too low|Please run \/login|Failed to authenticate)/i;
+const NOTICE = /^\s*(?:\[System Error\]\s*)?(?:API Error\b|Claude (?:AI )?usage limit reached|(?:opus|sonnet|haiku|fable)\s+(?:(?:\d+-hour|weekly|daily|session)\s+)?(?:usage\s+)?limit reached|(?:\d+-hour|weekly|daily|session)\s+(?:usage\s+)?limit reached|You(?:'|’)ve hit your|You have hit your|Your (?:\d+-hour |weekly |daily )?(?:usage )?limit|Invalid API key|OAuth token (?:has )?expired|Credit balance is too low|Please run \/login|Failed to authenticate)/i;
 
 export function providerNotice(text: string): boolean {
   return NOTICE.test(text);

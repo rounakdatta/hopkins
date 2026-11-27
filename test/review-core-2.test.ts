@@ -1,5 +1,7 @@
 // Defects found by the second round of the independent review (27 Nov 2026), each the reviewer's
 // own scenario: all eight failed on 38244e4 (the first round's fixes).
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { providerNotice } from "../server/stops";
 import { controlsOf } from "../server/supervision-view";
@@ -179,5 +181,27 @@ describe("review, round 3: the supervisor core", () => {
 
   it("R3-notice-opus: 'Opus weekly limit reached' is a provider notice", () => {
     expect(providerNotice("Opus weekly limit reached ∙ resets Oct 9, 10am")).toBe(true);
+  });
+});
+
+describe("review, round 4", () => {
+  it("R4-upgrade-stretch: a run 0.4 left running is counted as at work after the upgrade", async () => {
+    const sim = new Sim({ scripts: { "eie reels": [[{ work: 6 * HOUR, every: MIN }, { report: "done", text: "Reels live." }]] } });
+    const id = sim.create("eie reels");
+    await sim.run(2 * HOUR);
+    // What 0.4 wrote: no runs, no stretch, no time at work (store.migrate() adds the runs on load).
+    const file = path.join(sim.env.dir, "state.json");
+    const state = JSON.parse(fs.readFileSync(file, "utf8"));
+    for (const t of state.tasks) if (t.id === id) { delete t.runs; delete t.stretchAt; delete t.workedMs; delete t.live; }
+    fs.writeFileSync(file, JSON.stringify(state));
+    sim.restartPlugin();
+    await sim.run(10 * MIN);
+    expect(sim.task(id).stretchAt).toBeDefined();
+    expect(sim.view().tasks.find((x) => x.id === id)?.live?.line).toMatch(/^2h [0-9]m in · /);
+  });
+
+  it("R4-limit-reached: only a provider's limit notice is one, not a run's own 'Limit reached …'", () => {
+    expect(providerNotice("Limit reached for retries; stopping.")).toBe(false);
+    for (const n of ["Weekly limit reached ∙ resets Oct 9, 10am", "5-hour limit reached ∙ resets 3am", "Opus weekly limit reached ∙ resets Oct 9, 10am", "Claude usage limit reached. Your limit will reset at 3pm (Asia/Kolkata)."]) expect(providerNotice(n)).toBe(true);
   });
 });
