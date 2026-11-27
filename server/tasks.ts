@@ -1836,7 +1836,7 @@ export class TaskRunner {
         const runs = withRunEnd(current.runs, current.agentId, at, "failed", why);
         if (decision.retry) {
           const next: Task = { ...current, ...patch, state: "scheduled", dueAt: decision.at, agentId: null, tries, runs, workedMs: undefined, retry: { n: tries.length + 1, of: MAX_TRIES, why: why.slice(0, 400), reason: decision.reason, ...(broke ? { from: broke } : {}) }, updatedAt: at };
-          this.put(next);
+          this.put(next, true);
           this.store.event("task-retry", { id, n: tries.length + 1, by: decision.by });
           this.log.info("task will be tried again", { task: id, try: tries.length + 1, by: decision.by });
           this.reporter.report(next, at, decision.at);
@@ -1903,11 +1903,14 @@ export class TaskRunner {
     if (fresh && !quiet) this.reporter.report(next, now);
   }
 
-  private put(task: Task): void {
+  /**
+   * Saves the task. A stretch at work ends when it stops running (it waits on them, for a reset or
+   * for room, it died, or it finished): its time is added to the go's time at work. `fresh`: a new
+   * go (a retry) starts its time at work again, so nothing is added.
+   */
+  private put(task: Task, fresh = false): void {
     const before = this.store.getTask(task.id);
-    // A stretch at work ends when it stops running (it waits on them, for a reset or for room, it
-    // died, or it finished): its time is added to the go's time at work.
-    const ended = before?.state === "running" && task.state !== "running" && before.startedAt !== undefined && task.workedMs === before.workedMs;
+    const ended = !fresh && before?.state === "running" && task.state !== "running" && before.startedAt !== undefined;
     this.store.putTask(ended ? { ...task, workedMs: (before.workedMs ?? 0) + Math.max(0, this.clock.now() - before.startedAt!) } : task);
     this.store.save();
   }
