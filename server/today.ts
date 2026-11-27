@@ -163,7 +163,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       // that failed: the run is at work again, so they got through another way). An answer to an
       // earlier question is not shown under a new one.
       answer:
-        t.answer && ((t.state === "running" && t.answer.state !== "failed") || (t.state === "needs-you" && (t.answer.asked === undefined || t.answer.asked === askedIdOf(t.report))))
+        t.answer && ((t.state === "running" && t.answer.state !== "failed") || (t.state === "needs-you" && t.answer.asked === askedIdOf(t.report)))
           ? { text: t.answer.text.slice(0, 600), state: (["sending", "sent", "picked-up", "failed"].includes(t.answer.state) ? t.answer.state : "sent") as "sending" | "sent" | "picked-up" | "failed", when: atPhrase(t.answer.at, cfg, now), error: t.answer.error ?? null }
           : null,
       controls: controlsOf(t),

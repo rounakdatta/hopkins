@@ -81,7 +81,7 @@ If it fails, hopkins decides from why whether and when to try again (at most 3 t
 After it is saved, give them the one-line confirmation from the result, as is.
 action "list": scheduled, running and recent tasks with ids, how each run is doing, and outcomes.
 action "answer" (id, text), only in the hopkins conversation: pass the user's answer into a task's run as their own message, when its run asked them something (or to tell a working run something). Use their words unchanged.
-action "cancel" (a run at work is stopped too), "run_now", "history" (every run it started): with id. In the hopkins conversation also "stop" (end its run, cancel the task), "pause" and "resume" (carry on now: a paused run, one waiting for a reset, a sign-in or room).`;
+action "cancel" (from the hopkins conversation it also stops a run at work; from anywhere else it only marks the task), "run_now", "history" (every run it started): with id. In the hopkins conversation also "stop" (end its run, cancel the task), "pause" and "resume" (carry on now: a paused run, one waiting for a reset, a sign-in or room).`;
 
 function textResult(text: string, structuredContent?: unknown, isError = false): AgentToolResult {
   return isError ? { text, structuredContent, isError } : { text, structuredContent };

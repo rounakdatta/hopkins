@@ -540,7 +540,7 @@ export class TaskRunner {
   recover(): void {
     // A run an earlier release started (no stretch on record) has been at work since it started.
     for (const task of this.store.tasks()) {
-      if (task.state === "running" && task.kind !== "check" && task.stretchAt === undefined) this.put({ ...task, stretchAt: task.startedAt ?? this.clock.now() });
+      if (task.state === "running" && task.kind !== "check" && task.stretchAt === undefined && task.runs === undefined) this.put({ ...task, stretchAt: task.startedAt ?? this.clock.now() });
     }
     for (const task of this.store.tasks()) {
       // Waiting on them, or failed at the time limit: its run may have moved on while hopkins was away.
@@ -658,7 +658,9 @@ export class TaskRunner {
     if (task.state === "running") {
       // A turn of a run already at work (its own background job woke it, or an answer arrived): a sign of life.
       if (this.onJobs.delete(task.id)) void this.follow(task.id);
-      if (answer !== task.answer || !retell) this.put({ ...task, answer, live: this.touched(task, now, "started a turn"), updatedAt: now });
+      // A turn under a re-read's "running" (a nudge it sent after hopkins was away) is work: it opens a stretch.
+      const stretch = task.stretchAt === undefined ? { stretchAt: now } : {};
+      if (answer !== task.answer || !retell || task.stretchAt === undefined) this.put({ ...task, ...stretch, answer, live: this.touched(task, now, "started a turn"), updatedAt: now });
       return;
     }
     if (!rereadable(task) && !(task.state === "failed" && task.timedOut === false)) return;
@@ -1361,7 +1363,7 @@ export class TaskRunner {
     // (an error that waited for hopkins to come back happened then, not now).
     const last = task.live?.lastActivityAt;
     const when = at ?? (last !== undefined && now - last < 6 * 3_600_000 ? last : now);
-    const reading = readStop(error, this.config().tz, Math.min(when, now));
+    const reading = readStop(error, this.config().tz, now, Math.min(when, now));
     if (reading.kind === "limit") return this.waitForLimit(id, reading.resetAt ?? null, error);
     if (reading.kind === "sign-in") return this.signInWait(id, reading.step ?? "Sign in again.", error);
     if (reading.kind === "crash") return this.dead(id, error.replace(/\s+/g, " ").slice(0, 200));
@@ -1694,13 +1696,14 @@ export class TaskRunner {
     if (task.hold?.kind === "paused") return { ok: false, message: "It is paused: resume it first, or answer in the run." };
     // Answered from a card that showed one question, while the run has since asked another (or moved on).
     if (asked !== undefined && (task.state !== "needs-you" || askedIdOf(task.report) !== asked)) {
-      return { ok: false, message: task.state === "needs-you" ? `It asks something else now: ${(task.report ?? "").slice(0, 200)}` : "It is working again: the question you answered is no longer open." };
+      return { ok: false, message: task.state === "needs-you" ? `It asks something else now: ${quote((task.report ?? "").slice(0, 200))}` : "It is working again: the question you answered is no longer open." };
     }
     if (!port?.send) return { ok: false, message: "hopkins is not connected to Paseo yet. Try again in a moment, or answer in the run." };
     const now = this.clock.now();
     const n = (task.answer?.messageId.match(/-(\d+)$/)?.[1] ?? "0") as string;
     const messageId = `hopkins-answer-${id}-${Number(n) + 1}`;
-    this.put({ ...task, answer: { text: words.slice(0, 4_000), at: now, via, messageId, state: "sending", ...(task.state === "needs-you" ? { asked: askedIdOf(task.report) } : {}) }, live: { ...(task.live ?? { state: "working", since: now }), sentAt: now }, updatedAt: now });
+    // The question it answers ("-" for something told to a run at work): shown under that question only.
+    this.put({ ...task, answer: { text: words.slice(0, 4_000), at: now, via, messageId, state: "sending", asked: task.state === "needs-you" ? askedIdOf(task.report) : "-" }, live: { ...(task.live ?? { state: "working", since: now }), sentAt: now }, updatedAt: now });
     this.store.event("task-answer", { id, via });
     try {
       await this.sendSure(task.agentId, words, messageId);
@@ -1783,7 +1786,7 @@ export class TaskRunner {
       const after = this.store.getTask(id);
       return after?.state === "needs-you" ? { ok: false, message: `Still missing: ${after.hold?.step ?? "a prerequisite"}` } : { ok: true, message: `Starting: ${task.text}.` };
     }
-    const resumable = task.state === "scheduled" || task.state === "failed" || (task.state === "needs-you" && (waitsOnUser(task) || task.unreported || task.hold?.kind === "permission"));
+    const resumable = task.state === "scheduled" || task.state === "failed" || (task.state === "needs-you" && (waitsOnUser(task) || task.unreported));
     if (!resumable || !agentId) {
       if (task.state === "scheduled") {
         this.put({ ...task, dueAt: now, updatedAt: now });

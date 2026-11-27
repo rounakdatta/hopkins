@@ -3,9 +3,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { providerNotice } from "../server/stops";
 import { controlsOf } from "../server/supervision-view";
-import { HOUR, MIN, Sim } from "./sim";
+import { HOUR, MIN, Sim, type Step } from "./sim";
 
 vi.setConfig({ testTimeout: 240_000 });
+const BIG = Number.MAX_SAFE_INTEGER;
 
 const capped = () =>
   new Sim({ scripts: { capped: [[{ work: 70 * MIN, every: MIN }, { ask: "Merge PR #12 now?" }, { work: 10 * MIN, every: MIN }, { report: "done", text: "Merged." }]] } });
@@ -95,6 +96,10 @@ describe("review, round 2: the supervisor core", () => {
     const t = sim.task(id);
     const r = await sim.runner.resumeNow(id);
     expect(t.state === "needs-you" && t.hold?.kind === "permission" && !controlsOf(t).resume && !r.ok).toBe(false);
+    // It was picked up again by itself, in its own conversation, once its prompt was gone.
+    expect(t.state).toBe("running");
+    expect(sim.agentsOf(id)[0]!.told.some((m) => /its permission prompt went away/.test(m))).toBe(true);
+    expect(sim.created).toHaveLength(1);
   });
 
   it("R2-room-observe: a resume waiting for room does not ask Paseo every tick", async () => {
@@ -132,5 +137,47 @@ describe("review, round 2: the supervisor core", () => {
     const notices = ["5-hour limit reached ∙ resets 3am", "Claude usage limit reached. Your limit will reset at 3pm (Asia/Kolkata).", "Weekly limit reached ∙ resets Oct 9, 10am"];
     const seen = notices.map((n) => providerNotice(n));
     expect(seen).toEqual([true, true, true]);
+  });
+});
+
+describe("review, round 3: the supervisor core", () => {
+  it("R3-reread-nudge-stretch: work after a re-read's nudge counts as work", async () => {
+    const steps: Step[] = [{ work: 10 * MIN, every: MIN }, { ask: "Merge PR #12 now?" }, { say: "Merged it." }, { work: 60 * MIN, every: MIN }, { report: "done", text: "Merged and deployed." }];
+    const sim = new Sim({ scripts: { merge: [steps] } });
+    const id = sim.create("merge");
+    await sim.run(13 * MIN);
+    expect(sim.task(id).state).toBe("needs-you");
+    const agent = sim.agentsOf(id)[0]!;
+    // They answer in the run while hopkins is away (no hook reaches it), and stay away a while.
+    sim.connected = false;
+    (sim as unknown as { startTurn(a: unknown, p: string): void }).startTurn(agent, "yes, merge");
+    await sim.run(31 * MIN);
+    sim.reconnect(); // re-read: words without a report, nobody typing now: a nudge
+    await sim.run(70 * MIN);
+    const t = sim.task(id);
+    expect(t.state).toBe("done");
+    expect(t.workedMs ?? 0).toBeGreaterThan(65 * MIN);
+  });
+
+  it("R3-relative-reset: a relative reset is counted from the error, not from a stale last activity", async () => {
+    const steps: Step[] = [{ work: 5 * MIN, every: MIN }, { hang: 2 * HOUR }, { limit: "Rate limited: try again in 37 minutes", resetAt: BIG }, { work: 10 * MIN, every: MIN }, { report: "done", text: "ok" }];
+    const sim = new Sim({ scripts: { crawl: [steps] } });
+    const id = sim.create("crawl");
+    let hitAt = 0;
+    await sim.run(3 * HOUR, 15_000, () => {
+      const a = sim.agentsOf(id)[0];
+      const s = a?.script[a.pc];
+      if (!hitAt && sim.task(id).hold?.kind === "limit" && s && "limit" in s) {
+        hitAt = sim.now;
+        s.resetAt = sim.now + 37 * MIN; // what the message said
+      }
+    });
+    const agent = sim.agentsOf(id)[0]!;
+    const resumes = agent.told.filter((m) => m.startsWith("hopkins: this run stopped"));
+    expect(resumes).toHaveLength(1); // one pick-up, after the reset
+  });
+
+  it("R3-notice-opus: 'Opus weekly limit reached' is a provider notice", () => {
+    expect(providerNotice("Opus weekly limit reached ∙ resets Oct 9, 10am")).toBe(true);
   });
 });

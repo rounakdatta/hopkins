@@ -173,6 +173,14 @@ describe("starting runs", () => {
     expect(d.agents[0]).toMatchObject({ workspaceId: "wks_personal", background: false });
   });
 
+  it("makes one workspace for runs that start at the same moment in a folder that has none", async () => {
+    const d = daemon({ shown: [] });
+    await Promise.all([run(d, task("t_a", "tidy the downloads folder")), run(d, task("t_b", "check last night's backup")), run(d, task("t_c", "renew the domain"))]);
+    expect(d.made).toEqual(["/home/someone/personal"]);
+    expect(new Set(d.agents.map((a) => a.workspaceId))).toEqual(new Set(["wks_personal"]));
+    expect(d.agents).toHaveLength(3);
+  });
+
   it("gives a long task a tab title cut at a whole word", async () => {
     const d = daemon();
     const long = "take everything left over from yesterday to the finish line: merge, deploy, verify, and tell me what is still open";

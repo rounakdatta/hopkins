@@ -119,3 +119,23 @@ export function runsHeadline(groups: RunGroups): { title: string; detail: string
   if (working.length > 1) return { title: `${capital(number(working.length))} runs are ${verb}.`, detail: null };
   return { title: "Nothing is running.", detail: null };
 }
+
+/** What the second line says: the question it asks, how it went, or since when it has been working. */
+export function runLine(run: Run): { text: string | null; tone: "muted" | "warning" } {
+  // A pause or a permission says what it waits for (its line: "Paused at …"); a sign-in or a missing
+  // prerequisite says the exact step, which its report holds.
+  if (run.state === "needs-you") return { text: run.live && (run.liveState === "paused" || run.liveState === "permission") ? run.live : run.unreported ? "It stopped without saying how it went." : run.report, tone: "muted" };
+  if (run.state === "scheduled" && run.live) return { text: run.live, tone: "muted" };
+  // At work: how it is doing; quiet or stalled says so first, and a stall is worth a look.
+  if (run.state === "running") return { text: run.live ? `${run.liveState === "stalled" ? "Stalled · " : run.liveState === "quiet" ? "Quiet · " : ""}${run.live}` : null, tone: run.liveState === "stalled" ? "warning" : "muted" };
+  // Done is how most runs end, so it says nothing extra; the ones that didn't work say so.
+  if (run.state === "failed") return { text: `Didn't work${run.report ? `: ${run.report}` : "."}`, tone: "warning" };
+  if (run.state === "cancelled") return { text: `Cancelled${run.report ? `: ${run.report}` : "."}`, tone: "muted" };
+  if (run.state === "missed") return { text: "Didn't start: hopkins was offline at the time.", tone: "muted" };
+  return { text: run.report, tone: "muted" };
+}
+
+/** Bold is for a question waiting on them; a pause, a sign-in or a permission says so in its line. */
+export function runAsks(run: Run): boolean {
+  return run.state === "needs-you" && !run.unreported && (!run.liveState || run.liveState === "working");
+}

@@ -33,18 +33,23 @@ const CRASH = /exited|exit code|terminated|killed|\bsig(?:kill|term|abrt|segv)\b
  * an expired sign-in this way. Only these are read as stops; a run's own sentences ("the Nextcloud
  * session expired, so I stopped") are its words, and say nothing about its provider.
  */
-const NOTICE = /^\s*(?:\[System Error\]\s*)?(?:API Error\b|Claude (?:AI )?usage limit reached|(?:\d+-hour|weekly|daily|opus|sonnet|session)\s+limit reached|You(?:'|’)ve hit your|You have hit your|Your (?:\d+-hour |weekly |daily )?(?:usage )?limit|Invalid API key|OAuth token (?:has )?expired|Credit balance is too low|Please run \/login|Failed to authenticate)/i;
+const NOTICE = /^\s*(?:\[System Error\]\s*)?(?:API Error\b|Claude (?:AI )?usage limit reached|(?:(?:opus|sonnet|haiku|fable)\s+)?(?:(?:\d+-hour|weekly|daily|session)\s+)?(?:usage\s+)?limit reached|You(?:'|’)ve hit your|You have hit your|Your (?:\d+-hour |weekly |daily )?(?:usage )?limit|Invalid API key|OAuth token (?:has )?expired|Credit balance is too low|Please run \/login|Failed to authenticate)/i;
 
 export function providerNotice(text: string): boolean {
   return NOTICE.test(text);
 }
 
-export function readStop(error: string, tz: string, now: number): StopReading {
+/**
+ * `heardAt`: when the message was most likely written, for a clock time read late ("resets 2:40am"
+ * read at 2:50am meant tonight's, now past, not tomorrow's). Durations ("in 37 minutes") count from
+ * now: from a stale time they would end before the real reset.
+ */
+export function readStop(error: string, tz: string, now: number, heardAt?: number): StopReading {
   const text = error.replace(/\s+/g, " ").trim();
   if (BILLING.test(text)) return { kind: "sign-in", step: "The account it runs on is out of credit: top it up or switch the account, then say so (or tap Resume now)." };
   // A usage limit can mention signing in to a higher tier; the limit wins.
   if (LIMIT.test(text)) {
-    const resetAt = resetTime(text, tz, now);
+    const resetAt = resetTime(text, tz, now, heardAt);
     return resetAt !== null ? { kind: "limit", resetAt } : { kind: "limit" };
   }
   if (SIGN_IN.test(text)) return { kind: "sign-in", step: signInStep(text) };
@@ -67,7 +72,7 @@ const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "
  * The time is read in the zone the message names, else the user's. A time of day already past is
  * the next one. Null when the message does not say.
  */
-export function resetTime(text: string, tz: string, now: number): number | null {
+export function resetTime(text: string, tz: string, now: number, heardAt?: number): number | null {
   const epoch = /limit reached\|(\d{10,13})\b/i.exec(text);
   if (epoch) {
     const n = Number(epoch[1]);
@@ -103,7 +108,9 @@ export function resetTime(text: string, tz: string, now: number): number | null 
   }
   if (hour > 23 || minute > 59) return null;
   const zone = zoneWord && isValidTimeZone(zoneWord === "GMT" ? "UTC" : zoneWord) ? (zoneWord === "GMT" ? "UTC" : zoneWord) : tz;
-  const today = localDateOf(now, zone);
+  // A clock time is the next one after the message was written (when known), not after it was read.
+  const ref = Math.min(heardAt ?? now, now);
+  const today = localDateOf(ref, zone);
   if (monthWord && dayWord) {
     const month = MONTHS.indexOf(monthWord.slice(0, 3).toLowerCase()) + 1;
     const day = Number(dayWord);
@@ -111,11 +118,11 @@ export function resetTime(text: string, tz: string, now: number): number | null 
     // The nearest such date that is not long past: a reset "Jan 2" seen on 30 Dec is next year's.
     for (const year of [today.year, today.year + 1]) {
       const t = zonedToInstant({ year, month, day, hour, minute }, zone);
-      if (t > now - 86_400_000) return t;
+      if (t > ref - 86_400_000) return t;
     }
     return null;
   }
   const t = zonedToInstant({ ...today, hour, minute }, zone);
-  // A time of day already gone (by more than a minute) is tomorrow's.
-  return t >= now - 60_000 ? t : zonedToInstant({ ...addDays(today, 1), hour, minute }, zone);
+  // A time of day already gone (by more than a minute) when it was written is tomorrow's.
+  return t >= ref - 60_000 ? t : zonedToInstant({ ...addDays(today, 1), hour, minute }, zone);
 }

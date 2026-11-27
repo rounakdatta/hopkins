@@ -88,7 +88,8 @@ export function controlsOf(task: Task): TaskControls {
     pause: task.state === "running" || (task.state === "scheduled" && Boolean(task.hold)),
     resume:
       (task.state === "scheduled" && Boolean(task.hold)) ||
-      (task.state === "needs-you" && (task.hold?.kind === "paused" || task.hold?.kind === "sign-in" || task.hold?.kind === "prereq" || task.hold?.kind === "permission" || (task.unreported === true && Boolean(task.agentId)))) ||
+      // A permission is allowed or denied in the run (and picked up again by itself if its prompt goes away).
+      (task.state === "needs-you" && (task.hold?.kind === "paused" || task.hold?.kind === "sign-in" || task.hold?.kind === "prereq" || (task.unreported === true && Boolean(task.agentId)))) ||
       (task.state === "failed" && Boolean(task.agentId) && !task.report),
     nudge: task.state === "running" && (live === "quiet" || live === "stalled"),
   };

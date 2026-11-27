@@ -34,6 +34,22 @@ export function runTabTitle(task: Pick<Task, "text" | "attempts">): string {
   return task.attempts > 1 ? `${runTitle(task.text)} · try ${task.attempts}` : runTitle(task.text);
 }
 
+/**
+ * Starts in one folder go one at a time, up to their agent existing. Twelve tasks due in the same
+ * minute in a folder with no workspace each looked, found none, and made one: twelve windows called
+ * "personal". One at a time, the first makes it and the rest find it.
+ */
+const folderTurns = new Map<string, Promise<unknown>>();
+function oneAtATime<T>(folder: string, work: () => Promise<T>): Promise<T> {
+  const mine = (folderTurns.get(folder) ?? Promise.resolve()).catch(() => undefined).then(work);
+  const tail = mine.catch(() => undefined);
+  folderTurns.set(folder, tail);
+  void tail.then(() => {
+    if (folderTurns.get(folder) === tail) folderTurns.delete(folder);
+  });
+  return mine;
+}
+
 export class PaseoTaskPort implements TaskPort {
   constructor(private readonly link: PaseoLink) {}
 
@@ -48,6 +64,14 @@ export class PaseoTaskPort implements TaskPort {
     // A reminder's daily check is hopkins's own read-only look, told only through the reminder:
     // it stays out of sight (no tab, no notification).
     const background = task.kind === "check";
+    const handle = await oneAtATime(path.resolve(task.cwd), () => this.createIn(task, cfg, background, api));
+    created(handle.id);
+    const result = await withTimeout(handle.run(prompt, { timeoutMs }), timeoutMs + 60_000, "waiting for the task");
+    return { status: result.status, lastMessage: result.lastMessage, ...(result.error ? { error: result.error } : {}), ...costOf(handle) };
+  }
+
+  /** The run's agent, made in its folder's workspace (see oneAtATime). */
+  private async createIn(task: Task, cfg: Config, background: boolean, api: ReturnType<PaseoTaskPort["api"]>) {
     const workspace = await this.folderWorkspace(task.cwd, !background);
     const request = {
       title: runTabTitle(task),
@@ -70,16 +94,13 @@ export class PaseoTaskPort implements TaskPort {
       .digest("hex")
       .slice(0, 10);
     const key = `hopkins-task-${task.id}-${task.attempts}-${digest}`;
-    const handle = await withTimeout(
+    return withTimeout(
       workspace
         ? workspace.agents.create({ ...request, idempotencyKey: key } as never)
         : api.agents.create({ ...request, cwd: task.cwd, idempotencyKey: key } as never),
       60_000,
       "starting the task's agent",
     );
-    created(handle.id);
-    const result = await withTimeout(handle.run(prompt, { timeoutMs }), timeoutMs + 60_000, "waiting for the task");
-    return { status: result.status, lastMessage: result.lastMessage, ...(result.error ? { error: result.error } : {}), ...costOf(handle) };
   }
 
   /**

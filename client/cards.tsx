@@ -13,7 +13,7 @@ import { Answer, lastMood, Record, useAnswer } from "./checkin";
 import { Button, ChoiceRow, CompleteRing, Spinner, Tag, type } from "./kit";
 import { clip, machineSince, outcomeLine, outcomeTitle, priceTag } from "./places";
 import { fade, space, tabular, type Colors } from "./theme";
-import { spokenAt, type TaskItem } from "./words";
+import { answerShown, spokenAt, yesNoQuestion, type TaskItem } from "./words";
 
 export type Act = (id: string, action: "done" | "drop" | "snooze", until?: string) => Promise<boolean>;
 export type OpenAgent = ((agentId: string) => void) | null;
@@ -242,7 +242,8 @@ export function TaskHandFace(props: { task: TaskItem; colors: Colors; openAgent:
   const { busy, run } = useTaskAction(task.id);
   const openRun = task.agentId && props.openAgent ? () => props.openAgent!(task.agentId!) : null;
   const step = task.live?.step ?? null;
-  const said = task.question ?? (step ? null : task.report);
+  // The status line already says a pause or a permission; the report would only say it again.
+  const said = task.question ?? (step || task.live?.state === "paused" || task.live?.state === "permission" ? null : task.report);
   const resume = task.controls?.resume ?? false;
   return (
     <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12, opacity: busy ? 0.5 : 1 }}>
@@ -290,16 +291,6 @@ function resumeLabel(task: TaskItem): string {
     default:
       return task.state === "failed" ? "Resume" : task.unreported ? "Carry on" : "Resume now";
   }
-}
-
-/** A question that reads as yes or no ("Merge PR #12 now?"): it gets those two answers as buttons. */
-export function yesNoQuestion(question: string | null | undefined): boolean {
-  const q = (question ?? "").trim();
-  // The card shows a question up to 280 characters: Yes and No only for one read whole.
-  if (q.length === 0 || q.length > 280 || !/\?$/.test(q)) return false;
-  // The question is its last sentence: "PR #12 is green. Merge it now?"
-  const last = q.split(/(?<=[.!])\s+/).pop() ?? q;
-  return last.length <= 160 && !/\bor\b/i.test(last) && /^(should|shall|can|could|do|does|did|is|are|was|were|will|would|may|ok|okay|go|merge|deploy|proceed|continue|send|buy|pay|book|submit|delete|ship|publish|apply|restart|want)\b/i.test(last);
 }
 
 /**
@@ -385,11 +376,7 @@ export function AnswerBox(props: { task: TaskItem; colors: Colors; compact?: boo
 function AnswerState(props: { task: TaskItem; colors: Colors }) {
   const { task, colors } = props;
   const a = task.answer;
-  if (!a) return null;
-  // An answer the run took up is old news once it asks again. One passed on but not yet taken up
-  // (sent) still shows under its question, so nobody answers it twice; hopkins sends only the answer
-  // to the question on the card, and none that failed once the run works again.
-  if (a.state === "picked-up" && task.state !== "running") return null;
+  if (!a || !answerShown(task)) return null;
   const how = a.state === "sending" ? "passing it on…" : a.state === "failed" ? `couldn't pass it on${a.error ? `: ${a.error}` : ""}` : a.state === "picked-up" ? "it took it up" : "passed on to the run";
   return <Mark colors={colors} icon={a.state === "failed" ? "TriangleAlert" : "Check"} tint={a.state === "failed" ? colors.statusWarning : colors.accent} text={`You answered “${clip(a.text, 80)}” ${a.when} · ${how}`} />;
 }

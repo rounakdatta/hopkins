@@ -7,7 +7,7 @@ import { Pressable, Text, View } from "react-native";
 import { useSubscription } from "@getpaseo/plugin/client";
 import { Icon, TextInput } from "@getpaseo/plugin/client/ui";
 import { runsWatch } from "../shared/rpc";
-import { allAtWork, filterRuns, groupRuns, runsHeadline, type Run, type RunsView } from "../shared/runs";
+import { allAtWork, filterRuns, groupRuns, runAsks, runLine, runsHeadline, type Run, type RunsView } from "../shared/runs";
 import { Button, Card, Fold, Rows, Section, Spinner, type } from "./kit";
 import { space, tabular, type Colors } from "./theme";
 
@@ -125,21 +125,6 @@ function byDay(runs: Run[]): [string, Run[]][] {
   return [...days];
 }
 
-/** What the second line says: the question it asks, how it went, or since when it has been working. */
-function lineOf(run: Run): { text: string | null; tone: "muted" | "warning" } {
-  // A pause or a permission says what it waits for (its line: "Paused at …"); a sign-in or a missing
-  // prerequisite says the exact step, which its report holds.
-  if (run.state === "needs-you") return { text: run.live && (run.liveState === "paused" || run.liveState === "permission") ? run.live : run.unreported ? "It stopped without saying how it went." : run.report, tone: "muted" };
-  if (run.state === "scheduled" && run.live) return { text: run.live, tone: "muted" };
-  // At work: how it is doing; quiet or stalled says so first, and a stall is worth a look.
-  if (run.state === "running") return { text: run.live ? `${run.liveState === "stalled" ? "Stalled · " : run.liveState === "quiet" ? "Quiet · " : ""}${run.live}` : null, tone: run.liveState === "stalled" ? "warning" : "muted" };
-  // Done is how most runs end, so it says nothing extra; the ones that didn't work say so.
-  if (run.state === "failed") return { text: `Didn't work${run.report ? `: ${run.report}` : "."}`, tone: "warning" };
-  if (run.state === "cancelled") return { text: `Cancelled${run.report ? `: ${run.report}` : "."}`, tone: "muted" };
-  if (run.state === "missed") return { text: "Didn't start: hopkins was offline at the time.", tone: "muted" };
-  return { text: run.report, tone: "muted" };
-}
-
 const STATE_WORDS: Record<Run["state"], string> = {
   "needs-you": "needs you",
   running: "working",
@@ -153,9 +138,8 @@ const STATE_WORDS: Record<Run["state"], string> = {
 function RunRow(props: { run: Run; colors: Colors; open: ((agentId: string) => void) | null; stamp: string }) {
   const { run, colors } = props;
   const [hover, setHover] = useState(false);
-  const line = lineOf(run);
-  // Bold is for a question waiting on them; a pause, a sign-in or a permission says so in its line.
-  const asks = run.state === "needs-you" && !run.unreported && (!run.liveState || run.liveState === "working");
+  const line = runLine(run);
+  const asks = runAsks(run);
   const open = props.open;
   return (
     <Pressable

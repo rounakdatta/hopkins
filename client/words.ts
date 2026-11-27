@@ -130,3 +130,25 @@ export function spokenAt(day: string | null | undefined, time: string | null | u
   if (day === "Yesterday" || day === "Tomorrow") return `${day.toLowerCase()} at ${time}`;
   return `on ${day} at ${time}`;
 }
+
+/** A question that reads as yes or no ("Merge PR #12 now?"): it gets those two answers as buttons. */
+export function yesNoQuestion(question: string | null | undefined): boolean {
+  const q = (question ?? "").trim();
+  // The card shows a question up to 280 characters: Yes and No only for one read whole.
+  if (q.length === 0 || q.length > 280 || !/\?$/.test(q)) return false;
+  // The question is its last sentence: "PR #12 is green. Merge it now?"
+  const last = q.split(/(?<=[.!])\s+/).pop() ?? q;
+  return last.length <= 160 && !/\bor\b/i.test(last) && /^(should|shall|can|could|do|does|did|is|are|was|were|will|would|may|ok|okay|go|merge|deploy|proceed|continue|send|buy|pay|book|submit|delete|ship|publish|apply|restart|want)\b/i.test(last);
+}
+
+/**
+ * Whether the card shows the answer they gave. An answer the run took up is old news once it asks
+ * again. One passed on but not yet taken up (sent) still shows under its question, so nobody answers
+ * it twice. hopkins itself sends only the answer to the question on the card, and none that failed
+ * once the run works again.
+ */
+export function answerShown(task: Pick<TaskItem, "state" | "answer">): boolean {
+  const a = task.answer;
+  if (!a) return false;
+  return !(a.state === "picked-up" && task.state !== "running");
+}
