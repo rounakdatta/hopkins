@@ -377,7 +377,13 @@ const promptText = (blocks) =>
     .join("\n");
 
 /** The one model a fake agent offers: Paseo reads it as the session's model option. */
-const CONFIG_OPTIONS = [{ id: "model", name: "Model", category: "model", type: "select", currentValue: "fake", options: [{ value: "fake", name: "Fake" }] }];
+const CONFIG_OPTIONS = [
+  { id: "model", name: "Model", category: "model", type: "select", currentValue: "fake", options: [{ value: "fake", name: "Fake" }] },
+  // One mode, "default": hopkins starts its own conversation in mode "default", which Paseo checks
+  // against the provider's modes (with none, the conversation could not be made).
+  { id: "mode", name: "Mode", category: "mode", type: "select", currentValue: "default", options: [{ value: "default", name: "Default" }] },
+];
+const MODES = { currentModeId: "default", availableModes: [{ id: "default", name: "Default", description: "The only mode" }] };
 
 const METHODS = {
   initialize() {
@@ -402,12 +408,18 @@ const METHODS = {
     session.save();
     session.log("session/new", { cwd: params.cwd, mcpServers: (params.mcpServers ?? []).map((server) => server.name) });
     // One model, so a create that names "fakeagent/fake" (Paseo needs provider/model) is accepted.
-    return { sessionId, configOptions: CONFIG_OPTIONS };
+    return { sessionId, configOptions: CONFIG_OPTIONS, modes: MODES };
   },
 
   "session/set_config_option"(params) {
-    if (params.configId !== "model" || params.value !== "fake") throw new RpcError(-32602, `Unknown option ${params.configId}=${params.value}`);
+    const ok = (params.configId === "model" && params.value === "fake") || (params.configId === "mode" && params.value === "default");
+    if (!ok) throw new RpcError(-32602, `Unknown option ${params.configId}=${params.value}`);
     return { configOptions: CONFIG_OPTIONS };
+  },
+
+  "session/set_mode"(params) {
+    if (params.modeId !== "default") throw new RpcError(-32602, `Unknown mode ${params.modeId}`);
+    return {};
   },
 
   "session/load"(params) {
@@ -428,7 +440,7 @@ const METHODS = {
     session.replay();
     const { next, steps, cur, turns } = session.st;
     session.log("session/load", { replayed: session.st.history.length, next, of: steps.length, cur, turns });
-    return { configOptions: CONFIG_OPTIONS };
+    return { configOptions: CONFIG_OPTIONS, modes: MODES };
   },
 
   async "session/prompt"(params) {
