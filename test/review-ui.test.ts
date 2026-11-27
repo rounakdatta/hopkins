@@ -16,7 +16,7 @@ import { controlsOf } from "../server/supervision-view";
 import { buildRuns } from "../server/runs";
 import { waitingCount } from "../server/desk";
 import { recapCueText, taskCueText } from "../server/prompts";
-import { askedIdOf } from "../server/tasks";
+import { askedIdOf, MAX_BRIEF } from "../server/tasks";
 import { createTools } from "../server/tools";
 import { HOUR, MIN, Sim, type Step } from "./sim";
 
@@ -445,5 +445,19 @@ describe("review, round 3: answers and the card", () => {
     const asks = { ...base, state: "needs-you" as const, report: "Merge it?" };
     expect(runLine(asks).text).toBe("Merge it?");
     expect(runAsks(asks)).toBe(true);
+  });
+});
+
+describe("a long brief", () => {
+  it("is kept whole, and one too long to keep is refused with its length, never cut short", () => {
+    const sim = new Sim({ scripts: {} });
+    const long = `Do the whole job.\n${"Context line that matters. ".repeat(400)}\nDone means: the report block, and the PR links.`;
+    expect(long.length).toBeGreaterThan(8_000);
+    const id = sim.create("long job", { instructions: long });
+    expect(sim.task(id).instructions).toBe(long);
+    expect(sim.task(id).instructions.endsWith("Done means: the report block, and the PR links.")).toBe(true);
+    const r = sim.tasks.create({ text: "too long", instructions: "x".repeat(MAX_BRIEF + 1), when: "in 1m" }, sim.source, "personal");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/^the brief is 40,001 characters; at most 40,000 fit/);
   });
 });

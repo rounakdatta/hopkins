@@ -75,6 +75,8 @@ export interface CreateTaskInput {
 }
 
 const OPEN: readonly TaskState[] = ["scheduled", "running", "needs-you", "missed"];
+/** The longest brief a task keeps, whole. */
+export const MAX_BRIEF = 40_000;
 const RECENT_MS = 3 * 86_400_000;
 const START_ATTEMPTS = 3;
 /** How often a run nobody is waiting on (the connection dropped mid-wait) is picked up again. */
@@ -274,6 +276,12 @@ export class Tasks {
     if (instructions.length < 20) {
       return { ok: false, error: "instructions are missing: write the brief the agent will work from, since it will not see this conversation" };
     }
+    // Never cut a brief short: its end (how to finish, what to check, the rules) matters as much as
+    // its start. Until 0.5, briefs were cut at 8,000 characters without a word, and a long job lost
+    // its own release steps and host rules. One that does not fit is refused, so it can be shortened.
+    if (instructions.length > MAX_BRIEF) {
+      return { ok: false, error: `the brief is ${instructions.length.toLocaleString("en")} characters; at most ${MAX_BRIEF.toLocaleString("en")} fit. Shorten it (point to files and notes instead of pasting them)` };
+    }
     const ctx = this.reminders.whenContext(now);
     const parsed = parseWhen(input.when ?? "", ctx);
     if (!parsed.ok) {
@@ -293,7 +301,7 @@ export class Tasks {
     const task: Task = {
       id: newId("t"),
       text,
-      instructions: instructions.slice(0, 8_000),
+      instructions,
       scope,
       state: "scheduled",
       tz: cfg.tz,
