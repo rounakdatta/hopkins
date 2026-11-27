@@ -99,3 +99,7 @@ Other things that are true here and may surprise: an unloaded agent's `logs` sho
 ```sh
 grep -o 'fake-[0-9a-f]\{12\}' ~/.cache/hk-supervisor/home/agents/*/<agentId>.json | head -1
 ```
+
+## Before an upgrade: what will the first start do?
+
+`npx tsx scripts/sim/first-start.mts` runs this checkout's task supervisor once against a **copy** of the real store (`$PASEO_HOME`, default `~/.paseo`), as after a pod restart: every agent unloaded and read from its stored record and transcript, 90 simulated minutes. It prints every message it would send into a run, every agent it would start, everything it would tell, and every task whose state or label changes. Nothing reaches Paseo or the user, and the copy is deleted afterwards. On 27 Nov 2026, against 105 live tasks, 0.5.0 would send one resume note into each run a restart cuts off, and relabel the old "still going after 90 minutes" failures with the truth, and nothing else.
