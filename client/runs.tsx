@@ -127,8 +127,9 @@ function byDay(runs: Run[]): [string, Run[]][] {
 
 /** What the second line says: the question it asks, how it went, or since when it has been working. */
 function lineOf(run: Run): { text: string | null; tone: "muted" | "warning" } {
-  // A pause, a sign-in or a permission says what it waits for (its line already says "Paused at …").
-  if (run.state === "needs-you") return { text: run.live && run.liveState !== "working" ? run.live : run.unreported ? "It stopped without saying how it went." : run.report, tone: "muted" };
+  // A pause or a permission says what it waits for (its line: "Paused at …"); a sign-in or a missing
+  // prerequisite says the exact step, which its report holds.
+  if (run.state === "needs-you") return { text: run.live && (run.liveState === "paused" || run.liveState === "permission") ? run.live : run.unreported ? "It stopped without saying how it went." : run.report, tone: "muted" };
   if (run.state === "scheduled" && run.live) return { text: run.live, tone: "muted" };
   // At work: how it is doing; quiet or stalled says so first, and a stall is worth a look.
   if (run.state === "running") return { text: run.live ? `${run.liveState === "stalled" ? "Stalled · " : run.liveState === "quiet" ? "Quiet · " : ""}${run.live}` : null, tone: run.liveState === "stalled" ? "warning" : "muted" };

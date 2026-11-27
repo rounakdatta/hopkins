@@ -318,6 +318,12 @@ export const TaskSchema = z.looseObject({
   limitWaits: z.number().int().min(0).optional().catch(undefined),
   /** Time its runs spent at work in earlier stretches of this go (a stretch ends when it waits on them, a reset, or dies). */
   workedMs: z.number().min(0).optional().catch(undefined),
+  /**
+   * When the stretch at work under way began: set only when a run really starts working (a start, a
+   * pick-up, a turn they started), never when hopkins re-reads how a finished turn ended. Absent: no
+   * stretch is open, so nothing is added when it settles.
+   */
+  stretchAt: z.number().optional().catch(undefined),
   /** While a new run is being started: the hold it started from, put back if the start fails (so a resume stays a resume). */
   startingFrom: HoldSchema.optional().catch(undefined),
   /** Times hopkins carried it on by itself after an expired sign-in, in this outage (bounded: then only the user can). */

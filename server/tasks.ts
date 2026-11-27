@@ -23,7 +23,7 @@ import { nudgeText, quote, resumeSection, resumeText, stalledText, taskPrompt } 
 import { newId, normalizeText, type Clock, type Reminders, type Result } from "./reminders";
 import type { HostProbe, RunSignals } from "./signals";
 import { providerNotice, readStop, RESET_MARGIN_MS } from "./stops";
-import { createHash } from "node:crypto";
+import { askedIdOf } from "./asked";
 import type { Store } from "./store";
 import type { RunView } from "./task-port";
 
@@ -144,18 +144,15 @@ export function aliveIn(view: RunView | null | undefined): boolean {
   return Boolean(view && (view.turnStartedAt !== null || view.background > 0 || view.permissions > 0));
 }
 
-/** Which question a run asks: a short mark of its report, so an answer meant for one is never taken for another. */
-export function askedIdOf(report: string | null | undefined): string {
-  return createHash("sha256").update(report ?? "").digest("hex").slice(0, 12);
-}
+export { askedIdOf } from "./asked";
 
 /**
  * Time at work in this go: the stretches before (they end when it waits on them, for a reset, or
  * dies) and the one under way. Waiting is not work: an answer given five hours later does not make
  * a run "5h in", nor eat into a cap its task declared.
  */
-export function workedFor(task: Pick<Task, "state" | "startedAt" | "workedMs">, now: number): number {
-  return (task.workedMs ?? 0) + (task.state === "running" && task.startedAt !== undefined ? Math.max(0, now - task.startedAt) : 0);
+export function workedFor(task: Pick<Task, "state" | "stretchAt" | "workedMs">, now: number): number {
+  return (task.workedMs ?? 0) + (task.state === "running" && task.stretchAt !== undefined ? Math.max(0, now - task.stretchAt) : 0);
 }
 
 const HEAVY = /\b(build|compile|render|ffmpeg|transcod\w*|video|load[- ]test|capacity test|benchmark|playwright|puppeteer|chromium|headless|docker|nix build|test suite|backfill|re-?index|scrape|crawl)\b/i;
@@ -458,8 +455,10 @@ export class TaskRunner {
   private readonly lastCommitAt = new Map<string, number>();
   /** When a queued task last looked for an earlier run of its own still at work. */
   private readonly lastLiveLook = new Map<string, number>();
-  /** Asking a run how its turn went (the send is under way): that turn's late echoes are not a second silence. */
+  /** Asking a run how its turn went (from the look before the send to its end): that turn's late echoes are not a second silence. */
   private readonly nudging = new Set<string>();
+  /** Picking a run up again: from putting it back to running to the end of the send, its idle look is not a death. */
+  private readonly sending = new Set<string>();
   /** When each provider last finished a turn somewhere: proof its sign-in works. */
   private readonly providerOkAt = new Map<string, number>();
   private lastRecheckAt = 0;
@@ -539,6 +538,10 @@ export class TaskRunner {
    * made but never recorded is found by its label; one with no run at all starts again.
    */
   recover(): void {
+    // A run an earlier release started (no stretch on record) has been at work since it started.
+    for (const task of this.store.tasks()) {
+      if (task.state === "running" && task.kind !== "check" && task.stretchAt === undefined) this.put({ ...task, stretchAt: task.startedAt ?? this.clock.now() });
+    }
     for (const task of this.store.tasks()) {
       // Waiting on them, or failed at the time limit: its run may have moved on while hopkins was away.
       if (rereadable(task) && task.agentId) {
@@ -573,7 +576,8 @@ export class TaskRunner {
   private async settleAnswer(id: string): Promise<void> {
     const task = this.store.getTask(id);
     const port = this.port();
-    if (!task?.answer || task.answer.state !== "sending" || !task.agentId || !port?.observe) return;
+    // An answer this process may still be sending (recover() also runs when the connection is swapped) is left to its send.
+    if (!task?.answer || task.answer.state !== "sending" || !task.agentId || !port?.observe || this.clock.now() - task.answer.at < 3 * 60_000) return;
     const view = await port.observe(task.agentId).catch(() => undefined);
     const current = this.store.getTask(id);
     if (view === undefined || current?.answer?.messageId !== task.answer.messageId || current.answer.state !== "sending") return;
@@ -644,7 +648,7 @@ export class TaskRunner {
     if (task.state === "scheduled" && !retell) return this.takeBack(task, agentId);
     // Waiting on them for a sign-in or a pause, and the run moved: they did something in it.
     if (task.state === "needs-you" && waitsOnUser(task) && !retell) {
-      this.put({ ...task, state: "running", hold: undefined, startedAt: now, report: undefined, error: undefined, unreported: undefined, answer, live: { state: "working", since: now, lastActivityAt: now, activity: "started a turn" }, updatedAt: now });
+      this.put({ ...task, state: "running", hold: undefined, startedAt: now, stretchAt: now, report: undefined, error: undefined, unreported: undefined, answer, live: { state: "working", since: now, lastActivityAt: now, activity: "started a turn" }, updatedAt: now });
       this.store.event("task-resumed", { id: task.id });
       void this.follow(task.id);
       return;
@@ -666,6 +670,7 @@ export class TaskRunner {
       ...task,
       state: "running",
       startedAt: now,
+      stretchAt: now,
       updatedAt: now,
       report: undefined,
       error: undefined,
@@ -744,6 +749,7 @@ export class TaskRunner {
       state: "running",
       agentId,
       startedAt: now,
+      stretchAt: now,
       dueAt: Math.min(task.dueAt, dropped ? last.at : now),
       retry: undefined,
       hold: undefined,
@@ -836,6 +842,7 @@ export class TaskRunner {
       state: "running",
       attempts: claimed.attempts + 1,
       startedAt: now,
+      stretchAt: now,
       updatedAt: now,
       agentId: null,
       report: undefined,
@@ -962,6 +969,7 @@ export class TaskRunner {
       retry: undefined,
       startingFrom: undefined,
       startedAt: now,
+      stretchAt: now,
       report: undefined,
       error: undefined,
       unreported: undefined,
@@ -984,7 +992,8 @@ export class TaskRunner {
     const task = this.store.getTask(id);
     const agentId = task?.hold?.agentId;
     if (!port || !task || !agentId || task.state !== "scheduled" || this.starting.has(id)) return;
-    if (!force && task.hold?.kind === "capacity" && !this.admit(id, this.clock.now())) return;
+    // Waiting for room asks nothing of Paseo until there is some (it is looked at every tick).
+    if (!force && (task.hold?.kind === "capacity" || task.hold?.room) && !this.admit(id, this.clock.now())) return;
     this.starting.add(id);
     try {
       let view: RunView | null | undefined;
@@ -1018,6 +1027,7 @@ export class TaskRunner {
         state: "running",
         agentId,
         startedAt: at,
+        stretchAt: at,
         hold: undefined,
         report: undefined,
         error: undefined,
@@ -1029,10 +1039,13 @@ export class TaskRunner {
       });
       this.store.event("task-resume", { id, n, why: current.hold.kind });
       this.log.info("picking a run up again", { task: id, agent: agentId.slice(0, 8), after: current.hold.kind });
+      this.sending.add(id);
       try {
         // Unique per pick-up (a count can start again; Paseo drops a message id it has seen).
         await this.sendSure(agentId, resumeText(why, stoppedAt, this.config(), at), `hopkins-resume-${id}-${at}`);
+        this.sending.delete(id);
       } catch (err) {
+        this.sending.delete(id);
         const text = errorText(err);
         if (/not found|no such agent|unknown agent/i.test(text)) {
           const back = this.store.getTask(id);
@@ -1188,8 +1201,7 @@ export class TaskRunner {
     } else if (result.status === "permission") {
       // No answer passed on can settle a permission prompt: it is allowed or denied in the run.
       const held = this.store.getTask(id)!;
-      this.put({ ...held, hold: { kind: "permission", since: now, ...(held.agentId ? { agentId: held.agentId } : {}) } });
-      this.settle(id, { state: "needs-you", report: "It is waiting for a permission only you can give: allow or deny it in the run." }, now);
+      this.settle(id, { state: "needs-you", report: "It is waiting for a permission only you can give: allow or deny it in the run.", hold: { kind: "permission", since: now, ...(held.agentId ? { agentId: held.agentId } : {}) } }, now);
     } else if (!result.lastMessage?.trim()) {
       // No words: not loaded since a restart, or it really said nothing. Its own record tells which.
       void this.silent(id);
@@ -1281,6 +1293,19 @@ export class TaskRunner {
   private async nudgeSilent(id: string, text: string): Promise<void> {
     const task = this.store.getTask(id);
     const port = this.port();
+    if (!task?.agentId || task.state !== "running" || !port?.send || this.nudging.has(id)) return;
+    // Marked from here: a hook or re-follow landing during the look below is the same turn, not a second silence.
+    this.nudging.add(id);
+    try {
+      await this.nudgeSilentNow(id, text);
+    } finally {
+      this.nudging.delete(id);
+    }
+  }
+
+  private async nudgeSilentNow(id: string, text: string): Promise<void> {
+    const task = this.store.getTask(id);
+    const port = this.port();
     if (!task?.agentId || task.state !== "running" || !port?.send) return;
     const now = this.clock.now();
     const view = port.observe ? await port.observe(task.agentId).catch(() => null) : null;
@@ -1306,17 +1331,17 @@ export class TaskRunner {
     if (!current || current.state !== "running" || current.agentId !== task.agentId) return;
     this.put({ ...current, live: { ...(current.live ?? { state: "working", since: now }), nudgedAt: now, sentAt: now, lastActivityAt: now, activity: "asked how it went" }, updatedAt: now });
     this.store.event("task-nudged", { id });
-    this.nudging.add(id);
     try {
       await this.sendSure(task.agentId, nudgeText(), `hopkins-nudge-${id}-${task.attempts}-${now}`);
-      this.nudging.delete(id);
-      void this.follow(id);
     } catch (err) {
-      this.nudging.delete(id);
       this.log.warn("could not ask a run how it went", { task: id, error: errorText(err) });
       const back = this.store.getTask(id);
+      this.nudging.delete(id);
       if (back?.state === "running") this.settle(id, { state: "needs-you", report: parseReport(text).report, unreported: true }, this.clock.now());
+      return;
     }
+    this.nudging.delete(id);
+    void this.follow(id);
   }
 
   /**
@@ -1332,7 +1357,11 @@ export class TaskRunner {
     if (/no conversation found with session id/i.test(error)) return this.dead(id, "its conversation's history is gone", true);
     // Its conversation outgrew the model: carrying it on fails the same way, so a new run takes over.
     if (/prompt is too long|context (?:length|window)|maximum context|too many tokens/i.test(error)) return this.dead(id, "its conversation grew too long to carry on", true);
-    const reading = readStop(error, this.config().tz, Math.min(at ?? now, now));
+    // When it happened: given (read from its record), else its last sign of life when that is recent
+    // (an error that waited for hopkins to come back happened then, not now).
+    const last = task.live?.lastActivityAt;
+    const when = at ?? (last !== undefined && now - last < 6 * 3_600_000 ? last : now);
+    const reading = readStop(error, this.config().tz, Math.min(when, now));
     if (reading.kind === "limit") return this.waitForLimit(id, reading.resetAt ?? null, error);
     if (reading.kind === "sign-in") return this.signInWait(id, reading.step ?? "Sign in again.", error);
     if (reading.kind === "crash") return this.dead(id, error.replace(/\s+/g, " ").slice(0, 200));
@@ -1443,8 +1472,9 @@ export class TaskRunner {
    * stalled follow from that; a stall is told once; a run found idle has its end read.
    */
   async look(id: string): Promise<void> {
-    // Not while it is being started or picked up again, nor while its end is being read: those decide.
-    if (this.looking.has(id) || this.starting.has(id) || this.deciding.has(id)) return;
+    // Not while it is being picked up again or asked how it went (the run is idle until the message
+    // lands), nor while its end is being read: those decide. A first turn is looked at as usual.
+    if (this.looking.has(id) || this.sending.has(id) || this.nudging.has(id) || this.deciding.has(id)) return;
     const port = this.port();
     const task = this.store.getTask(id);
     if (!port?.observe || !task?.agentId || task.state !== "running") return;
@@ -1562,8 +1592,19 @@ export class TaskRunner {
         void this.start(task.id);
       }
     }
-    // Sign-ins: a turn finished elsewhere since it stopped, or the provider says it works again.
+    // A permission prompt that is gone (Paseo or the host restarted under it): the run was cut off
+    // waiting, and nobody can allow it any more. It is picked up again; asking again is its own doing.
     const port = this.port();
+    for (const task of this.store.tasks().filter((t) => t.state === "needs-you" && t.hold?.kind === "permission" && t.agentId && port?.observe)) {
+      const view = await port!.observe!(task.agentId!).catch(() => undefined);
+      const current = this.store.getTask(task.id);
+      if (view === undefined || aliveIn(view) || current?.state !== "needs-you" || current.hold?.kind !== "permission") continue;
+      const at = this.clock.now();
+      this.put({ ...current, state: "scheduled", dueAt: at, report: undefined, hold: { kind: "resume", since: current.hold.since, why: "its permission prompt went away when Paseo restarted", ...(view === null ? {} : { agentId: current.agentId! }) }, updatedAt: at });
+      this.store.event("task-permission-gone", { id: task.id });
+      void this.start(task.id);
+    }
+    // Sign-ins: a turn finished elsewhere since it stopped, or the provider says it works again.
     for (const task of this.store.tasks().filter((t) => t.state === "needs-you" && t.hold?.kind === "sign-in" && t.hold.agentId)) {
       const hold = task.hold!;
       const provider = hold.provider ?? "claude";
@@ -1672,7 +1713,7 @@ export class TaskRunner {
       return { ok: false, message: `Couldn't pass it on: ${error}. Open the run to answer there.` };
     }
     const current = this.store.getTask(id);
-    if (current?.answer?.messageId === messageId && current.answer.state === "sending") this.put({ ...current, answer: { ...current.answer, state: "sent", sentAt: this.clock.now() }, updatedAt: this.clock.now() });
+    if (current?.answer?.messageId === messageId && (current.answer.state === "sending" || current.answer.state === "failed")) this.put({ ...current, answer: { ...current.answer, state: "sent", sentAt: this.clock.now(), error: undefined }, updatedAt: this.clock.now() });
     const picked = this.store.getTask(id)?.answer?.state === "picked-up";
     return { ok: true, message: picked ? `Passed on to "${task.text}": it is working on it.` : `Passed on to "${task.text}".` };
   }
@@ -1742,7 +1783,7 @@ export class TaskRunner {
       const after = this.store.getTask(id);
       return after?.state === "needs-you" ? { ok: false, message: `Still missing: ${after.hold?.step ?? "a prerequisite"}` } : { ok: true, message: `Starting: ${task.text}.` };
     }
-    const resumable = task.state === "scheduled" || task.state === "failed" || (task.state === "needs-you" && (waitsOnUser(task) || task.unreported));
+    const resumable = task.state === "scheduled" || task.state === "failed" || (task.state === "needs-you" && (waitsOnUser(task) || task.unreported || task.hold?.kind === "permission"));
     if (!resumable || !agentId) {
       if (task.state === "scheduled") {
         this.put({ ...task, dueAt: now, updatedAt: now });
@@ -1786,6 +1827,7 @@ export class TaskRunner {
     const task = this.store.getTask(id);
     if (!task) return { ok: false, message: `There is no task ${id}.` };
     const alive = task.state === "running" ? task.agentId : await this.liveRun(task);
+    if (alive === "unknown") return { ok: false, message: "Paseo did not say whether its earlier run is still at work, so nothing was started. Try again in a minute." };
     if (alive) {
       const cfg = this.config();
       const last = task.live?.lastActivityAt;
@@ -1883,7 +1925,7 @@ export class TaskRunner {
     if (run) void this.start(id);
   }
 
-  private settle(id: string, patch: Pick<Task, "state"> & Partial<Pick<Task, "report" | "error" | "unreported" | "timedOut">>, now: number): void {
+  private settle(id: string, patch: Pick<Task, "state"> & Partial<Pick<Task, "report" | "error" | "unreported" | "timedOut" | "hold">>, now: number): void {
     const task = this.store.getTask(id);
     if (!task) return;
     const closed = patch.state === "done" || patch.state === "failed";
@@ -1892,7 +1934,8 @@ export class TaskRunner {
     const ended = closed || patch.state === "missed" ? { runs: withRunEnd(task.runs, task.agentId, now, patch.state, patch.state === "failed" ? (patch.report ?? patch.error) : undefined), hold: undefined, live: undefined } : {};
     // The flags describe this outcome only: an earlier one's never carry over. A pause or a wait on
     // the user keeps its hold; anything else that settles has nothing left to wait for.
-    const hold = patch.state === "needs-you" && (waitsOnUser(task) || task.hold?.kind === "permission") ? task.hold : undefined;
+    // A permission hold comes only with the turn that asked (in the patch): any later outcome drops it.
+    const hold = patch.state === "needs-you" && waitsOnUser(task) ? task.hold : undefined;
     const next: Task = { ...task, unreported: undefined, timedOut: undefined, hold, ...patch, ...ended, updatedAt: now, ...(closed ? { finishedAt: now, signInAutos: undefined } : {}), ...(fresh ? { reported: outcome } : {}) };
     this.put(next);
     this.store.event("task-settled", { id, state: next.state });
@@ -1910,8 +1953,11 @@ export class TaskRunner {
    */
   private put(task: Task, fresh = false): void {
     const before = this.store.getTask(task.id);
-    const ended = !fresh && before?.state === "running" && task.state !== "running" && before.startedAt !== undefined;
-    this.store.putTask(ended ? { ...task, workedMs: (before.workedMs ?? 0) + Math.max(0, this.clock.now() - before.startedAt!) } : task);
+    // Only an open stretch adds time: a re-read that sets a waiting task "running" for a moment, to
+    // record how its turn ended, opens none (and must not count the hours it waited).
+    const ends = before?.stretchAt !== undefined && task.state !== "running";
+    const next = !ends ? task : fresh ? { ...task, stretchAt: undefined } : { ...task, stretchAt: undefined, workedMs: (before!.workedMs ?? 0) + Math.max(0, this.clock.now() - before!.stretchAt!) };
+    this.store.putTask(next);
     this.store.save();
   }
 }

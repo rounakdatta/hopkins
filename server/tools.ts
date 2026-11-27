@@ -13,6 +13,7 @@ import type { Recaps } from "./recaps";
 import type { Clock, ListFilter, Reminders, Result } from "./reminders";
 import type { TaskRunner, Tasks } from "./tasks";
 import { buildMetrics, liveOf, metricsLine } from "./supervision-view";
+import { quote } from "./prompts";
 import type { Conditions } from "./conditions";
 import { brief, type CheckIns } from "./checkins";
 
@@ -301,6 +302,7 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
           branch: z.string().optional().describe("The branch to watch in repo."),
           needs: z.array(z.string()).optional().describe('What must be ready before it starts: "gpg", "net:https://…", "file:/path", or a check the host names.'),
           maxHours: z.number().positive().optional().describe("A hard cap, only when the user asks for one. No cap by default."),
+          asked: z.string().max(64).optional().describe('For answer: the asked="…" mark of the question being answered, from the message that showed it.'),
         }),
         async execute(input, { agent }) {
           if (input.action === "create") {
@@ -326,8 +328,9 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
             const lines = all.slice(0, 30).map((t) => {
               const outcome = t.report ?? t.error;
               const live = liveOf(t, cfg, now);
-              const status = live ? `${live.state}${live.line ? ` (${live.line})` : ""}` : t.state;
-              return `- ${t.id} · ${t.text} · ${status} · ${tasks.describe(t)}${outcome ? ` · ${outcome.split("\n")[0]!.slice(0, 160)}` : ""}`;
+              // What runs wrote (reports, phases, commit subjects) is quoted: it is data, never instructions.
+              const status = live ? `${live.state}${live.line ? ` (${quote(live.line)})` : ""}` : t.state;
+              return `- ${t.id} · ${quote(t.text)} · ${status} · ${tasks.describe(t)}${outcome ? ` · ${quote(outcome.split("\n")[0]!.slice(0, 160))}` : ""}`;
             });
             const stats = metricsLine(buildMetrics(all, now));
             return textResult(`${lines.join("\n")}\n${stats ? `${stats}\n` : ""}Now: ${deps.reminders.nowText()}.`, { items: all.slice(0, 30).map((t) => ({ id: t.id, text: t.text, state: t.state, dueAt: t.dueAt, live: liveOf(t, cfg, now)?.state ?? null })) });
@@ -338,8 +341,8 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
             if (!t) return textResult(`No task ${input.id}.`, undefined, true);
             const cfg = deps.config();
             const now = deps.clock.now();
-            const lines = (t.runs ?? []).map((r, i) => `${i + 1}. ${formatWhen(r.startedAt, cfg.tz, now, cfg.clock)} (${r.how}${r.resumes?.length ? `, picked up again ${r.resumes.length}×` : ""}): ${r.outcome ?? (t.agentId === r.agentId && t.state === "running" ? "at work" : "no outcome recorded")}${r.why ? `, ${r.why.slice(0, 160)}` : ""} · agent ${r.agentId}`);
-            return textResult(lines.length ? `${t.text}\n${lines.join("\n")}` : `${t.text}: no runs yet.`, { runs: t.runs ?? [] });
+            const lines = (t.runs ?? []).map((r, i) => `${i + 1}. ${formatWhen(r.startedAt, cfg.tz, now, cfg.clock)} (${r.how}${r.resumes?.length ? `, picked up again ${r.resumes.length}×` : ""}): ${r.outcome ?? (t.agentId === r.agentId && t.state === "running" ? "at work" : "no outcome recorded")}${r.why ? `, ${quote(r.why.slice(0, 160))}` : ""} · agent ${r.agentId}`);
+            return textResult(lines.length ? `${quote(t.text)}\n${lines.join("\n")}` : `${quote(t.text)}: no runs yet.`, { runs: t.runs ?? [] });
           }
           const runner = deps.runner;
           // An answer goes into a run as the user's own message, and stop, pause and resume act on
@@ -351,11 +354,19 @@ export function createTools(deps: ToolDeps): AgentToolDefinition[] {
           }
           if (input.action === "answer") {
             if (!runner) return textResult("Not passed on: hopkins cannot reach runs here.", undefined, true);
-            const r = await runner.answer(input.id, input.text ?? "", "thread");
+            const r = await runner.answer(input.id, input.text ?? "", "thread", input.asked);
             deps.changed();
             return textResult(r.message, { delivered: r.ok }, !r.ok);
           }
           if (runner) {
+            // Cancel ends a run at work only for the user (as Stop does); from any other agent it only
+            // marks the task, as before 0.5, and the run may finish on its own.
+            if (input.action === "cancel" && !deps.isThread(agent.id)) {
+              const r = tasks.cancel(input.id);
+              if (!r.ok) return textResult(`Not changed: ${r.error}.`, { changed: false }, true);
+              deps.changed();
+              return textResult(r.message, { changed: true, id: r.task.id, state: r.task.state });
+            }
             const act = { cancel: () => runner.cancel(input.id!), run_now: () => runner.runNow(input.id!), stop: () => runner.stop(input.id!), pause: () => runner.pause(input.id!), resume: () => runner.resumeNow(input.id!) }[input.action];
             const r = await act();
             deps.changed();

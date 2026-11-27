@@ -157,11 +157,13 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       ...(t.tries?.length ? { tries: t.tries.map((x) => ({ when: formatWhen(x.at, cfg.tz, now, cfg.clock), outcome: x.outcome, why: x.why.slice(0, 200) })) } : {}),
       live: liveOf(t, cfg, now),
       question: questionOf(t),
-      askedId: questionOf(t) !== null ? askedIdOf(t.report) : null,
-      // Shown while it matters: under the question it answered, or while the run works on it. An
-      // answer to an earlier question (failed or not) is not shown under a new one.
+      // Whatever the card can be answered on (a question, or a stop without a word) has a mark.
+      askedId: t.state === "needs-you" && t.agentId && !t.hold ? askedIdOf(t.report) : null,
+      // Shown while it matters: under the question it answered, or while the run works on it (not one
+      // that failed: the run is at work again, so they got through another way). An answer to an
+      // earlier question is not shown under a new one.
       answer:
-        t.answer && (t.state === "running" || (t.state === "needs-you" && (t.answer.asked === undefined || t.answer.asked === askedIdOf(t.report))))
+        t.answer && ((t.state === "running" && t.answer.state !== "failed") || (t.state === "needs-you" && (t.answer.asked === undefined || t.answer.asked === askedIdOf(t.report))))
           ? { text: t.answer.text.slice(0, 600), state: (["sending", "sent", "picked-up", "failed"].includes(t.answer.state) ? t.answer.state : "sent") as "sending" | "sent" | "picked-up" | "failed", when: atPhrase(t.answer.at, cfg, now), error: t.answer.error ?? null }
           : null,
       controls: controlsOf(t),

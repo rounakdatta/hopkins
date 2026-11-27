@@ -163,6 +163,9 @@ describe("review, round 1: the supervisor core", () => {
     const r = await sim.runner.answer(id, "go", "today");
     expect(agent.told.includes("go")).toBe(false);
     expect(r.ok).toBe(false);
+    // The card says so, rather than "passed on".
+    expect(sim.task(id).answer).toMatchObject({ text: "go", state: "failed" });
+    expect(sim.view().tasks.find((t) => t.id === id)?.answer).toMatchObject({ state: "failed" });
   });
 
 
@@ -170,6 +173,24 @@ describe("review, round 1: the supervisor core", () => {
     const control = await savesOver({}, 600);
     const after = await savesOver({ supervisor: { digestAt: 1 } }, 600);
     expect(after).toBeLessThanOrEqual(control + 2);
+  });
+
+  it("a digest still goes out while something runs (and only then)", async () => {
+    for (const key of ["PASEO_LISTEN", "PASEO_PASSWORD", "PASEO_HOME"]) delete process.env[key];
+    const dir = tmpDir();
+    const s0 = new Store(dir, silentLogger);
+    s0.load();
+    const now = Date.parse("2026-11-27T06:00:00Z"); // 11:30am IST
+    s0.putTask({ id: "t_w", text: "long build", instructions: "x".repeat(30), scope: "personal", state: "running", tz: "Asia/Kolkata", dueAt: now - 4 * HOUR, cwd: "/", agentId: "a1", attempts: 1, createdAt: now - 4 * HOUR, updatedAt: now, startedAt: now - 3 * HOUR, stretchAt: now - 3 * HOUR, source: { via: "agent", at: now } } as never);
+    s0.setDigestAt(now - 3 * HOUR);
+    s0.save();
+    const stop = startHopkins(fakeHost(), { dataDir: dir, clock: new FakeClock(now), log: silentLogger, tickMs: 20 });
+    await new Promise((r) => setTimeout(r, 400));
+    stop();
+    const state = JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8"));
+    const notes = state.deliveries.filter((d: { kind: string; note?: string }) => d.kind === "note" && /^Still at work: "long build"/.test(d.note ?? ""));
+    expect(notes).toHaveLength(1);
+    expect(notes[0].note).toMatch(/\("3h in"\)/);
   });
 
   it("P-cap-runnow: 'run it now' on a capped task that failed gets a fresh run, not an instant kill", async () => {
@@ -195,6 +216,9 @@ describe("review, round 1: the supervisor core", () => {
     await sim.run(HOUR);
     const r = await sim.runner.resumeNow(b);
     expect(r.ok).toBe(true);
+    await sim.run(HOUR + 5 * MIN);
+    expect(sim.task(b).state).toBe("done");
+    expect(sim.maxHeavyAlive).toBe(1);
   });
 
   it("P-liverun-unknown: a retry that comes due while the first run works never starts a second agent, even if one look at Paseo times out", async () => {
@@ -215,6 +239,11 @@ describe("review, round 1: the supervisor core", () => {
     };
     await sim.run(2 * MIN);
     expect(sim.created).toHaveLength(1);
+    // The first run is the task's run again, and its own report ends it.
+    expect(sim.task(id)).toMatchObject({ state: "running", agentId: agent });
+    await sim.run(3 * HOUR);
+    expect(sim.task(id)).toMatchObject({ state: "done", report: "Deployed." });
+    expect(sim.maxAliveSameTask).toBe(1);
   });
 
   it("P-queued-missed: a task queued for hours whose first start fails once is not marked missed", async () => {

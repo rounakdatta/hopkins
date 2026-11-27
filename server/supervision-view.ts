@@ -57,7 +57,11 @@ export function liveOf(task: Task, cfg: Config, now: number): TaskLiveView | nul
     if (hold.kind === "capacity") return { ...base, state: "queued", line: `Queued: waiting for capacity (${hold.why ?? "the host is busy"})` };
   }
   if (task.state === "needs-you") {
-    if (hold.kind === "sign-in") return { ...base, state: "sign-in", line: "Stopped: its sign-in expired. It carries on by itself once sign-in works.", step: hold.step ?? null };
+    if (hold.kind === "sign-in") {
+      // After a couple of carry-ons that failed the same way, only their "I've signed in" does it: the card says so.
+      const auto = (task.signInAutos ?? 0) < 2;
+      return { ...base, state: "sign-in", line: auto ? "Stopped: its sign-in expired. It carries on by itself once sign-in works." : "Stopped: its sign-in expired, again. Sign in, then tap I've signed in.", step: hold.step ?? null };
+    }
     if (hold.kind === "prereq") return { ...base, state: "prereq", line: "Needs you before it can start", step: hold.step ?? null };
     if (hold.kind === "paused") return { ...base, state: "paused", line: `Paused ${atPhrase(hold.since, cfg, now)}` };
     if (hold.kind === "permission") return { ...base, state: "permission", line: "Waiting for a permission only you can give: allow or deny it in the run" };
@@ -84,7 +88,7 @@ export function controlsOf(task: Task): TaskControls {
     pause: task.state === "running" || (task.state === "scheduled" && Boolean(task.hold)),
     resume:
       (task.state === "scheduled" && Boolean(task.hold)) ||
-      (task.state === "needs-you" && (task.hold?.kind === "paused" || task.hold?.kind === "sign-in" || task.hold?.kind === "prereq" || (task.unreported === true && Boolean(task.agentId)))) ||
+      (task.state === "needs-you" && (task.hold?.kind === "paused" || task.hold?.kind === "sign-in" || task.hold?.kind === "prereq" || task.hold?.kind === "permission" || (task.unreported === true && Boolean(task.agentId)))) ||
       (task.state === "failed" && Boolean(task.agentId) && !task.report),
     nudge: task.state === "running" && (live === "quiet" || live === "stalled"),
   };

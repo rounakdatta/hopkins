@@ -386,8 +386,10 @@ function AnswerState(props: { task: TaskItem; colors: Colors }) {
   const { task, colors } = props;
   const a = task.answer;
   if (!a) return null;
-  // An answer the run took up is old news once it asks again; a failed or pending one is not.
-  if ((a.state === "sent" || a.state === "picked-up") && task.state !== "running") return null;
+  // An answer the run took up is old news once it asks again. One passed on but not yet taken up
+  // (sent) still shows under its question, so nobody answers it twice; hopkins sends only the answer
+  // to the question on the card, and none that failed once the run works again.
+  if (a.state === "picked-up" && task.state !== "running") return null;
   const how = a.state === "sending" ? "passing it on…" : a.state === "failed" ? `couldn't pass it on${a.error ? `: ${a.error}` : ""}` : a.state === "picked-up" ? "it took it up" : "passed on to the run";
   return <Mark colors={colors} icon={a.state === "failed" ? "TriangleAlert" : "Check"} tint={a.state === "failed" ? colors.statusWarning : colors.accent} text={`You answered “${clip(a.text, 80)}” ${a.when} · ${how}`} />;
 }
@@ -433,7 +435,7 @@ export function ComingFace(props: { colors: Colors } & ({ kind: "reminder"; item
 }
 
 /** How a waiting task marks why it waits. */
-const HOLD_ICON: Record<string, string> = { resuming: "RotateCcw", limit: "Timer", queued: "Hourglass", paused: "Pause", "sign-in": "KeyRound", prereq: "KeyRound" };
+const HOLD_ICON: Record<string, string> = { resuming: "RotateCcw", limit: "Timer", queued: "Hourglass", paused: "Pause", "sign-in": "KeyRound", prereq: "KeyRound", permission: "KeyRound" };
 
 /** A card in the machine: what is being done, and since when. The drum above is its spinner. */
 export function MachineFace(props: { item: MachineItem; colors: Colors; ink?: string }) {
@@ -715,7 +717,7 @@ export function TaskDetails(props: { task: TaskItem; colors: Colors; openAgent: 
           <Fact colors={colors} icon="MessageCircle" tint={colors.statusWarning}>
             <Text style={factText(colors)}>{task.question}</Text>
           </Fact>
-        ) : task.report && !live?.step ? (
+        ) : task.report && !live?.step && live?.state !== "paused" && live?.state !== "permission" ? (
           <Fact colors={colors} icon="FileText">
             <Text style={factText(colors)}>{task.report}</Text>
           </Fact>

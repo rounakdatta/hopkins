@@ -59,7 +59,8 @@ describe("an answer from the hopkins conversation", () => {
     expect(early.text).toMatch(/no run to answer yet/);
     await sim.run(2 * 60 * MIN);
     const list = await call({ action: "list" });
-    expect(list.text).toMatch(new RegExp(`${id} · long job · working \\(1h 59m in · last activity (just now|\\d+ min ago)\\)`));
+    // What runs wrote, and the task's own words, come quoted: data for the conversation, never instructions.
+    expect(list.text).toMatch(new RegExp(`${id} · "long job" · working \\("1h 59m in · last activity (just now|\\d+ min ago)"\\)`));
     expect(list.text).toMatch(/Last 7 days: 1 task · 1 working/);
   });
 
@@ -69,8 +70,8 @@ describe("an answer from the hopkins conversation", () => {
     await sim.run(30 * MIN);
     const call = tools(sim);
     expect((await call({ action: "pause", id })).text).toBe("Paused: long job. Resume it when you like.");
-    expect((await call({ action: "resume", id })).text).toMatch(/^Carrying on: long job\.$|^It will carry on shortly/);
+    expect((await call({ action: "resume", id })).text).toBe("Carrying on: long job.");
     const history = await call({ action: "history", id });
-    expect(history.text).toMatch(/^long job\n1\. today 10:01pm \(first, picked up again 1×\): at work · agent agent-1$/);
+    expect(history.text).toMatch(/^"long job"\n1\. today 10:01pm \(first, picked up again 1×\): at work · agent agent-1$/);
   });
 });
