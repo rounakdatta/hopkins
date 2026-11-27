@@ -2,6 +2,7 @@
 
 import type { Delivery, Reminder, Task, Until } from "../shared/model";
 import { defaultQuestion } from "../shared/checkin";
+import { runTitle } from "../shared/runs";
 import type { RecapData } from "./recaps";
 import { formatDay, formatWhen, localDateOf } from "../shared/time";
 import type { Config } from "./config";
@@ -169,6 +170,9 @@ export function taskCueText(delivery: Delivery, task: Task, now: number, cfg: Co
   const retryAt = delivery.task?.retryAt;
   const nth = ["first", "second", "third", "fourth"][failures] ?? `${failures + 1}th`;
   const lateLine = task.lateFrom ? ` It ran late: hopkins was offline at ${when}; mention that in a few words.` : "";
+  // Where the run is: a link in a message cannot open a conversation in Paseo (the app opens only
+  // web pages and files from one), so the message names the run the way Paseo shows and finds it.
+  const findRun = `which is listed under Runs in hopkins's sidebar entry, and is named ${quote(runTitle(task.text))} in Paseo, whose search finds it by those words`;
   const ask: Record<string, string> = {
     scheduled:
       retryAt !== undefined
@@ -177,11 +181,11 @@ export function taskCueText(delivery: Delivery, task: Task, now: number, cfg: Co
     done: failures
       ? `Tell them it is done, on the ${nth} try, in one or two short lines, point first: the outcome and where things are, from the report.${lateLine}`
       : `Tell them it is done, in one or two short lines, point first: the outcome and where things are, from the report.${lateLine}`,
-    "needs-you": `Tell them, point first, the one thing it needs from them, from the report, and that they answer it in the task's run (hopkins's Today screen, under Tasks).`,
-    stopped: `It stopped without its closing report, so nobody can tell yet whether it worked. Tell them, point first, where it got to, from its last words, and that they can look at the run from hopkins's Today screen (under Tasks). Say it needs an answer only if its last words ask them something.`,
+    "needs-you": `Tell them, point first, the one thing it needs from them, from the report, and that they answer it in its run, ${findRun}.`,
+    stopped: `It stopped without its closing report, so nobody can tell yet whether it worked. Tell them, point first, where it got to, from its last words, and that they can look at its run, ${findRun}. Say it needs an answer only if its last words ask them something.`,
     failed: failures > 1
-      ? `Tell them, point first, that it did not work after ${failures} tries and why, from the report, in one or two short lines; they can try again or open the run from hopkins's Today screen.`
-      : `Tell them, point first, that it did not work and why, from the report, in one or two short lines; they can open the run from hopkins's Today screen.`,
+      ? `Tell them, point first, that it did not work after ${failures} tries and why, from the report, in one or two short lines; they can try again, or open its run, ${findRun}.`
+      : `Tell them, point first, that it did not work and why, from the report, in one or two short lines; they can open its run, ${findRun}.`,
     missed:
       task.by !== undefined && now >= task.by
         ? `Tell them it did not run: hopkins was offline at ${when}, and its deadline (${formatWhen(task.by, cfg.tz, now, cfg.clock)}) passed before it could. One or two short lines.`

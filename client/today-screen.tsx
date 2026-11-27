@@ -3,7 +3,7 @@
 // One sentence above it answers "what needs me, and what's next?", so a glance is still enough;
 // a card picked up shows the rest. Week and Month carry the same desk across more days.
 
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useRpc, useSubscription, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, SettingsCard, SettingsSelect, SettingsSwitch, useToast } from "@getpaseo/plugin/client/ui";
@@ -13,10 +13,11 @@ import type { CheckinBrief } from "../shared/checkin";
 import { BasketDetails, MachineDetails, ReminderDetails, TaskDetails, type Act } from "./cards";
 import { Record } from "./checkin";
 import { DayDesk, modeFor } from "./desk";
-import { Button, Card, Rows, Section, Spinner, type } from "./kit";
+import { Button, Card, Fold, Rows, Section, Spinner, type } from "./kit";
 import { cardLabel, deskOf, placesOf, travels, type Desk, type DeskCard, type Place } from "./places";
 import { DayPileDetails, RangeView, type Scale } from "./range";
 import { Review } from "./review";
+import { RunsList } from "./runs";
 import { Ghosts, LiftLayer, StageProvider, useStageState } from "./stage";
 import { shadow, isDark, space, tabular, type Colors } from "./theme";
 import { clockLabel, headline, recapSummary } from "./words";
@@ -47,7 +48,11 @@ export function TodayScreen(props: PluginScreenProps) {
   );
   const subscription = useSubscription(todayWatch, {}, onView);
   const [reviewing, setReviewing] = useState<{ startAt: string | null } | null>(null);
-  const [scale, setScale] = useState<Scale>("day");
+  // The sidebar's rows open this screen on Day ("hopkins") or Runs, each press with a fresh `at`,
+  // so a press brings its tab back even when the switcher moved away from it.
+  const asked = props.params?.view === "runs" ? "runs" : "day";
+  const [scale, setScale] = useState<Scale | "runs">(asked);
+  useEffect(() => setScale(asked), [asked, props.params?.at]);
   const [anchor, setAnchor] = useState<string | null>(null);
   const [width, setWidth] = useState(0);
   const [closeSignal, setCloseSignal] = useState(0);
@@ -112,13 +117,14 @@ export function TodayScreen(props: PluginScreenProps) {
   const rhythms = (view.rhythms ?? []).length > 0;
   const openDay = (date: string) => stage.api.lift(`day:${date}`);
   const switcher = <ScaleSwitch colors={colors} scale={scale} onScale={(s) => (setScale(s), setAnchor(today || null))} />;
+  const fullSwitcher = <ScaleSwitch colors={colors} scale={scale} full onScale={(s) => (setScale(s), setAnchor(today || null))} />;
 
   return (
     <View style={{ flex: 1 }} ref={stage.root as never} onLayout={(e: { nativeEvent: { layout: { width: number } } }) => setWidth(e.nativeEvent.layout.width)}>
       <StageProvider api={stage.api}>
         <ScrollView contentContainerStyle={{ padding: phone ? space.l : space.xl, paddingBottom: space.xl * 2, width: "100%", maxWidth: 1180, alignSelf: "center" }}>
           <View ref={stage.content as never} style={{ gap: phone ? space.xl : 28 }}>
-            {phone && !empty ? <ScaleSwitch colors={colors} scale={scale} full onScale={(s) => (setScale(s), setAnchor(today || null))} /> : null}
+            {phone && (!empty || scale === "runs") ? fullSwitcher : null}
             {scale === "day" ? <Header view={view} colors={colors} empty={empty} switcher={empty || phone ? null : switcher} /> : null}
 
             {view.health.problems.map((problem) => (
@@ -126,7 +132,9 @@ export function TodayScreen(props: PluginScreenProps) {
             ))}
             {subscription.status === "error" ? <Notice colors={colors} text="Showing the last update while hopkins reconnects." quiet /> : null}
 
-            {scale === "day" ? (
+            {scale === "runs" ? (
+              <RunsList colors={colors} phone={phone} switcher={phone ? null : switcher} openAgent={openAgent} />
+            ) : scale === "day" ? (
               empty ? (
                 <FirstRun colors={colors} onOpenThread={openThread} />
               ) : (
@@ -258,24 +266,26 @@ function Lifted(props: { liftKey: string; view: TodayView; desk: Desk; colors: C
 
 // --- the header -------------------------------------------------------------------------------
 
-/** Day, Week, Month: three words in one control, the chosen one raised. */
-function ScaleSwitch(props: { colors: Colors; scale: Scale; full?: boolean; onScale: (s: Scale) => void }) {
+/** Day, Week, Month and Runs: four words in one control, the chosen one raised. */
+const SCALE_LABELS = { day: "Day", week: "Week", month: "Month", runs: "Runs" } as const;
+
+function ScaleSwitch(props: { colors: Colors; scale: Scale | "runs"; full?: boolean; onScale: (s: Scale | "runs") => void }) {
   const { colors } = props;
   const dark = isDark(colors);
   return (
     <View accessibilityRole="tablist" style={{ flexDirection: "row", padding: 2, borderRadius: 10, backgroundColor: colors.surface2, alignSelf: props.full ? "stretch" : "flex-start" }}>
-      {(["day", "week", "month"] as const).map((s) => {
+      {(["day", "week", "month", "runs"] as const).map((s) => {
         const on = props.scale === s;
         return (
           <Pressable
             key={s}
             accessibilityRole="tab"
             accessibilityState={{ selected: on }}
-            accessibilityLabel={s === "day" ? "Day" : s === "week" ? "Week" : "Month"}
+            accessibilityLabel={SCALE_LABELS[s]}
             onPress={() => props.onScale(s)}
             style={{ paddingHorizontal: 12, minHeight: props.full ? 34 : 28, flex: props.full ? 1 : undefined, alignItems: "center", borderRadius: 8, justifyContent: "center", backgroundColor: on ? colors.surface1 : "transparent", ...(on ? shadow(1, dark) : {}) }}
           >
-            <Text style={[type.meta, { color: on ? colors.foreground : colors.foregroundMuted, fontWeight: on ? "600" : "500" }]}>{s === "day" ? "Day" : s === "week" ? "Week" : "Month"}</Text>
+            <Text style={[type.meta, { color: on ? colors.foreground : colors.foregroundMuted, fontWeight: on ? "600" : "500" }]}>{SCALE_LABELS[s]}</Text>
           </Pressable>
         );
       })}
@@ -373,33 +383,6 @@ function Notice(props: { colors: Colors; text: string; quiet?: boolean }) {
       style={{ flexDirection: "row", gap: space.s, alignItems: "flex-start", paddingVertical: space.s, paddingHorizontal: space.m, borderLeftWidth: 3, borderLeftColor: props.quiet ? props.colors.border : props.colors.statusWarning, backgroundColor: props.colors.surface1, borderRadius: 4 }}
     >
       <Text style={[type.meta, { color: props.colors.foreground, flex: 1 }]}>{props.text}</Text>
-    </View>
-  );
-}
-
-/** A section that stays folded until asked for: someday ideas and settings are not today's business. */
-function Fold(props: { colors: Colors; title: string; count?: number; summary?: string; children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const [hover, setHover] = useState(false);
-  const aside = props.count !== undefined ? String(props.count) : (props.summary ?? "");
-  return (
-    <View style={{ gap: space.s }}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        accessibilityLabel={`${props.title}, ${aside}. ${open ? "Hide" : "Show"}`}
-        onPress={() => setOpen(!open)}
-        onHoverIn={() => setHover(true)}
-        onHoverOut={() => setHover(false)}
-        style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 2, alignSelf: "flex-start" }}
-      >
-        <Icon name={open ? "ChevronDown" : "ChevronRight"} size={15} color={hover ? props.colors.foreground : props.colors.foregroundMuted} />
-        <Text style={[type.section, { color: hover ? props.colors.foreground : props.colors.foregroundMuted }]}>
-          {props.title}
-          <Text style={[props.count !== undefined ? tabular : null, { fontWeight: "400" }]}>{`  ${aside}`}</Text>
-        </Text>
-      </Pressable>
-      {open ? props.children : null}
     </View>
   );
 }

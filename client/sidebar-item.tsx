@@ -7,7 +7,10 @@ import { todayWatch } from "../shared/rpc";
 import { tabular } from "./theme";
 import { needsYou } from "./words";
 
-/** "hopkins" in the sidebar, with the number of things that need you: the same count the Today headline says. */
+/**
+ * "hopkins" in the sidebar, with the number of things that need you: the same count the Today
+ * headline says. Under it, "Runs": every agent hopkins started, the way back to any of them.
+ */
 export function SidebarItem(props: PluginSidebarItemProps) {
   const [view, setView] = useState<TodayView | null>(null);
   useSubscription(todayWatch, {}, setView);
@@ -37,13 +40,13 @@ export function SidebarItem(props: PluginSidebarItemProps) {
       </View>
     ) : undefined;
 
+  const onToday = props.currentScreen?.screenId === "today";
+  const onRuns = onToday && props.currentScreen?.params.view === "runs";
   return (
-    <SidebarRow
-      icon="Bell"
-      label="hopkins"
-      active={props.currentScreen?.screenId === "today"}
-      onPress={() => props.openScreen({ screenId: "today" })}
-      trailing={trailing}
-    />
+    <>
+      {/* A fresh `at` on every press, so a press always brings its tab back, whichever tab is showing. */}
+      <SidebarRow id="today" icon="Bell" label="hopkins" active={onToday && !onRuns} onPress={() => props.openScreen({ screenId: "today", params: { at: String(Date.now()) } })} trailing={trailing} />
+      <SidebarRow id="runs" icon="Bot" label="Runs" active={onRuns} onPress={() => props.openScreen({ screenId: "today", params: { view: "runs", at: String(Date.now()) } })} />
+    </>
   );
 }
