@@ -14,7 +14,9 @@ import { TaskRunner, Tasks, type TaskPort, type TaskReporter } from "../server/t
 import type { LastTurn } from "../server/transcript";
 import { buildToday } from "../server/today";
 import type { Source, Task } from "../shared/model";
-import { setup, tmpDir } from "./helpers";
+import { idFactory, setup, tmpDir } from "./helpers";
+import { Reminders } from "../server/reminders";
+import { Store } from "../server/store";
 
 export type Step =
   | { work: number; every?: number; phase?: string } // ms of work, a sign of life every `every` ms
@@ -84,9 +86,11 @@ export interface SimOptions {
 }
 
 export class Sim {
-  readonly env: ReturnType<typeof setup>;
-  readonly tasks: Tasks;
-  readonly runner: TaskRunner;
+  env: ReturnType<typeof setup>;
+  tasks: Tasks;
+  runner: TaskRunner;
+  /** How many times hopkins itself restarted (see restartPlugin). */
+  pluginRestarts = 0;
   readonly agents = new Map<string, SimAgent>();
   readonly told: Task[] = [];
   readonly notes: string[] = [];
@@ -109,21 +113,46 @@ export class Sim {
   constructor(readonly options: SimOptions) {
     const home = tmpDir();
     this.env = setup(options.start ?? "2026-11-26T16:30:00Z", { personalFolder: home, workRoots: [`${home}/work`], ...(options.config ?? {}) }); // 10pm IST
-    this.tasks = new Tasks(this.env.store, this.env.reminders, this.env.clock, this.env.config);
+    this.load = options.load ?? 0.5;
+    this.freeMemory = options.freeMemory ?? 60;
+    this.ready = options.ready ?? new Set();
+    [this.tasks, this.runner] = this.wire();
+    this.source = { via: "agent", agentId: "asker", agentTitle: "planning", cwd: home, at: this.env.clock.now() };
+  }
+
+  /** hopkins's task side over the current store: what a plugin start builds. */
+  private wire(): [Tasks, TaskRunner] {
+    const tasks = new Tasks(this.env.store, this.env.reminders, this.env.clock, this.env.config);
     const reporter: TaskReporter = {
       report: (t) => void this.told.push(structuredClone(t)),
       note: (text) => void this.notes.push(text),
     };
-    this.runner = new TaskRunner(this.env.store, this.tasks, () => (this.connected ? this.port : null), reporter, this.env.clock, this.env.config, silentLogger);
-    this.runner.retries = new Retries(null, this.env.reminders, this.env.clock, this.env.config, silentLogger);
-    this.runner.signals = this.signals;
-    this.runner.sendSettleMs = 0;
-    this.load = options.load ?? 0.5;
-    this.freeMemory = options.freeMemory ?? 60;
-    this.runner.host = { cores: () => options.cores ?? 6, load: () => this.load, freeMemoryPercent: () => this.freeMemory } satisfies HostProbe;
-    this.ready = options.ready ?? new Set();
-    this.runner.prereqs = { check: async (name: string) => ({ ok: this.ready.has(name), step: `${name} is not ready: fix it.` }) } satisfies Prereqs;
-    this.source = { via: "agent", agentId: "asker", agentTitle: "planning", cwd: home, at: this.env.clock.now() };
+    const runner = new TaskRunner(this.env.store, tasks, () => (this.connected ? this.port : null), reporter, this.env.clock, this.env.config, silentLogger);
+    runner.retries = new Retries(null, this.env.reminders, this.env.clock, this.env.config, silentLogger);
+    runner.signals = this.signals;
+    runner.sendSettleMs = 0;
+    runner.host = { cores: () => this.options.cores ?? 6, load: () => this.load, freeMemoryPercent: () => this.freeMemory } satisfies HostProbe;
+    runner.prereqs = { check: async (name: string) => ({ ok: this.ready.has(name), step: `${name} is not ready: fix it.` }) } satisfies Prereqs;
+    return [tasks, runner];
+  }
+
+  /**
+   * hopkins itself restarts (a plugin reload, a new release) while Paseo and every agent go on.
+   * The old process is gone mid-whatever: its waits never come back, it writes nothing more, and
+   * all it knew in memory is lost. A new one reads the state file and recovers.
+   */
+  restartPlugin(): void {
+    const old = this.env.store;
+    old.save = () => {};
+    old.event = () => {};
+    for (const a of this.agents.values()) a.waiters.splice(0);
+    const store = new Store(this.env.dir, silentLogger);
+    store.load();
+    const reminders = new Reminders(store, this.env.clock, this.env.config, idFactory());
+    this.env = { ...this.env, store, reminders };
+    [this.tasks, this.runner] = this.wire();
+    this.pluginRestarts += 1;
+    if (this.connected) this.runner.recover();
   }
 
   get now(): number {

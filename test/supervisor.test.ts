@@ -480,6 +480,75 @@ describe("the user's controls", () => {
   });
 });
 
+describe("hopkins restarting in the middle of everything", () => {
+  it("loses and duplicates nothing: work, a limit wait, a queue, a question and a pause all carry on", async () => {
+    // 10pm IST. The limit hit at 10:35pm resets at 12:40am.
+    const reset = Date.parse("2026-11-26T19:10:00Z");
+    const hours = (h: number): Step[] => [{ work: h * HOUR, every: 5 * MIN }, { report: "done", text: "Finished." }];
+    const sim = new Sim({
+      config: { maxHeavyRuns: 2 },
+      scripts: {
+        "long build": [hours(4)],
+        "short build": [hours(1)],
+        "queued build": [hours(1)],
+        "limited": [[{ work: 5 * MIN, every: MIN }, { limit: LIMIT, resetAt: reset }, { work: 20 * MIN, every: MIN }, { report: "done", text: "Finished." }]],
+        "asks": [[{ work: 5 * MIN, every: MIN }, { ask: "Merge PR #12 now?" }, { echo: true }]],
+        "paused": [hours(2)],
+      },
+    });
+    const long = sim.create("long build", { weight: "heavy" });
+    const short = sim.create("short build", { weight: "heavy" });
+    const queued = sim.create("queued build", { weight: "heavy" });
+    const limited = sim.create("limited");
+    const asks = sim.create("asks");
+    const paused = sim.create("paused");
+    await sim.run(30 * MIN);
+    expect((await sim.runner.pause(paused)).ok).toBe(true);
+    await sim.run(MIN);
+    const before = Object.fromEntries([long, short, queued, limited, asks, paused].map((id) => [id, structuredClone(sim.task(id))]));
+    expect(before[long]).toMatchObject({ state: "running" });
+    expect(before[queued]).toMatchObject({ state: "scheduled", hold: { kind: "capacity" } });
+    expect(before[limited]).toMatchObject({ state: "scheduled", hold: { kind: "limit" }, dueAt: reset + 3 * MIN });
+    expect(before[asks]).toMatchObject({ state: "needs-you" });
+    expect(before[paused]).toMatchObject({ state: "needs-you", hold: { kind: "paused" } });
+
+    sim.restartPlugin();
+    await sim.run(2 * MIN);
+    // Everything stands where it stood: nothing failed, started again or was told again.
+    for (const id of [long, short, queued, limited, asks, paused]) {
+      expect(sim.task(id)).toMatchObject({ state: before[id]!.state, agentId: before[id]!.agentId, attempts: before[id]!.attempts });
+      expect(sim.task(id).hold?.kind).toBe(before[id]!.hold?.kind);
+    }
+    expect(sim.task(limited).dueAt).toBe(reset + 3 * MIN);
+    expect(sim.created).toHaveLength(5);
+    expect(sim.agentsOf(long)[0]!.told).toHaveLength(1); // alive all along: no resume note
+
+    // The answer goes in once, after the restart, and the rest of the night plays out.
+    expect((await sim.runner.answer(asks, "Yes, merge it", "today")).ok).toBe(true);
+    await sim.run(4 * HOUR);
+    expect((await sim.runner.resumeNow(paused)).ok).toBe(true);
+    await sim.run(2.5 * HOUR);
+
+    for (const id of [long, short, queued, limited, asks, paused]) expect(sim.task(id).state).toBe("done");
+    expect(sim.task(asks).report).toBe("Got your answer: Yes, merge it");
+    expect(sim.created).toHaveLength(6);
+    for (const id of [long, short, queued, limited, asks, paused]) expect(sim.agentsOf(id)).toHaveLength(1);
+    expect(sim.maxAliveSameTask).toBe(1);
+    expect(sim.maxHeavyAlive).toBe(2);
+    // Each run was told what it needed exactly once: its brief, then (only where it applies) the
+    // resume after the reset, the answer, or the resume after the pause.
+    expect(sim.agentsOf(long)[0]!.told).toHaveLength(1);
+    expect(sim.agentsOf(limited)[0]!.told).toHaveLength(2);
+    expect(sim.agentsOf(asks)[0]!.told).toEqual([expect.any(String), "Yes, merge it"]);
+    expect(sim.agentsOf(paused)[0]!.told).toHaveLength(2);
+    // The user heard the question once and each outcome once, though hopkins restarted in between.
+    const told = sim.told.map((t) => `${t.text}: ${t.state}`);
+    expect(told.filter((x) => x === "asks: needs-you")).toHaveLength(1);
+    for (const text of ["long build", "short build", "queued build", "limited", "asks", "paused"]) expect(told.filter((x) => x === `${text}: done`)).toHaveLength(1);
+    expect(sim.pluginRestarts).toBe(1);
+  });
+});
+
 describe("state an older release left", () => {
   it("finds a run it had failed at 90 minutes still at work, and calls it running", async () => {
     const sim = new Sim({ scripts: { "room": [[{ work: 5 * HOUR, every: 5 * MIN }, { report: "done", text: "ok" }]] } });
