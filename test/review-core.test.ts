@@ -105,7 +105,9 @@ describe("review, round 1: the supervisor core", () => {
   });
 
   it("P-capacity-resume: a death whose resume waits for room keeps its reason, time and count", async () => {
-    const sim = new Sim({ cores: 1, config: { maxLoadPerCore: 2, maxResumes: 1 }, scripts: { "tower room": [[{ work: 30 * MIN, every: MIN }, { die: true }, { work: 30 * MIN, every: MIN }, { die: true }, { work: 30 * MIN, every: MIN }, { die: true }, { work: 30 * MIN, every: MIN }, { report: "done", text: "ok" }]] } });
+    // Ten minutes of work between deaths: less than the twenty that prove a pick-up worked (after
+    // those, the count of deaths in a row rightly starts again), so every death here counts.
+    const sim = new Sim({ cores: 1, config: { maxLoadPerCore: 2, maxResumes: 1 }, scripts: { "tower room": [[{ work: 10 * MIN, every: MIN }, { die: true }, { work: 10 * MIN, every: MIN }, { die: true }, { work: 10 * MIN, every: MIN }, { die: true }, { work: 10 * MIN, every: MIN }, { report: "done", text: "ok" }]] } });
     const id = sim.create("tower room");
     let highSince = 0;
     await sim.run(5 * HOUR, 15_000, () => {

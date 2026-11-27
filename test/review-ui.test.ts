@@ -164,7 +164,7 @@ describe("review, round 1: a paused run", () => {
     expect(needsYou(view)).toBe(0);
     expect(deskOf(view).hand).toHaveLength(0);
     expect(deskOf(view).table.map((c) => (c.entry.kind === "task" ? c.entry.task.id : null))).toContain(id);
-    expect(headline(view)).toEqual({ title: "Nothing needs you.", detail: "One run is paused until you resume it." });
+    expect(headline(view)).toEqual({ title: "Nothing needs you.", detail: "A run is paused until you resume it." });
     expect(machineLine(view).detail).toBeNull();
     // Runs says it once, plainly.
     const runs = buildRuns(sim.env.store, sim.env.config(), sim.now);

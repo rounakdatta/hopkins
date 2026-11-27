@@ -236,6 +236,7 @@ describe("telling the user", () => {
         retry: null,
         live: null,
         question: null,
+        askedId: null,
         answer: null,
         controls: { answer: false, stop: false, pause: false, resume: false, nudge: false },
       },
