@@ -218,8 +218,9 @@ export function taskStatus(task: TaskItem): string {
     case "missed":
       return `Didn't start ${spokenAt(task.day, task.time, task.when)}: hopkins was offline`;
     case "running":
-      if (live?.state === "stalled") return `Stalled · last sign of progress ${live.lastActivity ?? "a while ago"}`;
-      if (live?.state === "quiet") return `Quiet · last activity ${live.lastActivity ?? "a while ago"}`;
+      // The line under it says how long it has been at it and when it last showed life: said once.
+      if (live?.state === "stalled") return "Stalled: it may be stuck";
+      if (live?.state === "quiet") return "Quiet for a while";
       if (live?.elapsed) return `Working on it · ${live.elapsed}`;
       return task.time && task.day === "Today" ? `Working on it since ${task.time}` : "Working on it now";
     case "scheduled":

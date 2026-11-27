@@ -149,8 +149,9 @@ export function metricsLine(m: Metrics): string | null {
     m.failed ? `${m.failed} didn't work` : null,
     m.working ? `${m.working} working` : null,
     m.waiting ? `${m.waiting} waiting` : null,
-    m.medianMs !== null ? `median ${spanText(m.medianMs)}` : null,
-    m.longestMs !== null && m.longestMs !== m.medianMs ? `longest ${spanText(m.longestMs)}` : null,
+    // Durations under a minute say nothing ("median 0 min"): left out.
+    m.medianMs !== null && m.medianMs >= 60_000 ? `median ${spanText(m.medianMs)}` : null,
+    m.longestMs !== null && m.longestMs >= 60_000 && m.longestMs !== m.medianMs ? `longest ${spanText(m.longestMs)}` : null,
     m.resumes ? `picked up again ${m.resumes === 1 ? "once" : `${m.resumes} times`}` : null,
   ].filter(Boolean);
   return `Last 7 days: ${parts.join(" · ")}`;
