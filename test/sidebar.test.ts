@@ -75,8 +75,8 @@ function sidebar(currentScreen: { screenId: string; params: Record<string, strin
   return { rows, openScreen };
 }
 
-function screen(params: Record<string, string>, compact = false) {
-  stub.views.push(view());
+function screen(params: Record<string, string>, compact = false, shown: TodayView = view()) {
+  stub.views.push(shown);
   return elements(TodayScreen({ theme: { colors }, host: { id: "srv" }, layout: { compact }, navigation: { openAgent: vi.fn() }, params } as never));
 }
 
@@ -101,6 +101,8 @@ describe("hopkins in Paseo's sidebar", () => {
     const added: Record<string, { title?: string; Component?: unknown }[]> = {};
     const client = new Proxy({}, { get: (_, name: string) => (arg: { title?: string }) => ((added[name] ??= []).push(arg), () => undefined) });
     hopkins(client as never);
+    // Whichever way a plugin adds to the sidebar (header item, footer item, view), hopkins adds one thing.
+    expect(Object.entries(added).filter(([name]) => /sidebar/i.test(name)).map(([name, items]) => [name, items.length])).toEqual([["addSidebarHeaderItem", 1]]);
     expect(added.addSidebarHeaderItem?.map((i) => i.title)).toEqual(["hopkins"]);
     expect(added.addSidebarHeaderItem?.[0]?.Component).toBe(SidebarItem);
 
@@ -110,7 +112,7 @@ describe("hopkins in Paseo's sidebar", () => {
     expect(elements(rows[0]!.props.trailing).some((e) => e.props.children === "1")).toBe(true);
   });
 
-  it("stays lit on every tab of hopkins, Runs included, and a press brings Day back", () => {
+  it("stays lit on every tab of hopkins, Runs included, and a press opens it on Day, afresh", () => {
     for (const params of [{}, { view: "runs" }] as Record<string, string>[]) {
       const { rows, openScreen } = sidebar({ screenId: "today", params });
       expect(rows).toHaveLength(1);
@@ -128,6 +130,16 @@ describe("Runs, inside hopkins", () => {
       const found = screen({}, compact);
       expect(found.some(named(RunsList.name))).toBe(false);
       for (const tab of tabs(found)) expect(tab).toEqual([["Day", "day"], ["Week", "week"], ["Month", "month"], ["Runs", "runs"]]);
+    }
+  });
+
+  it("is offered on an empty desk too once there are runs, the old row's only other way in; a first run stays calm", () => {
+    const nothing = (): TodayView => ({ ...view(), waiting: [], counts: { waiting: 0, today: 0 } });
+    for (const compact of [false, true]) {
+      for (const tab of tabs(screen({}, compact, { ...nothing(), hasRuns: true }))) expect(tab).toContainEqual(["Runs", "runs"]);
+      const first = screen({}, compact, nothing());
+      expect(first.filter(named("ScaleSwitch"))).toEqual([]);
+      expect(first.some(named("FirstRun"))).toBe(true);
     }
   });
 

@@ -43,6 +43,11 @@ export function buildRuns(store: Store, cfg: Config, now: number): RunsView {
   return { generatedAt: now, tz: cfg.tz, runs };
 }
 
+/** Whether Runs has anything to show: a task buildRuns would list, kept or archived. */
+export function anyRuns(store: Store): boolean {
+  return store.tasks().some((t) => t.kind !== "check" && Boolean(t.agentId)) || store.archive().some((a) => Boolean(a.agentId));
+}
+
 function shorten(text: string | undefined): string | null {
   const flat = text?.replace(/\s+/g, " ").trim();
   return flat ? flat.slice(0, 280) : null;
