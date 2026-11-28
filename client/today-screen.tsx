@@ -48,8 +48,9 @@ export function TodayScreen(props: PluginScreenProps) {
   );
   const subscription = useSubscription(todayWatch, {}, onView);
   const [reviewing, setReviewing] = useState<{ startAt: string | null } | null>(null);
-  // The sidebar's rows open this screen on Day ("hopkins") or Runs, each press with a fresh `at`,
-  // so a press brings its tab back even when the switcher moved away from it.
+  // The sidebar's row opens this screen on Day, each press with a fresh `at`, so a press brings Day
+  // back even when the switcher moved away from it. `view: "runs"` (once a sidebar row of its own,
+  // still in links and restored screens) opens it on Runs.
   const asked = props.params?.view === "runs" ? "runs" : "day";
   const [scale, setScale] = useState<Scale | "runs">(asked);
   useEffect(() => setScale(asked), [asked, props.params?.at]);
@@ -113,6 +114,8 @@ export function TodayScreen(props: PluginScreenProps) {
   // Nothing at all, ever: only then the first-run invitation. Having closed everything is "All clear".
   const empty =
     desk.hand.length + desk.table.length + desk.machine.length + desk.basket.length + view.someday.length + view.noticed.length + view.tasks.length + view.recentlyClosed.length === 0 && !view.yesterday;
+  // The switcher shows wherever it leads somewhere: on an empty desk, once there are runs to see.
+  const tabs = !empty || view.hasRuns === true;
   const done = () => setCloseSignal((n) => n + 1);
   const rhythms = (view.rhythms ?? []).length > 0;
   const openDay = (date: string) => stage.api.lift(`day:${date}`);
@@ -124,8 +127,8 @@ export function TodayScreen(props: PluginScreenProps) {
       <StageProvider api={stage.api}>
         <ScrollView contentContainerStyle={{ padding: phone ? space.l : space.xl, paddingBottom: space.xl * 2, width: "100%", maxWidth: 1180, alignSelf: "center" }}>
           <View ref={stage.content as never} style={{ gap: phone ? space.xl : 28 }}>
-            {phone && (!empty || scale === "runs") ? fullSwitcher : null}
-            {scale === "day" ? <Header view={view} colors={colors} empty={empty} switcher={empty || phone ? null : switcher} /> : null}
+            {phone && (tabs || scale === "runs") ? fullSwitcher : null}
+            {scale === "day" ? <Header view={view} colors={colors} empty={empty} switcher={!tabs || phone ? null : switcher} /> : null}
 
             {view.health.problems.map((problem) => (
               <Notice key={problem} colors={colors} text={problem} />

@@ -492,6 +492,8 @@ export const TodayViewSchema = z.object({
   basket: z.array(BasketEntrySchema).default([]),
   /** Yesterday's basket in numbers, for a morning's empty one. */
   yesterday: z.object({ date: z.string(), done: z.number(), other: z.number() }).nullable().default(null),
+  /** Runs has something to show (every run, kept or archived, not only the last few days' tasks). */
+  hasRuns: z.boolean().optional(),
 });
 export type TodayView = z.infer<typeof TodayViewSchema>;
 

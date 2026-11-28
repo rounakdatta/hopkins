@@ -8,6 +8,7 @@ import type { Store } from "./store";
 import type { Reminders } from "./reminders";
 import { brief } from "./checkins";
 import { basketToday, machineNow, waitingOnYou } from "./desk";
+import { anyRuns } from "./runs";
 import type { Tasks } from "./tasks";
 
 export interface Health {
@@ -150,5 +151,7 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
     })),
     machine: machineNow(store, cfg, noticing?.backfill ?? store.backfill()),
     ...basketToday(store, cfg, now),
+    // The tasks above are only the last few days'; Runs keeps every run, so an empty desk can still lead there.
+    hasRuns: anyRuns(store),
   };
 }
