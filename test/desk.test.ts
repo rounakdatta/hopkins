@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { CheckIns } from "../server/checkins";
 import { basketBetween, basketCounts, basketToday, buildDay, buildDays, comingBetween, dayBounds, firstDay, machineNow, parseDate, waitingCount } from "../server/desk";
+import { buildRuns } from "../server/runs";
 import { Tasks } from "../server/tasks";
 import { buildToday } from "../server/today";
 import { DeliverySchema, ReminderSchema, ReminderStateSchema, SuggestionSchema, TaskStateSchema, idleBackfill, type Task } from "../shared/model";
@@ -402,6 +403,32 @@ describe("what the Today view always carries", () => {
     expect(view.tasks.map((x) => x.id)).toEqual(expect.arrayContaining(["t_ask", "t_run"]));
     expect(view.tasks.length).toBe(30);
     expect(view.tasks.filter((x) => x.state === "needs-you" || x.state === "missed")).toHaveLength(waitingCount(t.store, now));
+  });
+
+  it("says Runs has something to show when the only run finished days ago, which the desk no longer lists", () => {
+    const t = rig();
+    const now = t.clock.now();
+    const tasks = new Tasks(t.store, t.reminders, t.clock, t.config);
+    t.store.putTask(t.task({ id: "t_check", kind: "check", text: "check the rule", state: "done", agentId: "run-check", dueAt: now - DAY, finishedAt: now - DAY }));
+    t.store.putTask(t.task({ id: "t_soon", text: "not started yet", state: "scheduled", dueAt: now + DAY }));
+    // A reminder's daily check and a task that has not started have no run to open.
+    expect(buildToday(t.store, t.reminders, t.cfg, now, health, undefined, tasks).hasRuns).toBe(false);
+    t.store.removeTask("t_soon");
+    t.store.putTask(t.task({ id: "t_old", text: "renew the library books", state: "done", agentId: "run-1", dueAt: now - 5 * DAY, finishedAt: now - 5 * DAY }));
+    const view = buildToday(t.store, t.reminders, t.cfg, now, health, undefined, tasks);
+    expect(view.tasks).toEqual([]);
+    expect(view.hasRuns).toBe(true);
+    expect(buildRuns(t.store, t.cfg, now).runs.map((r) => r.id)).toEqual(["t_old"]);
+  });
+
+  it("counts a run that only the archive keeps", () => {
+    const t = rig();
+    const now = t.clock.now();
+    t.store.putTask(t.task({ id: "t_gone", text: "the oldest run", state: "done", agentId: "run-1", dueAt: now - 30 * DAY, finishedAt: now - 30 * DAY }));
+    // A hundred newer closed tasks, none of them runs, push it out of the tasks kept whole.
+    for (let i = 0; i < 100; i++) t.store.putTask(t.task({ id: `t_c${i}`, kind: "check", text: "check the rule", state: "done", dueAt: now - DAY + i, finishedAt: now - DAY + i }));
+    expect(t.store.tasks().some((x) => x.id === "t_gone")).toBe(false);
+    expect(buildToday(t.store, t.reminders, t.cfg, now, health).hasRuns).toBe(true);
   });
 
   it("tells a picked-up day before hopkins started that it is one", () => {

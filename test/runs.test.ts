@@ -400,7 +400,8 @@ describe("telling the user where a run is", () => {
     const t: Task = { ...task("t_web", "buy towerofhn.com and link it up beside the tower site"), state: "needs-you", agentId: "a1", report: "Which card should I use?" };
     const cue = taskCueText({ id: "d_1", reminderIds: [], kind: "note", task: { id: t.id, state: "needs-you" }, createdAt: 0, state: "sending", attempts: 1 }, t, env.clock.now(), env.config());
     expect(cue).toContain(`"${runTitle(t.text)}"`);
-    expect(cue).toContain("under Runs in hopkins's sidebar entry");
+    expect(cue).toContain("listed in hopkins under Runs");
+    expect(cue).not.toContain("sidebar"); // Runs is a tab inside hopkins, not a sidebar row of its own
     expect(cue).not.toContain("under Tasks"); // the Today screen has had no Tasks section since the desk
   });
 });
