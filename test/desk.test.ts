@@ -421,6 +421,16 @@ describe("what the Today view always carries", () => {
     expect(buildRuns(t.store, t.cfg, now).runs.map((r) => r.id)).toEqual(["t_old"]);
   });
 
+  it("counts a run that only the archive keeps", () => {
+    const t = rig();
+    const now = t.clock.now();
+    t.store.putTask(t.task({ id: "t_gone", text: "the oldest run", state: "done", agentId: "run-1", dueAt: now - 30 * DAY, finishedAt: now - 30 * DAY }));
+    // A hundred newer closed tasks, none of them runs, push it out of the tasks kept whole.
+    for (let i = 0; i < 100; i++) t.store.putTask(t.task({ id: `t_c${i}`, kind: "check", text: "check the rule", state: "done", dueAt: now - DAY + i, finishedAt: now - DAY + i }));
+    expect(t.store.tasks().some((x) => x.id === "t_gone")).toBe(false);
+    expect(buildToday(t.store, t.reminders, t.cfg, now, health).hasRuns).toBe(true);
+  });
+
   it("tells a picked-up day before hopkins started that it is one", () => {
     const t = rig();
     t.remind({ text: "call the bank", when: "tomorrow 9am" });
