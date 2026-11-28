@@ -47,7 +47,17 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     checkModel: "claude/claude-sonnet-5-5",
     personalFolder: null,
     taskGraceMs: 180 * 60_000,
-    taskTimeoutMs: 90 * 60_000,
+    quietMs: 20 * 60_000,
+    stallMs: 60 * 60_000,
+    maxResumes: 5,
+    maxHeavyRuns: 2,
+    maxRuns: 0,
+    hostCores: 0,
+    maxLoadPerCore: 0,
+    minFreeMemoryPercent: 0,
+    quiet: null,
+    digestMs: 0,
+    archiveRunsAfterMs: 0,
     ...overrides,
   };
 }

@@ -45,6 +45,9 @@ export const RunSchema = z.object({
   /** The run's own report, shortened: the question it asks, or how it went. Shown as data. */
   report: z.string().nullable(),
   scope: ScopeSchema,
+  /** While it works or waits: how it is doing, in one line ("3h 12m · last activity 2 min ago"), and whether it is quiet or stalled. */
+  live: z.string().nullable().optional(),
+  liveState: z.string().nullable().optional(),
 });
 export type Run = z.infer<typeof RunSchema>;
 
@@ -53,6 +56,8 @@ export const RunsViewSchema = z.object({
   tz: z.string(),
   /** Newest first. */
   runs: z.array(RunSchema),
+  /** The last seven days in numbers: tasks, done, didn't work, how long they took, resumes. */
+  metrics: z.string().nullable().optional(),
 });
 export type RunsView = z.infer<typeof RunsViewSchema>;
 
@@ -67,10 +72,14 @@ export interface RunGroups {
 /** The order the Runs screen shows them in: what needs them, then what is working, then the rest; newest first in each. */
 export function groupRuns(runs: readonly Run[]): RunGroups {
   const newest = [...runs].sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
+  // Between tries (picked up again soon, waiting for a reset or for room) and paused are still under
+  // way: they sit with the working ones, each saying why it waits.
+  const paused = (r: Run) => r.state === "needs-you" && r.liveState === "paused";
+  const working = (r: Run) => r.state === "running" || r.state === "scheduled" || paused(r);
   return {
-    needsYou: newest.filter((r) => r.state === "needs-you"),
-    working: newest.filter((r) => r.state === "running"),
-    finished: newest.filter((r) => r.state !== "needs-you" && r.state !== "running"),
+    needsYou: newest.filter((r) => r.state === "needs-you" && !paused(r)),
+    working: newest.filter(working),
+    finished: newest.filter((r) => r.state !== "needs-you" && !working(r)),
   };
 }
 
@@ -88,16 +97,45 @@ const NUMBERS = ["no", "one", "two", "three", "four", "five", "six", "seven", "e
 const number = (n: number) => (n < NUMBERS.length ? NUMBERS[n]! : String(n));
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
+/**
+ * Whether every run under way is at work. Some may be waiting (for a reset, for room, paused) or
+ * stalled: then "working" would overstate it, and "under way" is what is true of all of them.
+ */
+export function allAtWork(working: readonly Run[]): boolean {
+  return working.every((r) => r.state === "running" && r.liveState !== "stalled");
+}
+
 /** One sentence that answers "does a run need me?", from the same groups the screen shows. */
 export function runsHeadline(groups: RunGroups): { title: string; detail: string | null } {
   const { needsYou, working, finished } = groups;
   if (needsYou.length + working.length + finished.length === 0) {
     return { title: "No runs yet.", detail: "When hopkins does something for you at a set time, the agent it starts is listed here." };
   }
-  const workingLine = working.length === 0 ? null : working.length === 1 ? "One more is working." : `${capital(number(working.length))} more are working.`;
+  const verb = allAtWork(working) ? "working" : "under way";
+  const workingLine = working.length === 0 ? null : working.length === 1 ? `One more is ${verb}.` : `${capital(number(working.length))} more are ${verb}.`;
   if (needsYou.length === 1) return { title: "A run needs you.", detail: workingLine };
   if (needsYou.length > 1) return { title: `${capital(number(needsYou.length))} runs need you.`, detail: workingLine };
-  if (working.length === 1) return { title: "One run is working.", detail: null };
-  if (working.length > 1) return { title: `${capital(number(working.length))} runs are working.`, detail: null };
+  if (working.length === 1) return { title: `One run is ${verb}.`, detail: null };
+  if (working.length > 1) return { title: `${capital(number(working.length))} runs are ${verb}.`, detail: null };
   return { title: "Nothing is running.", detail: null };
+}
+
+/** What the second line says: the question it asks, how it went, or since when it has been working. */
+export function runLine(run: Run): { text: string | null; tone: "muted" | "warning" } {
+  // A pause or a permission says what it waits for (its line: "Paused at …"); a sign-in or a missing
+  // prerequisite says the exact step, which its report holds.
+  if (run.state === "needs-you") return { text: run.live && (run.liveState === "paused" || run.liveState === "permission") ? run.live : run.unreported ? "It stopped without saying how it went." : run.report, tone: "muted" };
+  if (run.state === "scheduled" && run.live) return { text: run.live, tone: "muted" };
+  // At work: how it is doing; quiet or stalled says so first, and a stall is worth a look.
+  if (run.state === "running") return { text: run.live ? `${run.liveState === "stalled" ? "Stalled · " : run.liveState === "quiet" ? "Quiet · " : ""}${run.live}` : null, tone: run.liveState === "stalled" ? "warning" : "muted" };
+  // Done is how most runs end, so it says nothing extra; the ones that didn't work say so.
+  if (run.state === "failed") return { text: `Didn't work${run.report ? `: ${run.report}` : "."}`, tone: "warning" };
+  if (run.state === "cancelled") return { text: `Cancelled${run.report ? `: ${run.report}` : "."}`, tone: "muted" };
+  if (run.state === "missed") return { text: "Didn't start: hopkins was offline at the time.", tone: "muted" };
+  return { text: run.report, tone: "muted" };
+}
+
+/** Bold is for a question waiting on them; a pause, a sign-in or a permission says so in its line. */
+export function runAsks(run: Run): boolean {
+  return run.state === "needs-you" && !run.unreported && (!run.liveState || run.liveState === "working");
 }

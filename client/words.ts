@@ -23,7 +23,8 @@ export function sentenceCase(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-const urgent = (t: TaskItem) => t.state === "needs-you" || t.state === "missed";
+// A run they paused is theirs to resume when they like: it waits on the table, not in their hand.
+const urgent = (t: TaskItem) => (t.state === "needs-you" && t.live?.state !== "paused") || t.state === "missed";
 
 /** What needs the person now: reminders that went out, and tasks waiting on an answer. The badge shows this. */
 export function needsYou(view: TodayView): number {
@@ -33,7 +34,10 @@ export function needsYou(view: TodayView): number {
 /** Reminders to come and tasks hopkins will do, in time order. */
 export function upcoming(view: TodayView): Upcoming[] {
   const reminders: Upcoming[] = [...view.today, ...view.upcoming].map((item) => ({ kind: "reminder", at: item.dueAt ?? 0, item }));
-  const tasks: Upcoming[] = view.tasks.filter((t) => t.state === "scheduled").map((task) => ({ kind: "task", at: task.dueAt, task }));
+  const tasks: Upcoming[] = view.tasks
+    .filter((t) => t.state === "scheduled" || (t.state === "needs-you" && t.live?.state === "paused"))
+    // Queued goes as soon as there is room; paused waits for them, after everything with a time.
+    .map((task) => ({ kind: "task", at: task.live?.state === "queued" ? view.generatedAt : task.live?.state === "paused" ? Number.MAX_SAFE_INTEGER : task.dueAt, task }));
   return [...reminders, ...tasks].sort((a, b) => a.at - b.at);
 }
 
@@ -47,6 +51,8 @@ export function said(entry: Upcoming): string {
   const day = dayOf(entry);
   const time = (entry.kind === "reminder" ? entry.item.time : entry.task.time) ?? null;
   if (!day || !time) return `${text}, ${entry.kind === "reminder" ? entry.item.when : entry.task.when}`;
+  if (entry.kind === "task" && entry.task.live?.state === "queued") return `${text}, when there is room`;
+  if (entry.kind === "task" && entry.task.live?.state === "paused") return `${text} (paused)`;
   if (day === "Today") return `${text} at ${time}`;
   return `${text}, ${day === "Tomorrow" ? "tomorrow" : day} at ${time}`;
 }
@@ -59,7 +65,8 @@ export function headline(view: TodayView): { title: string; detail: string | nul
   const reminders = view.waiting.length;
   const tasks = view.tasks.filter(urgent).length;
   const ahead = upcoming(view);
-  const next = ahead[0] ?? null;
+  // What comes next by itself: a paused run waits for them, so it is never "then".
+  const next = ahead.find((e) => !(e.kind === "task" && e.task.live?.state === "paused")) ?? null;
   if (reminders + tasks > 0) {
     const title =
       reminders && tasks
@@ -79,6 +86,9 @@ export function headline(view: TodayView): { title: string; detail: string | nul
     return { title: `Next: ${said(next)}.`, detail: more > 0 ? `${sentenceCase(number(more))} more later today.` : null };
   }
   if (next) return { title: "Nothing more today.", detail: `Next: ${said(next)}.` };
+  // A paused run is on the table: "nothing is scheduled" would hide it.
+  const paused = view.tasks.filter((t) => t.state === "needs-you" && t.live?.state === "paused").length;
+  if (paused) return { title: "Nothing needs you.", detail: `${sentenceCase(counted(paused, "run is", "runs are"))} paused until you resume ${paused === 1 ? "it" : "them"}.` };
   return { title: "All clear.", detail: view.noticed.length ? null : "Nothing is scheduled." };
 }
 
@@ -119,4 +129,26 @@ export function spokenAt(day: string | null | undefined, time: string | null | u
   if (day === "Today") return `at ${time}`;
   if (day === "Yesterday" || day === "Tomorrow") return `${day.toLowerCase()} at ${time}`;
   return `on ${day} at ${time}`;
+}
+
+/** A question that reads as yes or no ("Merge PR #12 now?"): it gets those two answers as buttons. */
+export function yesNoQuestion(question: string | null | undefined): boolean {
+  const q = (question ?? "").trim();
+  // The card shows a question up to 280 characters: Yes and No only for one read whole.
+  if (q.length === 0 || q.length > 280 || !/\?$/.test(q)) return false;
+  // The question is its last sentence: "PR #12 is green. Merge it now?"
+  const last = q.split(/(?<=[.!])\s+/).pop() ?? q;
+  return last.length <= 160 && !/\bor\b/i.test(last) && /^(should|shall|can|could|do|does|did|is|are|was|were|will|would|may|ok|okay|go|merge|deploy|proceed|continue|send|buy|pay|book|submit|delete|ship|publish|apply|restart|want)\b/i.test(last);
+}
+
+/**
+ * Whether the card shows the answer they gave. An answer the run took up is old news once it asks
+ * again. One passed on but not yet taken up (sent) still shows under its question, so nobody answers
+ * it twice. hopkins itself sends only the answer to the question on the card, and none that failed
+ * once the run works again.
+ */
+export function answerShown(task: Pick<TaskItem, "state" | "answer">): boolean {
+  const a = task.answer;
+  if (!a) return false;
+  return !(a.state === "picked-up" && task.state !== "running");
 }

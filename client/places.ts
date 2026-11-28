@@ -23,7 +23,8 @@ export interface Desk {
   basket: BasketCard[];
 }
 
-const urgent = (t: TaskItem) => t.state === "needs-you" || t.state === "missed";
+// A run they paused is theirs to resume when they like: it waits on the table, not in their hand.
+const urgent = (t: TaskItem) => (t.state === "needs-you" && t.live?.state !== "paused") || t.state === "missed";
 
 /**
  * The desk for a Today view. The hand holds exactly what `needsYou` counts (the headline and the
@@ -176,7 +177,8 @@ export function priceTag(usd: number | null | undefined): { label: string; exact
 export function machineLine(view: TodayView): { title: string; detail: string | null } {
   const items = view.machine ?? [];
   if (items.length === 0) {
-    const next = upcoming(view).find((e) => e.kind === "task");
+    // What it will run next by itself: a paused run waits for them, so it is never "next".
+    const next = upcoming(view).find((e) => e.kind === "task" && e.task.live?.state !== "paused");
     return { title: "Idle", detail: next ? `Next: ${said(next)}.` : null };
   }
   if (items.length === 1) return { title: "Working on one thing", detail: null };

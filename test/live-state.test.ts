@@ -23,7 +23,7 @@ import { Recaps } from "../server/recaps";
 import { Reminders } from "../server/reminders";
 import { Retries } from "../server/retry";
 import { Store } from "../server/store";
-import { parseReport, TaskRunner, Tasks, type TaskPort } from "../server/tasks";
+import { parseReport, TaskRunner, Tasks, WAIT_MS, type TaskPort } from "../server/tasks";
 import { buildToday } from "../server/today";
 import { agentSource, FakeClock, FakeThread, idFactory, instantSleep, setup, testConfig, tmpDir } from "./helpers";
 
@@ -110,12 +110,13 @@ describe("answering a task in its run", () => {
     expect(w.told.map((t) => t.state)).toEqual(["needs-you", "done"]);
   });
 
-  it("gives an answer that comes hours later the whole time limit", async () => {
+  it("follows an answer that comes hours later with no clock on it", async () => {
     const w = world();
     const task = await w.asking();
-    w.env.clock.advance(3 * 3_600_000); // past the 90-minute limit counted from the first start
+    w.env.clock.advance(3 * 3_600_000); // long past the 90 minutes runs used to be allowed
     w.runner.onResumed(task.agentId!);
-    expect(w.port.waits).toEqual([{ agentId: task.agentId!, timeoutMs: 90 * 60_000 }]);
+    // One wait for the turn's end; when it ends with the turn still going, it is simply made again.
+    expect(w.port.waits).toEqual([{ agentId: task.agentId!, timeoutMs: WAIT_MS }]);
   });
 
   it("leaves a run that is done or cancelled alone when it starts another turn", async () => {
@@ -134,19 +135,19 @@ describe("answering a task in its run", () => {
   });
 });
 
-describe("a run past its time limit", () => {
-  it("records how it really ended once it does", async () => {
+describe("a run still going when a wait for it ends", () => {
+  it("keeps running, and records how it really ended once it does", async () => {
     const w = world();
     w.port.first = { status: "timeout", lastMessage: null };
     const task = await w.asking();
-    expect(task).toMatchObject({ state: "failed", timedOut: true });
+    expect(task.state).toBe("running"); // never "failed: still going after 90 minutes"
+    expect(task.timedOut).toBeUndefined();
     // It kept going, and has now finished: the turn-end hook says so.
     w.runner.onTurnFinished(task.agentId!);
     w.port.end({ status: "idle", lastMessage: report("done", "Merged and deployed.") });
     await settle();
     expect(w.tasks.get(task.id)).toMatchObject({ state: "done", report: "Merged and deployed." });
-    expect(w.tasks.get(task.id)!.timedOut).toBeUndefined();
-    expect(w.told.map((t) => t.state)).toEqual(["failed", "done"]);
+    expect(w.told.map((t) => t.state)).toEqual(["done"]);
   });
 
   it("leaves a run that failed by its own report failed when a late hook arrives", async () => {
@@ -427,12 +428,21 @@ describe("what the reviewer found in the fixes", () => {
   });
 });
 
-describe("what the reviewer found in the second fixes", () => {
+/** A task an older release failed at its 90-minute limit while the run went on (state it left behind). */
+async function pastLimit(w: ReturnType<typeof world>): Promise<Task> {
+  w.port.first = { status: "timeout", lastMessage: null };
+  const t = await w.asking();
+  const failed: Task = { ...t, state: "failed", timedOut: true, error: "still going after 90 minutes; it may yet finish, so open the run to see", reported: "failed:0:still going after 90 minutes; it may yet finish, so open the run to see", finishedAt: w.env.clock.now() };
+  w.env.store.putTask(failed);
+  w.told.push(failed);
+  return failed;
+}
+
+describe("what the reviewer found in the second fixes (state left by releases before 0.5)", () => {
   it("does not reopen a run past its limit that they stopped, when hopkins restarts later", async () => {
     // The reviewer's S1: past its time limit, they open the run and stop it; days later hopkins restarts.
     const w = world();
-    w.port.first = { status: "timeout", lastMessage: null };
-    const t = await w.asking();
+    const t = await pastLimit(w);
     w.runner.onTurnFinished(t.agentId!, true); // they pressed stop
     w.env.clock.advance(2 * 86_400_000);
     w.runner.recover(); // the run is loaded and idle, with half a sentence as its last words
@@ -445,8 +455,7 @@ describe("what the reviewer found in the second fixes", () => {
   it("follows a run past its limit when they type into it (the turn it replaces is cancelled)", async () => {
     // The reviewer's round-four scenario: they open the run, as the message says, and type guidance.
     const w = world();
-    w.port.first = { status: "timeout", lastMessage: null };
-    const t = await w.asking(); // "still going after 90 minutes", told
+    const t = await pastLimit(w); // "still going after 90 minutes", told
     const agent = t.agentId!;
     w.runner.onTurnFinished(agent, true); // Paseo cancels T1…
     w.runner.onResumed(agent); // …and starts T2 in its place
@@ -462,8 +471,7 @@ describe("what the reviewer found in the second fixes", () => {
   it("records a turn in a stopped run past its limit, even when hopkins missed its start", async () => {
     // The reviewer's round-five scenario: stopped (timedOut false), then a turn whose start hopkins missed.
     const w = world();
-    w.port.first = { status: "timeout", lastMessage: null };
-    const t = await w.asking();
+    const t = await pastLimit(w);
     w.runner.onTurnFinished(t.agentId!, true); // they stop it
     w.runner.onTurnFinished(t.agentId!); // a later turn completed; its start came while hopkins was restarting
     w.port.end({ status: "idle", lastMessage: report("done", "PR opened: #412.") });
@@ -473,16 +481,16 @@ describe("what the reviewer found in the second fixes", () => {
   });
 
   it("records a run past its limit whose turn then failed, rather than calling it gone", async () => {
-    // The reviewer's S2: the run went on past its limit, and its turn then failed (the API was overloaded).
+    // The reviewer's S2: the run went on past its limit, and its turn then failed. An overloaded API is
+    // a crash now (the run is picked up again); a real error is still recorded as the failure it is.
     const w = world();
-    w.port.first = { status: "timeout", lastMessage: null };
-    const t = await w.asking();
+    const t = await pastLimit(w);
     w.runner.onTurnFinished(t.agentId!); // the turn-end hook, outcome "failed"
-    w.port.end({ status: "error", lastMessage: null, error: "Claude API error: overloaded" });
+    w.port.end({ status: "error", lastMessage: null, error: "Claude API error: the request was not valid JSON" });
     await settle();
-    expect(w.tasks.get(t.id)).toMatchObject({ state: "failed", error: "Claude API error: overloaded" });
+    expect(w.tasks.get(t.id)).toMatchObject({ state: "failed", error: "Claude API error: the request was not valid JSON" });
     expect(w.tasks.get(t.id)!.timedOut).toBeUndefined();
-    expect(w.told.map((x) => x.error)).toEqual([expect.stringMatching(/still going after/), "Claude API error: overloaded"]);
+    expect(w.told.map((x) => x.error)).toEqual([expect.stringMatching(/still going after/), "Claude API error: the request was not valid JSON"]);
   });
 });
 
@@ -682,11 +690,13 @@ describe("the whole plugin, when they answer a task in its run", () => {
   });
 });
 
-describe("a run that hit a usage limit, then went on by itself", () => {
+describe("a run whose turn broke on an error, then went on by itself", () => {
   // 18 Nov 2026: a run hit the account's usage limit, so hopkins put the task up for another try. A
   // second later the run carried on (on another account). Then the retry started a second run on the
-  // same work, while the first run's own report went unheard.
-  const LIMIT = "You've hit your individual spend limit · your 5-hour limit resets 5:30pm (Asia/Kolkata)";
+  // same work, while the first run's own report went unheard. Usage limits now wait for their reset
+  // (see supervisor.test.ts); any other error that breaks a turn still goes through the retry rules,
+  // and a run that goes on by itself after one is still taken back.
+  const LIMIT = "Claude API error: the model's reply could not be read";
   const DONE = report("done", "Fixed on a branch; nothing shipped.");
 
   /** A model whose answer comes when the test says so. */
@@ -766,8 +776,8 @@ describe("a run that hit a usage limit, then went on by itself", () => {
     expect(w.tasks.get(id)).toMatchObject({ state: "scheduled", retry: { from: agent } });
     w.runner.onResumed(agent); // they type "continue" once another account is free
     expect(w.tasks.get(id)).toMatchObject({ state: "running", startedAt: w.env.clock.now() });
-    // Not a one-minute wait that then says "still going after 90 minutes" while it works.
-    expect(w.port.waits.at(-1)).toEqual({ agentId: agent, timeoutMs: 90 * 60_000 });
+    // A wait with no clock on it: the run is at work.
+    expect(w.port.waits.at(-1)).toEqual({ agentId: agent, timeoutMs: WAIT_MS });
   });
 
   it("dates a run it took back by when it was set for, not by the retry it called off", async () => {
@@ -836,7 +846,7 @@ describe("a run that hit a usage limit, then went on by itself", () => {
     expect(w.tasks.get(r.task.id)).toMatchObject({ state: "running", agentId: agent, startedAt: w.env.clock.now(), tries: earlier });
     expect(w.tasks.get(r.task.id)!.error).toBeUndefined();
     expect(w.view().tasks.find((x) => x.id === r.task.id)).toMatchObject({ state: "running" });
-    expect(w.port.waits.at(-1)).toEqual({ agentId: agent, timeoutMs: 90 * 60_000 });
+    expect(w.port.waits.at(-1)).toEqual({ agentId: agent, timeoutMs: WAIT_MS });
     w.port.end({ status: "idle", lastMessage: DONE });
     await settle();
     expect(w.tasks.get(r.task.id)).toMatchObject({ state: "done" });

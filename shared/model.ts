@@ -135,7 +135,121 @@ export type RecapKind = z.infer<typeof RecapKindSchema>;
 export const TaskStateSchema = z.enum(["scheduled", "running", "needs-you", "done", "failed", "missed", "cancelled"]);
 export type TaskState = z.infer<typeof TaskStateSchema>;
 
-export const TaskSchema = z.object({
+// What hopkins knows of a task's runs as it supervises them (0.5). Every field is optional, and a
+// value this release cannot read is dropped rather than failing the file, so a later release's
+// state still loads here, and an older release reads the file too (it drops these keys).
+
+export const WeightSchema = z.enum(["light", "normal", "heavy"]);
+export type Weight = z.infer<typeof WeightSchema>;
+
+/** What the task's creator declared about how its runs are watched. All optional. */
+export const SuperviseSchema = z.looseObject({
+  /** A hard cap on how long it may work, in minutes. No cap when absent. */
+  maxMinutes: z.number().int().min(1).optional(),
+  /** Minutes without any sign of progress before it counts as quiet, then as stalled. */
+  quietMinutes: z.number().int().min(1).optional(),
+  stallMinutes: z.number().int().min(1).optional(),
+  /** A file the run keeps its progress in: its time counts as activity, its first heading is the phase. */
+  progressFile: z.string().optional(),
+  /** A git folder whose commits count as progress, and the branch to watch there. */
+  repo: z.string().optional(),
+  branch: z.string().optional(),
+  weight: WeightSchema.optional(),
+  /** Checked before it starts: "gpg", "net:https://…", "file:/path", or a check named in settings. */
+  needs: z.array(z.string()).optional(),
+  /** How many times a run that died is picked up again before the task fails. */
+  maxResumes: z.number().int().min(0).max(20).optional(),
+});
+export type Supervise = z.infer<typeof SuperviseSchema>;
+
+/** How a running run looks: working, quiet (no sign for a while) or stalled (none for longer). */
+export const LiveSchema = z.looseObject({
+  state: z.string(),
+  since: z.number(),
+  lastActivityAt: z.number().optional(),
+  /** The last sign of progress, in a few words ("wrote its transcript", "commit 'Add the reel'"). */
+  activity: z.string().optional(),
+  /** The phase its progress file names. */
+  phase: z.string().optional(),
+  commit: z.object({ sha: z.string(), subject: z.string(), at: z.number() }).optional(),
+  checkedAt: z.number().optional(),
+  /** In a turn, or waiting on its own background jobs. */
+  busy: z.boolean().optional(),
+  background: z.number().optional(),
+  /** It ended a turn without its report and was asked, once, to give it. */
+  nudgedAt: z.number().optional(),
+  /** The user was told it stalled (once per stall). */
+  stalledToldAt: z.number().optional(),
+  /** hopkins's own last message into the run (a resume, a nudge, an answer passed on). */
+  sentAt: z.number().optional(),
+});
+export type Live = z.infer<typeof LiveSchema>;
+
+/**
+ * Why a task is waiting, and until when. resume: its run died and is picked up again; limit: a
+ * usage limit, until it resets; capacity: queued until there is room; sign-in and prereq: a step
+ * only the user can do; paused: they paused it.
+ */
+export const HoldSchema = z.looseObject({
+  kind: z.string(),
+  since: z.number(),
+  until: z.number().optional(),
+  /** Why, in a few words for the user. */
+  why: z.string().optional(),
+  /** When the usage limit it waits for resets (said at view time: "tomorrow" is relative to now). */
+  resetAt: z.number().optional(),
+  /** The exact step for the user. */
+  step: z.string().optional(),
+  /** The run to continue when it is picked up. */
+  agentId: z.string().optional(),
+  /** The prerequisites that are missing. */
+  missing: z.array(z.string()).optional(),
+  /** The provider whose sign-in failed. */
+  provider: z.string().optional(),
+  /** Times hopkins tried to carry on while it waited (a sign-in that still failed). */
+  attempts: z.number().optional(),
+  /** When the user was told about this wait (so a long one is told once). */
+  toldAt: z.number().optional(),
+  /** The user is waiting on this one (they fixed what it waited for, or asked for it): it goes first. */
+  byUser: z.boolean().optional(),
+  /** Picked up again only when there is room: since when, and why there is none (it keeps its own reason above). */
+  room: z.object({ since: z.number(), why: z.string() }).optional(),
+});
+export type Hold = z.infer<typeof HoldSchema>;
+
+/** Every agent a task started, oldest first: how it began and how it ended. */
+export const RunRecordSchema = z.looseObject({
+  agentId: z.string(),
+  startedAt: z.number(),
+  /** first, retry, resume (a new run told where the earlier ones got to), run-now, adopted. */
+  how: z.string(),
+  endedAt: z.number().optional(),
+  /** done, failed, needs-you, dead, cancelled, stopped. */
+  outcome: z.string().optional(),
+  why: z.string().optional(),
+  /** When it was picked up again in place, and why it had stopped. */
+  resumes: z.array(z.object({ at: z.number(), why: z.string() })).optional(),
+  /** When hopkins archived it in Paseo (finished long ago; never deleted). */
+  archivedAt: z.number().optional(),
+});
+export type RunRecord = z.infer<typeof RunRecordSchema>;
+
+/** An answer the user gave from Today or the thread, passed into the run as their message. */
+export const RelayedAnswerSchema = z.looseObject({
+  text: z.string(),
+  at: z.number(),
+  via: z.string(),
+  messageId: z.string(),
+  /** sending, sent (Paseo took it), picked-up (the run started on it), failed. */
+  state: z.string(),
+  sentAt: z.number().optional(),
+  error: z.string().optional(),
+  /** Which question it answered (askedId of the report it answered): an answer to an earlier question is not shown under a new one. */
+  asked: z.string().optional(),
+});
+export type RelayedAnswer = z.infer<typeof RelayedAnswerSchema>;
+
+export const TaskSchema = z.looseObject({
   id: z.string(),
   /** What to do, short, in the user's words ("web check-in for the Goa flight"). */
   text: z.string(),
@@ -192,6 +306,28 @@ export const TaskSchema = z.object({
   costUsd: z.number().min(0).optional(),
   /** The last running total read from its current agent, so each reading adds only what is new. */
   costSeen: z.object({ agentId: z.string(), usd: z.number() }).optional(),
+  // --- supervision (0.5) ---
+  supervise: SuperviseSchema.optional().catch(undefined),
+  live: LiveSchema.optional().catch(undefined),
+  hold: HoldSchema.optional().catch(undefined),
+  runs: z.array(RunRecordSchema).optional().catch(undefined),
+  answer: RelayedAnswerSchema.optional().catch(undefined),
+  /** Times its runs were picked up again after dying, since it last finished or was answered. */
+  resumes: z.number().int().min(0).optional().catch(undefined),
+  /** Times it waited for a usage limit to reset (not tries: nothing was wrong with the task). */
+  limitWaits: z.number().int().min(0).optional().catch(undefined),
+  /** Time its runs spent at work in earlier stretches of this go (a stretch ends when it waits on them, a reset, or dies). */
+  workedMs: z.number().min(0).optional().catch(undefined),
+  /**
+   * When the stretch at work under way began: set only when a run really starts working (a start, a
+   * pick-up, a turn they started), never when hopkins re-reads how a finished turn ended. Absent: no
+   * stretch is open, so nothing is added when it settles.
+   */
+  stretchAt: z.number().optional().catch(undefined),
+  /** While a new run is being started: the hold it started from, put back if the start fails (so a resume stays a resume). */
+  startingFrom: HoldSchema.optional().catch(undefined),
+  /** Times hopkins carried it on by itself after an expired sign-in, in this outage (bounded: then only the user can). */
+  signInAutos: z.number().int().min(0).optional().catch(undefined),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
@@ -237,6 +373,10 @@ export const DeliverySchema = z.object({
   unseenWhenReplaced: z.boolean().optional(),
   message: z.string().optional(),
   error: z.string().optional(),
+  /** News that can wait out quiet hours (a run's progress, a task done); what needs them, or failed, never waits. */
+  canWait: z.boolean().optional().catch(undefined),
+  /** Held through quiet hours and told in one note with the rest: that note's id. */
+  mergedInto: z.string().optional().catch(undefined),
 });
 export type Delivery = z.infer<typeof DeliverySchema>;
 
@@ -324,6 +464,9 @@ export const MachineItemSchema = z.object({
   agentId: z.string().nullable().optional(),
   progress: z.object({ done: z.number(), total: z.number() }).nullable().optional(),
   scope: ScopeSchema.optional(),
+  /** A task's run: how it is doing in one line ("3h 12m · last activity 2 min ago"), and whether it is quiet or stalled. */
+  line: z.string().nullable().optional(),
+  live: z.enum(["working", "quiet", "stalled"]).optional(),
 });
 export type MachineItem = z.infer<typeof MachineItemSchema>;
 
@@ -390,6 +533,26 @@ export type DayPile = z.infer<typeof DayPileSchema>;
 
 // ---------------------------------------------------------------------------
 // The Today view, as sent to the app.
+
+/** A task's supervision, as the app shows it. */
+export const TaskLiveViewSchema = z.object({
+  state: z.enum(["working", "quiet", "stalled", "resuming", "limit", "queued", "sign-in", "prereq", "paused", "permission"]),
+  /** One line, ready to show: "3h 12m · last activity 2 min ago · phase: build". */
+  line: z.string(),
+  /** How long it has been working ("3h 12m"), while it runs. */
+  elapsed: z.string().nullable(),
+  /** "2 min ago", from its last sign of progress. */
+  lastActivity: z.string().nullable(),
+  phase: z.string().nullable(),
+  /** The last commit it made, when its folder is watched. */
+  commit: z.string().nullable(),
+  /** While it waits: until when, said after a verb ("at 12:43am", "tomorrow at 9am"), and the step only they can do. */
+  until: z.string().nullable(),
+  step: z.string().nullable(),
+  /** Times it was picked up again after dying. */
+  resumes: z.number(),
+});
+export type TaskLiveView = z.infer<typeof TaskLiveViewSchema>;
 
 export const TodayItemSchema = z.object({
   id: z.string(),
@@ -483,6 +646,21 @@ export const TodayViewSchema = z.object({
         retry: z.object({ n: z.number(), of: z.number(), why: z.string() }).nullable().optional(),
         /** Every try so far, oldest first, as people say the time ("10:47pm"). */
         tries: z.array(z.object({ when: z.string(), outcome: z.enum(["done", "failed", "needs-you"]), why: z.string() })).optional(),
+        /**
+         * What the supervisor sees: working, quiet or stalled while it runs; while it waits, why
+         * (resuming, a usage limit, queued, a sign-in or another step only they can do, paused).
+         */
+        live: TaskLiveViewSchema.nullable().optional(),
+        /** The question it asks, when it asked one (needs-you with its report). */
+        question: z.string().nullable().optional(),
+        /** Which question that is: sent back with an answer, so a card showing an older one cannot answer a newer one. */
+        askedId: z.string().nullable().optional(),
+        /** An answer they gave from here or the thread, and whether it reached the run. */
+        answer: z.object({ text: z.string(), state: z.enum(["sending", "sent", "picked-up", "failed"]), when: z.string(), error: z.string().nullable() }).nullable().optional(),
+        /** What can be done with it right now. */
+        controls: z.object({ answer: z.boolean(), stop: z.boolean(), pause: z.boolean(), resume: z.boolean(), nudge: z.boolean() }).optional(),
+        /** Every run it started, oldest first. */
+        runs: z.array(z.object({ when: z.string(), how: z.string(), outcome: z.string().nullable(), why: z.string().nullable(), resumes: z.number() })).optional(),
       }),
     )
     .default([]),
@@ -499,9 +677,19 @@ export type TodayView = z.infer<typeof TodayViewSchema>;
 
 export const TaskActionSchema = z.object({
   id: z.string(),
-  action: z.enum(["cancel", "run-now"]),
+  /** stop: end the run and cancel the task; pause: end the run's turn and hold it; resume: carry on now; nudge: ask a stalled run where it is. */
+  action: z.enum(["cancel", "run-now", "stop", "pause", "resume", "nudge"]),
 });
 export type TaskAction = z.infer<typeof TaskActionSchema>;
+
+/** An answer to a run that asked something, from the Today card. */
+export const TaskAnswerSchema = z.object({
+  id: z.string(),
+  text: z.string().min(1).max(4_000),
+  /** The askedId of the question the card showed. */
+  asked: z.string().max(64).optional(),
+});
+export type TaskAnswer = z.infer<typeof TaskAnswerSchema>;
 
 export const SuggestionActionSchema = z.object({
   id: z.string(),

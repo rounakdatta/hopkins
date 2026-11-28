@@ -2,18 +2,18 @@
 // A face uses the reminder's own words, never rewritten; the care is in what else sits on it,
 // which is only what helps at a glance. Everything else waits in the picked-up card.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { useRpc } from "@getpaseo/plugin/client";
-import { Icon, useToast } from "@getpaseo/plugin/client/ui";
+import { Icon, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { answerLabel, type AnswerValue, type CheckinBrief } from "../shared/checkin";
-import type { BasketEntry, MachineItem, PileCard, TodayItem, TodayView } from "../shared/model";
-import { backfillRpc, taskRpc } from "../shared/rpc";
+import type { BasketEntry, MachineItem, PileCard, TaskAction, TodayItem, TodayView } from "../shared/model";
+import { backfillRpc, taskAnswerRpc, taskRpc } from "../shared/rpc";
 import { Answer, lastMood, Record, useAnswer } from "./checkin";
 import { Button, ChoiceRow, CompleteRing, Spinner, Tag, type } from "./kit";
 import { clip, machineSince, outcomeLine, outcomeTitle, priceTag } from "./places";
 import { fade, space, tabular, type Colors } from "./theme";
-import { spokenAt, type TaskItem } from "./words";
+import { answerShown, spokenAt, yesNoQuestion, type TaskItem } from "./words";
 
 export type Act = (id: string, action: "done" | "drop" | "snooze", until?: string) => Promise<boolean>;
 export type OpenAgent = ((agentId: string) => void) | null;
@@ -79,12 +79,12 @@ function repeatWithout(repeat: string | null, time: string | null | undefined): 
   return repeat && time && repeat.endsWith(` at ${time}`) ? repeat.slice(0, -` at ${time}`.length) : repeat;
 }
 
-/** Cancel or start a task, with the result said in a toast. */
+/** Cancel, start, stop, pause, resume or nudge a task, with the result said in a toast. */
 export function useTaskAction(id: string) {
   const remote = useRpc(taskRpc);
   const toast = useToast();
   const [busy, setBusy] = useState(false);
-  const run = async (action: "cancel" | "run-now") => {
+  const run = async (action: TaskAction["action"]) => {
     setBusy(true);
     try {
       const result = await remote({ id, action });
@@ -206,15 +206,27 @@ export function AskFace(props: { item: TodayItem; ask: CheckinBrief; colors: Col
 
 /** The status a task says about itself, in a few words. */
 export function taskStatus(task: TaskItem): string {
+  const live = task.live;
   switch (task.state) {
     case "needs-you":
+      if (live?.state === "paused") return "Paused";
+      if (live?.state === "sign-in") return "Needs you: its sign-in expired";
+      if (live?.state === "prereq") return "Needs you before it can start";
+      if (live?.state === "permission") return "Needs you: a permission to allow or deny in the run";
       // Only a question is something to answer; a run that stopped without a word just needs a look.
       return task.unreported ? "Stopped without saying how it went" : "Needs your answer";
     case "missed":
       return `Didn't start ${spokenAt(task.day, task.time, task.when)}: hopkins was offline`;
     case "running":
+      // The line under it says how long it has been at it and when it last showed life: said once.
+      if (live?.state === "stalled") return "Stalled: it may be stuck";
+      if (live?.state === "quiet") return "Quiet for a while";
+      if (live?.elapsed) return `Working on it · ${live.elapsed}`;
       return task.time && task.day === "Today" ? `Working on it since ${task.time}` : "Working on it now";
     case "scheduled":
+      if (live?.state === "resuming") return live.until ? `Picking it up again ${live.until}` : "Picking it up again";
+      if (live?.state === "limit") return `Waiting for the usage limit · carries on ${live.until ?? "after its reset"}`;
+      if (live?.state === "queued") return "Queued: waiting for capacity";
       return task.retry ? `Trying again ${spokenAt(task.day, task.time, task.when)} · try ${task.retry.n} of ${task.retry.of}` : `hopkins will do this ${spokenAt(task.day, task.time, task.when)}`;
     case "done":
       return task.tries?.length ? `Done on try ${task.tries.length + 1}` : "Done";
@@ -225,34 +237,149 @@ export function taskStatus(task: TaskItem): string {
   }
 }
 
-/** A task that needs you: what it asks, and the way to answer it, on the card. */
+/** A task that needs you: what it asks, and the way to answer it, right on the card. */
 export function TaskHandFace(props: { task: TaskItem; colors: Colors; openAgent: OpenAgent }) {
   const { task, colors } = props;
   const { busy, run } = useTaskAction(task.id);
   const openRun = task.agentId && props.openAgent ? () => props.openAgent!(task.agentId!) : null;
+  const step = task.live?.step ?? null;
+  // The status line already says a pause or a permission; the report would only say it again.
+  const said = task.question ?? (step || task.live?.state === "paused" || task.live?.state === "permission" ? null : task.report);
+  const resume = task.controls?.resume ?? false;
   return (
     <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12, opacity: busy ? 0.5 : 1 }}>
       <View style={{ width: 22, alignItems: "center", paddingTop: 1 }}>
-        <Icon name={task.state === "missed" ? "Clock" : "CircleAlert"} size={19} color={colors.statusWarning} />
+        <Icon name={task.state === "missed" ? "Clock" : task.live?.state === "sign-in" || task.live?.state === "prereq" ? "KeyRound" : "CircleAlert"} size={19} color={colors.statusWarning} />
       </View>
       <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
         <Text style={[type.title, { color: colors.foreground, fontWeight: "500" }]}>{task.text}</Text>
         <Text style={[type.meta, { color: colors.statusWarning, fontWeight: "600" }]}>{taskStatus(task)}</Text>
-        {task.report ? <Text style={[type.meta, { color: colors.foreground }]}>{clip(task.report, 280)}</Text> : null}
+        {step ? <Text style={[type.meta, { color: colors.foreground }]}>{clip(step, 320)}</Text> : null}
+        {said ? <Text style={[type.meta, { color: colors.foreground }]}>{clip(said, 280)}</Text> : null}
+        <AnswerState task={task} colors={colors} />
+        {task.controls?.answer ? (
+          <View style={{ paddingTop: 4 }}>
+            <AnswerBox task={task} colors={colors} compact />
+          </View>
+        ) : null}
         <View style={{ paddingTop: 4 }}>
           <ChoiceRow>
-            {task.state === "missed" ? (
-              <Button colors={colors} tone="primary" compact icon="Play" label="Do it now" disabled={busy} onPress={() => void run("run-now")} />
-            ) : openRun ? (
-              <Button colors={colors} tone="primary" compact icon="MessageCircle" label={task.unreported ? "Open the run" : "Answer in the run"} disabled={busy} onPress={openRun} />
+            {task.state === "missed" ? <Button colors={colors} tone="primary" compact icon="Play" label="Do it now" disabled={busy} onPress={() => void run("run-now")} /> : null}
+            {resume && task.state !== "missed" ? (
+              <Button colors={colors} tone={task.controls?.answer ? "secondary" : "primary"} compact icon={task.live?.state === "prereq" ? "RefreshCw" : "Play"} label={resumeLabel(task)} disabled={busy} onPress={() => void run("resume")} />
             ) : null}
-            <Button colors={colors} tone="quiet" compact label="Cancel" a11y={`Cancel ${task.text}`} disabled={busy} onPress={() => void run("cancel")} />
+            {openRun ? <Button colors={colors} tone="secondary" compact icon="MessageCircle" label="Open the run" disabled={busy} onPress={openRun} /> : null}
+            <Button colors={colors} tone="quiet" compact label={task.controls?.stop ? "Stop" : "Cancel"} a11y={`${task.controls?.stop ? "Stop" : "Cancel"} ${task.text}`} disabled={busy} onPress={() => void run(task.controls?.stop ? "stop" : "cancel")} />
           </ChoiceRow>
         </View>
       </View>
       <Exceptions colors={colors} scope={task.scope} />
     </View>
   );
+}
+
+/** The words on the button that carries a waiting task on, by what it waits for. */
+function resumeLabel(task: TaskItem): string {
+  switch (task.live?.state) {
+    case "prereq":
+      return "Check again";
+    case "sign-in":
+      return "I've signed in";
+    case "paused":
+      return "Resume";
+    case "queued":
+      return "Start anyway";
+    default:
+      return task.state === "failed" ? "Resume" : task.unreported ? "Carry on" : "Resume now";
+  }
+}
+
+/**
+ * Answering a run from the card: a few words (or Yes / No for a yes-or-no question), passed into
+ * the run as their own message. The run takes it up at once; the card then shows it working.
+ */
+export function AnswerBox(props: { task: TaskItem; colors: Colors; compact?: boolean; onSent?: () => void }) {
+  const { task, colors } = props;
+  const remote = useRpc(taskAnswerRpc);
+  const toast = useToast();
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const field = useRef<{ focus?: () => void } | null>(null);
+  const send = async (words: string) => {
+    const said = words.trim();
+    if (!said || busy) return;
+    setBusy(true);
+    try {
+      // The question this card shows goes with it: if the run has asked something else since, hopkins says so instead of answering that.
+      const r = await remote({ id: task.id, text: said, ...(task.askedId ? { asked: task.askedId } : {}) });
+      if (r.ok) {
+        setText("");
+        toast.show(r.message, { variant: "success" });
+        props.onSent?.();
+      } else toast.error(r.message);
+    } catch {
+      toast.error("Couldn't reach hopkins. Try again in a moment.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <View style={{ gap: space.s }}>
+      {yesNoQuestion(task.question) ? (
+        <ChoiceRow>
+          <Button colors={colors} tone="primary" compact icon="Check" label="Yes" a11y={`Answer yes: ${task.question}`} disabled={busy} onPress={() => void send("Yes")} />
+          <Button colors={colors} tone="secondary" compact label="No" a11y={`Answer no: ${task.question}`} disabled={busy} onPress={() => void send("No")} />
+        </ChoiceRow>
+      ) : null}
+      <View style={{ flexDirection: "row", alignItems: "flex-end", gap: space.s }}>
+        {/* The card picks itself up when pressed; a press on the field is the field's: it gets the caret. */}
+        <Pressable accessible={false} onPress={() => field.current?.focus?.()} style={{ flex: 1 }}>
+        <TextInput
+          ref={field as never}
+          value={text}
+          onChangeText={setText}
+          placeholder={yesNoQuestion(task.question) ? "Or say more…" : "Answer it here…"}
+          placeholderTextColor={colors.foregroundMuted}
+          multiline
+          editable={!busy}
+          maxLength={4_000}
+          accessibilityLabel={`Your answer to ${task.text}`}
+          // On the web Enter sends (Shift+Enter is a new line); on a phone the Send button does.
+          onKeyPress={(e: { nativeEvent: { key: string; shiftKey?: boolean; isComposing?: boolean }; preventDefault?: () => void }) => {
+            // Enter that ends an input method's composition (Japanese, Chinese…) is the IME's, not a send.
+            if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault?.();
+              void send(text);
+            }
+          }}
+          style={{
+            minHeight: props.compact ? 36 : 40,
+            maxHeight: 120,
+            borderWidth: 1,
+            borderColor: colors.border,
+            borderRadius: 8,
+            paddingHorizontal: space.m,
+            paddingVertical: space.s,
+            color: colors.foreground,
+            fontSize: 14,
+            backgroundColor: colors.surface0,
+            outlineStyle: "none",
+          } as never}
+        />
+        </Pressable>
+        <Button colors={colors} tone="primary" compact icon="Send" label="Send" a11y={`Send your answer to ${task.text}`} disabled={busy || !text.trim()} onPress={() => void send(text)} />
+      </View>
+    </View>
+  );
+}
+
+/** What became of an answer they gave from here or the thread, while it matters. */
+function AnswerState(props: { task: TaskItem; colors: Colors }) {
+  const { task, colors } = props;
+  const a = task.answer;
+  if (!a || !answerShown(task)) return null;
+  const how = a.state === "sending" ? "passing it on…" : a.state === "failed" ? `couldn't pass it on${a.error ? `: ${a.error}` : ""}` : a.state === "picked-up" ? "it took it up" : "passed on to the run";
+  return <Mark colors={colors} icon={a.state === "failed" ? "TriangleAlert" : "Check"} tint={a.state === "failed" ? colors.statusWarning : colors.accent} text={`You answered “${clip(a.text, 80)}” ${a.when} · ${how}`} />;
 }
 
 // --- faces: the table, the machine, the basket ------------------------------------------------------
@@ -272,7 +399,9 @@ export function ComingFace(props: { colors: Colors } & ({ kind: "reminder"; item
       </View>
       <Text style={[type.title, { color: colors.foreground }]}>{text}</Text>
       {props.kind === "task" ? (
-        props.task.retry ? (
+        props.task.live ? (
+          <Mark colors={colors} icon={HOLD_ICON[props.task.live.state] ?? "Clock"} tint={props.task.live.state === "paused" ? colors.foregroundMuted : colors.accent} text={props.task.live.state === "paused" ? "Paused" : props.task.live.line} />
+        ) : props.task.retry ? (
           <Mark colors={colors} icon="RotateCcw" tint={colors.accent} text={`Trying again · try ${props.task.retry.n} of ${props.task.retry.of}`} />
         ) : (
           <Mark colors={colors} icon="Sparkles" tint={colors.accent} text="hopkins will do this" />
@@ -293,6 +422,9 @@ export function ComingFace(props: { colors: Colors } & ({ kind: "reminder"; item
   );
 }
 
+/** How a waiting task marks why it waits. */
+const HOLD_ICON: Record<string, string> = { resuming: "RotateCcw", limit: "Timer", queued: "Hourglass", paused: "Pause", "sign-in": "KeyRound", prereq: "KeyRound", permission: "KeyRound" };
+
 /** A card in the machine: what is being done, and since when. The drum above is its spinner. */
 export function MachineFace(props: { item: MachineItem; colors: Colors; ink?: string }) {
   const { item, colors } = props;
@@ -304,7 +436,7 @@ export function MachineFace(props: { item: MachineItem; colors: Colors; ink?: st
         style={[type.meta, { color: props.ink ?? colors.foregroundMuted, fontWeight: "600", paddingBottom: 5, marginBottom: 2, borderBottomWidth: 1, borderColor: fade(props.ink ?? colors.foregroundMuted, 0.18) }]}
         numberOfLines={1}
       >
-        {item.kind === "check" ? "Checking whether it can stop" : item.kind === "history" ? "Reading history" : "Working on it"}
+        {item.kind === "check" ? "Checking whether it can stop" : item.kind === "history" ? "Reading history" : item.live === "stalled" ? "Stalled" : item.live === "quiet" ? "Quiet" : "Working on it"}
       </Text>
       <Text style={[type.title, { color: colors.foreground }]}>{item.kind === "history" ? "Your past conversations" : item.text}</Text>
       {item.progress ? (
@@ -312,7 +444,13 @@ export function MachineFace(props: { item: MachineItem; colors: Colors; ink?: st
           <View style={{ width: `${Math.floor((item.progress.done / Math.max(1, item.progress.total)) * 100)}%`, height: 3, backgroundColor: colors.accent }} />
         </View>
       ) : null}
-      {since ? <Text style={[type.small, tabular, { color: colors.foregroundMuted }]}>{since}</Text> : null}
+      {item.line ? (
+        <Text style={[type.small, tabular, { color: item.live === "stalled" ? colors.statusWarning : colors.foregroundMuted, fontWeight: item.live === "stalled" ? "600" : "400" }]} numberOfLines={2}>
+          {item.line}
+        </Text>
+      ) : since ? (
+        <Text style={[type.small, tabular, { color: colors.foregroundMuted }]}>{since}</Text>
+      ) : null}
     </View>
   );
 }
@@ -525,18 +663,37 @@ export function TaskDetails(props: { task: TaskItem; colors: Colors; openAgent: 
   const { task, colors } = props;
   const { busy, run } = useTaskAction(task.id);
   const openRun = task.agentId && props.openAgent ? () => props.openAgent!(task.agentId!) : null;
-  const urgent = task.state === "needs-you" || task.state === "missed";
-  const act = async (action: "cancel" | "run-now") => {
+  const live = task.live ?? null;
+  const urgent = (task.state === "needs-you" && live?.state !== "paused") || task.state === "missed";
+  const stalled = live?.state === "stalled";
+  const c = task.controls;
+  const act = async (action: TaskAction["action"]) => {
     await run(action);
     props.onDone();
   };
+  const waitingSchedule = task.state === "scheduled" && !task.retry && !live;
   return (
     <>
-      <DetailHead colors={colors} kicker={taskStatus(task)} title={task.text} tint={urgent ? colors.statusWarning : undefined} />
+      <DetailHead colors={colors} kicker={taskStatus(task)} title={task.text} tint={urgent || stalled ? colors.statusWarning : undefined} />
       <View style={{ gap: 10 }}>
-        {task.state === "scheduled" && !task.retry ? (
+        {waitingSchedule ? (
           <Fact colors={colors} icon="Sparkles" tint={colors.accent}>
             <Text style={factText(colors)}>{task.time ? `At ${task.time}` : "Then"} an agent starts on it, and hopkins tells you how it went.</Text>
+          </Fact>
+        ) : null}
+        {live?.line && task.state === "running" ? (
+          <Fact colors={colors} icon="Activity" tint={stalled ? colors.statusWarning : colors.accent}>
+            <Text style={[factText(colors), tabular]}>{live.line}</Text>
+          </Fact>
+        ) : null}
+        {live && task.state !== "running" && live.state !== "prereq" && live.state !== "sign-in" ? (
+          <Fact colors={colors} icon={HOLD_ICON[live.state] ?? "Clock"} tint={colors.accent}>
+            <Text style={factText(colors)}>{live.line}</Text>
+          </Fact>
+        ) : null}
+        {live?.step ? (
+          <Fact colors={colors} icon="KeyRound" tint={colors.statusWarning}>
+            <Text style={factText(colors)}>{live.step}</Text>
           </Fact>
         ) : null}
         {task.retry ? (
@@ -544,21 +701,57 @@ export function TaskDetails(props: { task: TaskItem; colors: Colors; openAgent: 
             <Text style={factText(colors)}>The last try didn't work: {task.retry.why.replace(/\s+/g, " ")}</Text>
           </Fact>
         ) : null}
-        {task.report ? (
+        {task.question ? (
+          <Fact colors={colors} icon="MessageCircle" tint={colors.statusWarning}>
+            <Text style={factText(colors)}>{task.question}</Text>
+          </Fact>
+        ) : task.report && !live?.step && live?.state !== "paused" && live?.state !== "permission" ? (
           <Fact colors={colors} icon="FileText">
             <Text style={factText(colors)}>{task.report}</Text>
           </Fact>
         ) : null}
+        <AnswerState task={task} colors={colors} />
+        {c?.answer ? <AnswerBox task={task} colors={colors} onSent={props.onDone} /> : null}
         {task.tries?.length ? <Tries colors={colors} tries={task.tries} /> : null}
+        {task.runs && (task.runs.length > 1 || task.runs.some((r) => r.resumes > 0)) ? <RunHistory colors={colors} runs={task.runs} /> : null}
         {task.scope === "work" ? <Fact colors={colors} icon="Briefcase"><Text style={factText(colors)}>Work</Text></Fact> : null}
       </View>
       <ChoiceRow>
-        {task.state === "scheduled" || task.state === "missed" ? <Button colors={colors} tone={task.state === "missed" ? "primary" : "secondary"} icon="Play" label="Do it now" disabled={busy} onPress={() => void act("run-now")} /> : null}
-        {task.state === "needs-you" && openRun ? <Button colors={colors} tone="primary" icon="MessageCircle" label={task.unreported ? "Open the run" : "Answer in the run"} disabled={busy} onPress={openRun} /> : null}
-        {task.state === "running" && openRun ? <Button colors={colors} tone="secondary" icon="MessageCircle" label="Open the run" onPress={openRun} /> : null}
-        {task.state === "scheduled" || task.state === "missed" || task.state === "needs-you" ? <Button colors={colors} tone="quiet" label="Cancel" a11y={`Cancel ${task.text}`} disabled={busy} onPress={() => void act("cancel")} /> : null}
+        {task.state === "scheduled" && !task.controls?.resume ? <Button colors={colors} tone="secondary" icon="Play" label="Do it now" disabled={busy} onPress={() => void act("run-now")} /> : null}
+        {task.state === "missed" ? <Button colors={colors} tone="primary" icon="Play" label="Do it now" disabled={busy} onPress={() => void act("run-now")} /> : null}
+        {c?.resume ? <Button colors={colors} tone={c.answer ? "secondary" : "primary"} icon={live?.state === "prereq" ? "RefreshCw" : "Play"} label={resumeLabel(task)} disabled={busy} onPress={() => void act("resume")} /> : null}
+        {c?.nudge ? <Button colors={colors} tone={stalled ? "primary" : "secondary"} icon="Zap" label="Nudge it" a11y={`Ask ${task.text} where it is`} disabled={busy} onPress={() => void act("nudge")} /> : null}
+        {task.state === "failed" && task.agentId ? <Button colors={colors} tone="secondary" icon="RotateCcw" label="Try again" disabled={busy} onPress={() => void act("run-now")} /> : null}
+        {openRun ? <Button colors={colors} tone="secondary" icon="MessageCircle" label="Open the run" onPress={openRun} /> : null}
+        {c?.pause ? <Button colors={colors} tone="quiet" icon="Pause" label="Pause" a11y={`Pause ${task.text}`} disabled={busy} onPress={() => void act("pause")} /> : null}
+        {c?.stop ? (
+          <Button colors={colors} tone="quiet" icon="Square" label="Stop" a11y={`Stop ${task.text} and cancel it`} disabled={busy} onPress={() => void act("stop")} />
+        ) : task.state === "scheduled" || task.state === "missed" || task.state === "needs-you" ? (
+          <Button colors={colors} tone="quiet" label="Cancel" a11y={`Cancel ${task.text}`} disabled={busy} onPress={() => void act("cancel")} />
+        ) : null}
       </ChoiceRow>
     </>
+  );
+}
+
+const RUN_HOW: Record<string, string> = { first: "started", retry: "tried again", resume: "started afresh where the last stopped", again: "started again", adopted: "found still at work" };
+const RUN_OUTCOME: Record<string, string> = { done: "done", failed: "didn't work", "needs-you": "asked you", dead: "stopped", cancelled: "cancelled", stopped: "stopped by you", missed: "didn't start" };
+
+/** Every run the task started, oldest first: how each began, how often it was picked up again, how it ended. */
+function RunHistory(props: { colors: Colors; runs: NonNullable<TaskItem["runs"]> }) {
+  return (
+    <Fact colors={props.colors} icon="History">
+      <View style={{ gap: 4 }}>
+        {props.runs.map((r, i) => (
+          <Text key={i} style={factText(props.colors)}>
+            <Text style={tabular}>{r.when}</Text>: {RUN_HOW[r.how] ?? r.how}
+            {r.resumes ? `, picked up again ${r.resumes === 1 ? "once" : `${r.resumes} times`}` : ""}
+            {r.outcome ? `; ${RUN_OUTCOME[r.outcome] ?? r.outcome}` : ""}
+            {r.why && r.outcome !== "done" ? ` (${clip(r.why, 120)})` : ""}
+          </Text>
+        ))}
+      </View>
+    </Fact>
   );
 }
 

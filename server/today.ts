@@ -9,7 +9,8 @@ import type { Reminders } from "./reminders";
 import { brief } from "./checkins";
 import { basketToday, machineNow, waitingOnYou } from "./desk";
 import { anyRuns } from "./runs";
-import type { Tasks } from "./tasks";
+import { askedIdOf, atPhrase, type Tasks } from "./tasks";
+import { controlsOf, liveOf, questionOf } from "./supervision-view";
 
 export interface Health {
   running: boolean;
@@ -139,17 +140,37 @@ export function buildToday(store: Store, reminders: Reminders, cfg: Config, now:
       state: t.state,
       dueAt: t.dueAt,
       when: tasks!.describe(t, now),
-      // Running: since when it has been working (an answer restarts that), not when it was due.
-      day: dayLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.dueAt, cfg.tz, now),
-      time: timeLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.dueAt, cfg.tz, cfg.clock),
+      // Running: since when it has been working (an answer restarts that), not when it was due. Paused:
+      // a group of its own on the table, never under a day it no longer keeps.
+      day: t.state === "needs-you" && t.hold?.kind === "paused" ? "Paused" : dayLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.hold?.kind === "capacity" ? now : t.dueAt, cfg.tz, now),
+      // Queued for room: no time of its own, it goes as soon as there is room.
+      time:
+        t.state === "scheduled" && t.hold?.kind === "capacity"
+          ? "When there is room"
+          : t.state === "needs-you" && t.hold?.kind === "paused"
+            ? "When you resume it"
+            : timeLabel(t.state === "running" ? (t.startedAt ?? t.dueAt) : t.dueAt, cfg.tz, cfg.clock),
       report: (t.report ?? t.error ?? null)?.slice(0, 400) ?? null,
       ...(t.state === "needs-you" && t.unreported ? { unreported: true } : {}),
       agentId: t.agentId,
       scope: t.scope,
       retry: t.state === "scheduled" && t.retry ? { n: t.retry.n, of: t.retry.of, why: t.retry.why.slice(0, 300) } : null,
       ...(t.tries?.length ? { tries: t.tries.map((x) => ({ when: formatWhen(x.at, cfg.tz, now, cfg.clock), outcome: x.outcome, why: x.why.slice(0, 200) })) } : {}),
+      live: liveOf(t, cfg, now),
+      question: questionOf(t),
+      // Whatever the card can be answered on (a question, or a stop without a word) has a mark.
+      askedId: t.state === "needs-you" && t.agentId && !t.hold ? askedIdOf(t.report) : null,
+      // Shown while it matters: under the question it answered, or while the run works on it (not one
+      // that failed: the run is at work again, so they got through another way). An answer to an
+      // earlier question is not shown under a new one.
+      answer:
+        t.answer && ((t.state === "running" && t.answer.state !== "failed") || (t.state === "needs-you" && t.answer.asked === askedIdOf(t.report)))
+          ? { text: t.answer.text.slice(0, 600), state: (["sending", "sent", "picked-up", "failed"].includes(t.answer.state) ? t.answer.state : "sent") as "sending" | "sent" | "picked-up" | "failed", when: atPhrase(t.answer.at, cfg, now), error: t.answer.error ?? null }
+          : null,
+      controls: controlsOf(t),
+      ...(t.runs?.length ? { runs: t.runs.map((r) => ({ when: formatWhen(r.startedAt, cfg.tz, now, cfg.clock), how: r.how, outcome: r.outcome ?? null, why: r.why ?? null, resumes: r.resumes?.length ?? 0 })) } : {}),
     })),
-    machine: machineNow(store, cfg, noticing?.backfill ?? store.backfill()),
+    machine: machineNow(store, cfg, noticing?.backfill ?? store.backfill(), now),
     ...basketToday(store, cfg, now),
     // The tasks above are only the last few days'; Runs keeps every run, so an empty desk can still lead there.
     hasRuns: anyRuns(store),

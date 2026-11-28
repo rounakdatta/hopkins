@@ -1,0 +1,8 @@
+{
+  "id": "fakeagent",
+  "name": "Fake agent",
+  "description": "A scripted fake agent (ACP) for testing hopkins's run supervisor without real agents.",
+  "requirements": {
+    "paseo": ">=0.16.1"
+  }
+}

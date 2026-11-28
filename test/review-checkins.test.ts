@@ -150,9 +150,14 @@ describe("10. the record stays quick with a year of answers", () => {
     const r = t.store.get(id)!;
     t.store.put({ ...r, answers: Array.from({ length: 400 }, (_, i) => ({ occurrence: r.dueAt! + i * DAY, at: r.dueAt! + i * DAY, value: "yes" as const, via: "card" as const })) });
     t.clock.advance(400 * DAY);
-    const started = performance.now();
-    for (let i = 0; i < 5; i++) buildToday(t.store, t.reminders, t.config(), t.clock.now(), health);
-    expect((performance.now() - started) / 5).toBeLessThan(25);
+    // The fastest of a few builds is the code's own cost; an average also measures whatever else
+    // the machine (or a CI runner) is doing at the time.
+    const took = Array.from({ length: 7 }, () => {
+      const started = performance.now();
+      buildToday(t.store, t.reminders, t.config(), t.clock.now(), health);
+      return performance.now() - started;
+    });
+    expect(Math.min(...took)).toBeLessThan(25);
   });
 });
 

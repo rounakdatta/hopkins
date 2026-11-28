@@ -26,7 +26,7 @@ export interface RecapData {
   /** Evening only: titles of conversations active today (may be empty). */
   workedOn: string[];
   /** Tasks, as the Today screen has them: waiting on them, under way, and still to come today (and tomorrow, in the evening). */
-  tasks: { needYou: Task[]; running: Task[]; today: Task[]; tomorrow: Task[] };
+  tasks: { needYou: Task[]; running: Task[]; today: Task[]; tomorrow: Task[]; paused?: Task[] };
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -125,8 +125,10 @@ export class Recaps {
       doneToday: kind === "evening" ? all.filter((r) => r.state === "done" && (r.closedAt ?? 0) >= startOfToday) : [],
       workedOn: kind === "evening" ? workedOn.slice(0, 5) : [],
       tasks: {
-        needYou: tasks.filter((t) => t.state === "needs-you" || t.state === "missed"),
+        needYou: tasks.filter((t) => (t.state === "needs-you" && t.hold?.kind !== "paused") || t.state === "missed"),
         running: tasks.filter((t) => t.state === "running"),
+        // Theirs to resume: not waiting on them, but not forgotten either.
+        paused: tasks.filter((t) => t.state === "needs-you" && t.hold?.kind === "paused"),
         today: tasksDue(startOfTomorrow),
         tomorrow: kind === "evening" ? tasksDue(endOfTomorrow, startOfTomorrow) : [],
       },

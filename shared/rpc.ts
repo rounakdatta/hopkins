@@ -3,7 +3,7 @@
 import { defineRpc, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
 import { CheckinCardSchema } from "./checkin";
-import { AnswerActionSchema, DayPileSchema, DaysViewSchema, ReminderActionSchema, SuggestionActionSchema, TaskActionSchema, TodayViewSchema } from "./model";
+import { AnswerActionSchema, DayPileSchema, DaysViewSchema, ReminderActionSchema, SuggestionActionSchema, TaskActionSchema, TaskAnswerSchema, TodayViewSchema } from "./model";
 import { RunsViewSchema } from "./runs";
 
 export const todayRpc = defineRpc({
@@ -40,6 +40,13 @@ export const suggestionRpc = defineRpc({
 export const taskRpc = defineRpc({
   name: "hopkins.task",
   input: TaskActionSchema,
+  output: z.object({ ok: z.boolean(), message: z.string() }),
+});
+
+/** Passes an answer into a run that asked something, as the user's own message there. */
+export const taskAnswerRpc = defineRpc({
+  name: "hopkins.task.answer",
+  input: TaskAnswerSchema,
   output: z.object({ ok: z.boolean(), message: z.string() }),
 });
 

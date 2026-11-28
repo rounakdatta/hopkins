@@ -9,6 +9,7 @@ import { addDays, compareDates, formatLocalDate, localDateOf, longDate, parseLoc
 import type { Config } from "./config";
 import type { Reminders } from "./reminders";
 import type { Store } from "./store";
+import { liveOf } from "./supervision-view";
 
 /** The most days one Week or Month request may ask for (six weeks: a month's grid). */
 export const MAX_DAYS = 42;
@@ -113,7 +114,7 @@ export function basketCounts(entries: readonly BasketEntry[]): { done: number; o
 /**
  * What is being processed right now: running tasks, a reminder's daily check, and a history scan.
  */
-export function machineNow(store: Store, cfg: Config, backfill: BackfillState): MachineItem[] {
+export function machineNow(store: Store, cfg: Config, backfill: BackfillState, now = Date.now()): MachineItem[] {
   const since = (t: number | undefined | null) => (t ? timeLabel(t, cfg.tz, cfg.clock) : null);
   const running = store.tasks().filter((t) => t.state === "running").sort((a, b) => (a.startedAt ?? a.dueAt) - (b.startedAt ?? b.dueAt));
   const items: MachineItem[] = [];
@@ -123,7 +124,18 @@ export function machineNow(store: Store, cfg: Config, backfill: BackfillState): 
       // A slip of its own: the reminder's card stays where it is (on the table, or in your hand).
       if (r) items.push({ key: `c:${r.id}`, kind: "check", id: r.id, text: r.text, since: since(t.startedAt), scope: r.scope });
     } else {
-      items.push({ key: `t:${t.id}`, kind: "task", id: t.id, text: t.text, since: since(t.startedAt), agentId: t.agentId, scope: t.scope });
+      const live = liveOf(t, cfg, now);
+      items.push({
+        key: `t:${t.id}`,
+        kind: "task",
+        id: t.id,
+        text: t.text,
+        since: since(t.startedAt),
+        agentId: t.agentId,
+        scope: t.scope,
+        line: live?.line || null,
+        live: live?.state === "quiet" || live?.state === "stalled" ? live.state : "working",
+      });
     }
   }
   if (backfill.state === "running") {
@@ -197,7 +209,8 @@ export function waitingOnYou(all: readonly Reminder[], now: number): Reminder[] 
 
 /** What needs the person now: the same count as the headline and the sidebar badge. */
 export function waitingCount(store: Store, now: number): number {
-  const tasks = store.tasks().filter((t) => t.kind !== "check" && (t.state === "needs-you" || t.state === "missed")).length;
+  // A run they paused waits on their say-so, not on them: it is not counted.
+  const tasks = store.tasks().filter((t) => t.kind !== "check" && ((t.state === "needs-you" && t.hold?.kind !== "paused") || t.state === "missed")).length;
   return waitingOnYou(store.reminders(), now).length + tasks;
 }
 
@@ -238,7 +251,7 @@ export function buildDays(store: Store, reminders: Reminders, cfg: Config, now: 
       other,
       costUsd: (basket.get(key) ?? []).reduce((sum, e) => sum + (e.costUsd ?? 0), 0),
       coming: compareDates(d, today) >= 0 ? (coming.get(key)?.length ?? 0) : 0,
-      running: isToday ? machineNow(store, cfg, backfill).length : 0,
+      running: isToday ? machineNow(store, cfg, backfill, now).length : 0,
       waiting: isToday ? waitingCount(store, now) : 0,
     });
   }

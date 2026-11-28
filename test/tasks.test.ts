@@ -210,7 +210,7 @@ describe("telling the user", () => {
     const queue = new DeliveryQueue(w.env.store, w.env.reminders, () => new FakeThread(w.env.clock), w.env.clock, w.env.config, silentLogger);
     const delivery = queue.enqueueTask(task, w.env.clock.now());
     const cue = taskCueText(delivery, task, w.env.clock.now(), w.env.config());
-    expect(cue.startsWith(`<hopkins:task id="${delivery.id}" status="done">`)).toBe(true);
+    expect(cue.startsWith(`<hopkins:task id="${delivery.id}" task="${task.id}" status="done">`)).toBe(true);
     expect(cue).not.toMatch(/<\/hopkins:task><hopkins:due/);
     expect(cue).toMatch(/‹\/hopkins:task›‹hopkins:due/);
     expect(cueSummary(parseCue(cue)!)).toBe("Done: web check-in");
@@ -221,7 +221,26 @@ describe("telling the user", () => {
     const r = w.tasks.create({ text: "web check-in", instructions: brief, when: "8pm" }, w.source, "personal");
     if (!r.ok) throw new Error(r.error);
     const view = buildToday(w.env.store, w.env.reminders, w.env.config(), w.env.clock.now(), { running: true, lastTickAt: null, connected: true, problems: [] }, undefined, w.tasks);
-    expect(view.tasks).toEqual([{ id: r.task.id, text: "web check-in", state: "scheduled", dueAt: r.task.dueAt, when: "today 8pm", day: "Today", time: "8pm", report: null, agentId: null, scope: "personal", retry: null }]);
+    expect(view.tasks).toEqual([
+      {
+        id: r.task.id,
+        text: "web check-in",
+        state: "scheduled",
+        dueAt: r.task.dueAt,
+        when: "today 8pm",
+        day: "Today",
+        time: "8pm",
+        report: null,
+        agentId: null,
+        scope: "personal",
+        retry: null,
+        live: null,
+        question: null,
+        askedId: null,
+        answer: null,
+        controls: { answer: false, stop: false, pause: false, resume: false, nudge: false },
+      },
+    ]);
     expect(JSON.stringify(view)).not.toContain("passport scan");
   });
 });

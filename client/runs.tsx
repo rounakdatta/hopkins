@@ -7,7 +7,7 @@ import { Pressable, Text, View } from "react-native";
 import { useSubscription } from "@getpaseo/plugin/client";
 import { Icon, TextInput } from "@getpaseo/plugin/client/ui";
 import { runsWatch } from "../shared/rpc";
-import { filterRuns, groupRuns, runsHeadline, type Run, type RunsView } from "../shared/runs";
+import { allAtWork, filterRuns, groupRuns, runAsks, runLine, runsHeadline, type Run, type RunsView } from "../shared/runs";
 import { Button, Card, Fold, Rows, Section, Spinner, type } from "./kit";
 import { space, tabular, type Colors } from "./theme";
 
@@ -54,6 +54,7 @@ export function RunsList(props: { colors: Colors; phone: boolean; switcher: Reac
           {h.title}
         </Text>
         {h.detail ? <Text style={[type.title, { color: colors.foregroundMuted }]}>{h.detail}</Text> : null}
+        {view.metrics ? <Text style={[type.small, tabular, { color: colors.foregroundMuted, paddingTop: 2 }]}>{view.metrics}</Text> : null}
       </View>
 
       {view.runs.length >= FILTER_FROM ? <Filter colors={colors} query={query} onQuery={setQuery} /> : null}
@@ -78,7 +79,7 @@ export function RunsList(props: { colors: Colors; phone: boolean; switcher: Reac
       ) : null}
 
       {shown.working.length > 0 ? (
-        <Section colors={colors} title="Working" count={shown.working.length}>
+        <Section colors={colors} title={allAtWork(shown.working) ? "Working" : "Under way"} count={shown.working.length}>
           <Card colors={colors}>
             <Rows colors={colors}>
               {shown.working.map((run) => (
@@ -124,19 +125,8 @@ function byDay(runs: Run[]): [string, Run[]][] {
   return [...days];
 }
 
-/** What the second line says: the question it asks, how it went, or since when it has been working. */
-function lineOf(run: Run): { text: string | null; tone: "muted" | "warning" } {
-  if (run.state === "needs-you") return { text: run.unreported ? "It stopped without saying how it went." : run.report, tone: "muted" };
-  if (run.state === "running") return { text: null, tone: "muted" };
-  // Done is how most runs end, so it says nothing extra; the ones that didn't work say so.
-  if (run.state === "failed") return { text: `Didn't work${run.report ? `: ${run.report}` : "."}`, tone: "warning" };
-  if (run.state === "cancelled") return { text: `Cancelled${run.report ? `: ${run.report}` : "."}`, tone: "muted" };
-  if (run.state === "missed") return { text: "Didn't start: hopkins was offline at the time.", tone: "muted" };
-  return { text: run.report, tone: "muted" };
-}
-
 const STATE_WORDS: Record<Run["state"], string> = {
-  "needs-you": "needs your answer",
+  "needs-you": "needs you",
   running: "working",
   done: "done",
   failed: "didn't work",
@@ -148,13 +138,13 @@ const STATE_WORDS: Record<Run["state"], string> = {
 function RunRow(props: { run: Run; colors: Colors; open: ((agentId: string) => void) | null; stamp: string }) {
   const { run, colors } = props;
   const [hover, setHover] = useState(false);
-  const line = lineOf(run);
-  const asks = run.state === "needs-you";
+  const line = runLine(run);
+  const asks = runAsks(run);
   const open = props.open;
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${run.title}: ${run.state === "needs-you" && run.unreported ? "stopped without saying how it went" : STATE_WORDS[run.state]}, ${run.when}. ${open ? "Open the run" : ""}`.trim()}
+      accessibilityLabel={`${run.title}: ${line.text && run.state !== "done" ? line.text : run.state === "needs-you" && run.unreported ? "stopped without saying how it went" : STATE_WORDS[run.state]}, ${run.when}. ${open ? "Open the run" : ""}`.trim()}
       disabled={!open}
       onPress={() => open?.(run.agentId)}
       onHoverIn={() => setHover(true)}
@@ -174,7 +164,7 @@ function RunRow(props: { run: Run; colors: Colors; open: ((agentId: string) => v
           {run.title}
         </Text>
         {line.text ? (
-          <Text style={[type.meta, { color: line.tone === "warning" ? colors.statusWarning : colors.foregroundMuted }]} numberOfLines={asks ? 3 : 1}>
+          <Text style={[type.meta, { color: line.tone === "warning" ? colors.statusWarning : colors.foregroundMuted }]} numberOfLines={asks ? 3 : 2}>
             {line.text}
           </Text>
         ) : null}
